@@ -67,6 +67,22 @@ cloudflared tunnel --url http://localhost:8000
 
 Copy the `https://<random>.trycloudflare.com` URL it prints.
 
+#### Tunnel on Windows (if winget doesn't work)
+
+Use the standalone exe instead. `tools/` is git-ignored.
+
+```powershell
+New-Item -ItemType Directory -Force tools
+Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile tools\cloudflared.exe
+tools\cloudflared.exe tunnel --url http://localhost:8000
+```
+
+Wait for `Registered tunnel connection` in the output before using the URL.
+If you get Cloudflare **Error 1033** and the log says `QUIC connection failed` /
+`HTTP/2 connection is blocked`, your network blocks port 7844 (common on college or
+office Wi-Fi). Turn on the Cloudflare WARP VPN (1.1.1.1 app) or use a phone hotspot,
+then start the tunnel again.
+
 ### 2. Register the webhook
 
 1. Developer Dashboard → **Apps & Credentials** → your Sandbox app → **Webhooks** → **Add Webhook**.

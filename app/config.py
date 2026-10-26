@@ -1,0 +1,33 @@
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    paypal_client_id: str
+    paypal_client_secret: str
+    paypal_env: str = "sandbox"
+    database_path: str = "clearline.db"
+    # Webhooks (Day 2). The ID comes from Developer Dashboard -> your app -> Webhooks.
+    paypal_webhook_id: str | None = None
+    # Dev only: accept webhooks that fail signature verification (e.g. Webhook Simulator).
+    allow_unverified_webhooks: bool = False
+
+    @property
+    def api_base(self) -> str:
+        if self.paypal_env == "live":
+            return "https://api-m.paypal.com"
+        return "https://api-m.sandbox.paypal.com"
+
+    @property
+    def sdk_url(self) -> str:
+        if self.paypal_env == "live":
+            return "https://www.paypal.com/web-sdk/v6/core"
+        return "https://www.sandbox.paypal.com/web-sdk/v6/core"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

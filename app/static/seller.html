@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clearline · Seller</title>
+  <style>
+    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width:760px; margin:40px auto; padding:0 16px; }
+    h1 { font-size:22px; margin:0 0 16px; }
+    .order { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px; }
+    .id { font-family:ui-monospace, monospace; font-size:13px; }
+    ol { margin:8px 0; padding-left:20px; font-size:14px; }
+    .muted { color:var(--muted); font-size:13px; }
+    form { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+    input, select, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:8px; }
+    button { background:var(--ink); color:#fff; border:0; cursor:pointer; }
+    .msg { font-size:13px; margin-top:6px; }
+    .badge { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; margin-left:8px; vertical-align:middle; }
+    .badge.bad { background:var(--bad); color:#fff; }
+    .badge.neutral { background:var(--line); color:var(--muted); }
+    .dispute { border:1px solid #f3c4bf; background:#fef3f2; border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
+    .dispute.resolved { border-color:var(--line); background:var(--bg); }
+    .due { font-weight:600; color:var(--bad); }
+    .order.disputed { border-color:#f3c4bf; }
+    #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
+    #other .order { padding:10px 12px; font-size:13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Your orders</h1>
+  <div id="orders"><p class="muted">Loading…</p></div>
+  <div id="other"></div>
+</main>
+
+<script>
+  const LABELS = {
+    order_created: "Order created",
+    payment_captured: "Payment captured",
+    capture_failed: "Capture failed",
+    tracking_added: "Tracking added",
+    dispute_created: "Dispute opened",
+    dispute_updated: "Dispute updated",
+    dispute_resolved: "Dispute resolved",
+    webhook_payment_capture_completed: "PayPal: capture completed",
+    webhook_payment_capture_pending: "PayPal: capture pending",
+    webhook_payment_capture_refunded: "PayPal: refunded",
+    webhook_payment_capture_reversed: "PayPal: reversed",
+    webhook_other: "PayPal event",
+    webhook_processing_failed: "Processing failed",
+  };
+  const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
+  // PayPal dispute reason codes in plain words.
+  const REASONS = {
+    MERCHANDISE_OR_SERVICE_NOT_RECEIVED: "Item not received",
+    MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED: "Item not as described",
+    UNAUTHORISED: "Unauthorised payment",
+    CREDIT_NOT_PROCESSED: "Refund not processed",
+    DUPLICATE_TRANSACTION: "Charged twice",
+    INCORRECT_AMOUNT: "Wrong amount charged",
+    PAYMENT_BY_OTHER_MEANS: "Paid by other means",
+    CANCELED_RECURRING_BILLING: "Cancelled subscription still billed",
+    PROBLEM_WITH_REMITTANCE: "Problem with remittance",
+    OTHER: "Other",
+  };
+  const humanize = (code) => REASONS[code] || String(code || "Unknown").toLowerCase().replace(/_/g, " ");
+  const money = (a) => (a && a.value ? `${a.value} ${a.currency_code || ""}`.trim() : "");
+  const fmt = (t) => new Date(t * 1000).toLocaleString();
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+  function describe(e) {
+    const p = e.payload;
+    if (e.kind === "order_created") return `${p.amount} ${p.currency}`;
+    if (e.kind === "payment_captured") return `from ${p.payer_email || "buyer"} (${p.payer_country || "?"})`;
+    if (e.kind === "tracking_added") return `${p.carrier} ${p.tracking_number}`;
+    if (DISPUTE_KINDS.includes(e.kind)) return [humanize(p.reason), money(p.dispute_amount), p.status].filter(Boolean).join(" · ");
+    if (e.kind.startsWith("webhook_payment_capture")) return [p.status, money(p.amount), p.pending_reason].filter(Boolean).join(" · ");
+    if (e.kind === "webhook_other") return p.event_type;
+    return "";
+  }
+
+  function respondBy(due) {
+    if (!due) return "";
+    const date = new Date(due);
+    if (isNaN(date)) return "";
+    const days = Math.ceil((date - Date.now()) / 86400000);
+    const left = days > 1 ? `${days} days left` : days === 1 ? "1 day left" : days === 0 ? "due today" : "overdue";
+    return `<div class="due">Respond by ${esc(date.toLocaleDateString())} (${left})</div>`;
+  }
+
+  // Latest dispute state for an order, shown as a red panel above the timeline.
+  function disputePanel(events) {
+    const last = events.filter((e) => DISPUTE_KINDS.includes(e.kind)).pop();
+    if (!last) return { badge: "", panel: "", disputed: false };
+    const p = last.payload;
+    const resolved = last.kind === "dispute_resolved" || p.status === "RESOLVED";
+    const badge = resolved ? '<span class="badge neutral">Dispute resolved</span>'
+                           : '<span class="badge bad">Disputed</span>';
+    const panel = `<div class="dispute${resolved ? " resolved" : ""}">
+        <strong>${esc(humanize(p.reason))}</strong> · ${esc(money(p.dispute_amount))}
+        <div class="muted">Status: ${esc(p.status || "?")}${p.dispute_life_cycle_stage ? ` · Stage: ${esc(p.dispute_life_cycle_stage)}` : ""} · Case ${esc(p.dispute_id)}</div>
+        ${resolved ? "" : respondBy(p.seller_response_due_date)}
+        ${p.enrichment_error ? '<div class="muted">Could not load full dispute details from PayPal.</div>' : ""}
+      </div>`;
+    return { badge, panel, disputed: !resolved };
+  }
+
+  const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
+  const isSide = (id) => id === "other" || id.startsWith("unmatched:");
+
+  async function render() {
+    const all = await (await fetch("/api/orders")).json();
+    const orders = all.filter((o) => !isSide(o.order_id));
+    const root = document.getElementById("orders");
+    renderOther(all.filter((o) => isSide(o.order_id)));
+    if (!orders.length) { root.innerHTML = '<p class="muted">No orders yet. Pay one on the checkout page.</p>'; return; }
+    const blocks = await Promise.all(orders.map(async (o) => {
+      const events = await getTimeline(o.order_id);
+      const d = disputePanel(events);
+      const captured = events.some((e) => e.kind === "payment_captured");
+      const tracked = events.some((e) => e.kind === "tracking_added");
+      const steps = events.map((e) =>
+        `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span></li>`).join("");
+      const form = captured && !tracked ? `
+        <form data-order="${esc(o.order_id)}">
+          <input name="tracking_number" placeholder="Tracking number" required />
+          <select name="carrier"><option>DHL</option><option>FEDEX</option><option>UPS</option><option>USPS</option></select>
+          <button>Mark shipped</button>
+        </form><div class="msg"></div>` : "";
+      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}<ol>${steps}</ol>${form}</div>`;
+    }));
+    root.innerHTML = blocks.join("");
+    root.querySelectorAll("form").forEach((f) => f.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const msg = f.nextElementSibling;
+      const data = Object.fromEntries(new FormData(f));
+      const res = await fetch(`/api/orders/${f.dataset.order}/tracking`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+      });
+      if (res.ok) { render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
+    }));
+  }
+
+  // Webhook events that didn't match one of our orders (e.g. Simulator mock data).
+  async function renderOther(side) {
+    const root = document.getElementById("other");
+    if (!side.length) { root.innerHTML = ""; return; }
+    const blocks = await Promise.all(side.map(async (o) => {
+      const events = await getTimeline(o.order_id);
+      const rows = events.map((e) =>
+        `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span></li>`).join("");
+      return `<div class="order"><div class="id">${esc(o.order_id)}</div><ol>${rows}</ol></div>`;
+    }));
+    root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
+  }
+
+  // Refresh every 10s so new disputes appear, but never wipe a half-typed tracking number.
+  function typing() {
+    return [...document.querySelectorAll("#orders input")].some((i) => i.value || i === document.activeElement);
+  }
+
+  render();
+  setInterval(() => { if (!typing()) render().catch(() => {}); }, 10000);
+</script>
+</body>
+</html>

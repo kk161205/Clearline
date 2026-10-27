@@ -82,6 +82,31 @@ def test_out_of_order_rows_use_latest_update_time():
     assert result["sandbox"] is True and result["approve"] is False
 
 
+def test_claim_stage_fight_needs_a_file_before_approve():
+    claim = dispute("dispute_updated", "WAITING_FOR_SELLER_RESPONSE", "2026-10-27T05:32:04.065Z",
+                    ["FIGHT", "REFUND"], 4)
+    claim["payload"]["document_evidence"] = [
+        {"type": "PROOF_OF_FULFILLMENT", "label": "Proof of shipment (e.g. shipping receipt)"},
+        {"type": "PROOF_OF_DELIVERY_SIGNATURE", "label": "Signed delivery receipt"}]
+    inquiry = dispute("dispute_updated", "WAITING_FOR_SELLER_RESPONSE", "2026-10-27T05:32:04.065Z",
+                      ["FIGHT"], 4)
+    inquiry["payload"]["document_evidence"] = []
+    with_claim, with_inquiry = render({"env": "sandbox", "events": [RECOMMENDATION, claim]},
+                                      {"env": "sandbox", "events": [RECOMMENDATION, inquiry]})
+
+    card = with_claim["card"]
+    assert 'type="file" data-field="evidence_file"' in card
+    assert '<option value="PROOF_OF_DELIVERY_SIGNATURE" selected>Signed delivery receipt</option>' in card
+    assert "PROOF_OF_REFUND" not in card
+    approve = re.search(r"<button data-approve[^>]*>", card).group(0)
+    assert "disabled" in approve and 'data-needs-file="1"' in approve
+    assert "it never generates proof" in card
+
+    card = with_inquiry["card"]  # inquiry stage: unchanged, no file needed
+    assert "evidence_file" not in card
+    assert "disabled" not in re.search(r"<button data-approve[^>]*>", card).group(0)
+
+
 def test_pages_are_served_with_no_cache(tmp_path):
     client, _ = make_client(tmp_path)
     for path in ("/", "/seller"):

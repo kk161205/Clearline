@@ -20,7 +20,7 @@ from .store import DISPUTE_KINDS, TimelineStore
 
 log = logging.getLogger("clearline.assistant")
 
-PROMPT_VERSION = "dispute-v1"
+PROMPT_VERSION = "dispute-v2"
 
 SYSTEM_PROMPT = """You are Clearline's dispute assistant for a small online seller on PayPal.
 You receive FACTS about one disputed order as JSON, keyed by fact key. Recommend one decision:
@@ -37,6 +37,11 @@ Rules:
 - Prefer OFFER for small amounts with weak evidence. offer.amount must be more than 0 and no
   more than dispute.amount; offer.type must be one of dispute.allowed_offer_types if given.
 - Set offer to null unless the decision is OFFER.
+- When dispute.stage is CHARGEBACK (a claim), PayPal only accepts documents as proof, not
+  tracking alone. If you recommend FIGHT, say in missing_evidence which document the seller
+  should attach, matching dispute.requested_evidence (e.g. "Attach the signed delivery
+  receipt"). Only ask for documents the seller already has; never suggest creating, editing or
+  altering a document.
 - message_to_buyer: courteous, factual, under 120 words. Call the people "you" and "we";
   no names, emails, phone numbers or links.
 - note_to_paypal: factual summary of the seller's position for PayPal, under 120 words,
@@ -105,6 +110,12 @@ class GuardrailError(Exception):
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
 URL_RE = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 PHONE_RE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
+# Proof must be real: never suggest making or changing a document.
+FABRICATION_RE = re.compile(
+    r"\b(?:create|generate|fabricate|forge|fake|edit|alter|modify|photoshop|backdate"
+    r"|make(?!\s+sure))\w*\b"
+    r"[^.]{0,40}\b(?:document|receipt|invoice|label|proof|signature|screenshot|pdf)",
+    re.IGNORECASE)
 MAX_WORDS = 120
 
 
@@ -198,6 +209,11 @@ def check_guardrails(rec: Recommendation, facts: dict) -> list[str]:
             and facts.get("dispute.reason") == "MERCHANDISE_OR_SERVICE_NOT_RECEIVED"
             and not ("tracking.carrier" in facts and "tracking.number" in facts)):
         errors.append("FIGHT on an item-not-received claim needs tracking facts, and there are none")
+    advice = [rec.message_to_buyer, rec.note_to_paypal, *rec.missing_evidence,
+              *(r.text for r in rec.reasons)]
+    if any(FABRICATION_RE.search(text) for text in advice):
+        errors.append("never suggest creating, editing or altering a document; only ask for "
+                      "documents the seller already has")
     for field in ("message_to_buyer", "note_to_paypal"):
         text = getattr(rec, field)
         if EMAIL_RE.search(text) or URL_RE.search(text):

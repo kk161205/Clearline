@@ -9,11 +9,13 @@ from typing import Literal
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .ai import AIClient
 from .assistant import Assistant
 from .config import Settings, get_settings
+from .evidence import (DOCUMENT_TYPES, MAX_BASE64_CHARS, EvidenceFile, EvidenceFileError,
+                       document_evidence_types, parse_upload)
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
 from .scheduler import run_every
@@ -60,12 +62,20 @@ class OfferIn(BaseModel):
     amount: float
 
 
+class EvidenceIn(BaseModel):
+    """A document the seller attached (claim stage). Checked on the server, never stored."""
+    type: str
+    file_name: str = Field(max_length=255)
+    content_base64: str = Field(max_length=MAX_BASE64_CHARS)
+
+
 class ActIn(BaseModel):
     """The seller's approved action. Texts default to the latest AI draft if left out."""
     action: Literal["FIGHT", "REFUND", "OFFER"]
     message_to_buyer: str | None = None
     note_to_paypal: str | None = None
     offer: OfferIn | None = None
+    evidence: EvidenceIn | None = None
 
 
 class ActionNotAllowed(Exception):
@@ -98,7 +108,8 @@ def step_blocked(endpoint: str, dispute: dict) -> str | None:
 
 
 def plan_action(action: str, dispute: dict, *, message: str, note: str,
-                offer: dict | None, tracking: dict | None) -> list[tuple[str, dict]]:
+                offer: dict | None, tracking: dict | None,
+                document: tuple[str, EvidenceFile] | None = None) -> list[tuple[str, dict]]:
     """The PayPal calls an approved action needs, in order, as (endpoint, body) steps.
 
     Planned against a freshly fetched dispute; each step is checked again right before it
@@ -107,6 +118,23 @@ def plan_action(action: str, dispute: dict, *, message: str, note: str,
     and ValueError for missing or invalid seller input.
     """
     options = dispute.get("allowed_response_options") or {}
+
+    if action == "FIGHT" and (doc_types := document_evidence_types(dispute)):
+        # Claim stage: PayPal wants a document; tracking alone is rejected
+        # (EVIDENCE_TYPE_IS_NOT_ALLOWED in our Sandbox experiment).
+        if blocked := step_blocked("provide-evidence", dispute):
+            raise ActionNotAllowed(f"Can't send evidence: {blocked}.")
+        if not document:
+            raise ValueError("PayPal needs a document for this claim. Attach one (PDF, JPG, PNG "
+                             "or GIF under 5 MB) and choose the matching evidence type.")
+        evidence_type, file = document
+        if evidence_type not in doc_types:
+            raise ValueError(f"PayPal isn't asking for {evidence_type}. Choose one of: "
+                             f"{', '.join(doc_types)}.")
+        return [("provide-evidence", {"evidence_type": evidence_type, "notes": note,
+                                      "document": file.meta})]
+    if document:
+        raise ValueError("Documents are only sent when PayPal asks for them (claim stage).")
 
     if action == "FIGHT":
         # Evidence first: messaging the buyer hands the turn to them and blocks evidence.
@@ -365,7 +393,11 @@ def create_app(settings: Settings | None = None,
         The order comes from the disputed capture ID, else from earlier events for the same
         dispute, else "unmatched:<dispute_id>". Returns the order_id used."""
         payload = {**dispute_summary(dispute), **extra,
-                   "allowed_decisions": allowed_decisions(dispute)}
+                   "allowed_decisions": allowed_decisions(dispute),
+                   # Evidence types that need a seller-provided document (claim stage), with
+                   # plain-word labels for the page's dropdown.
+                   "document_evidence": [{"type": t, "label": DOCUMENT_TYPES.get(t, t)}
+                                         for t in document_evidence_types(dispute)]}
         payload["dispute_id"] = payload["dispute_id"] or dispute_id
         if error:
             payload["enrichment_error"] = error
@@ -457,6 +489,14 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(400, f"Texts must be at most {PAYPAL_TEXT_LIMIT} characters")
         tracked = [e for e in store.timeline(order_id) if e["kind"] == "tracking_added"]
         tracking = tracked[-1]["payload"] if tracked else None
+        document = None
+        if body.evidence:
+            # Checked before any PayPal call; the bytes live only in memory for this request.
+            try:
+                document = (body.evidence.type, parse_upload(body.evidence.file_name,
+                                                             body.evidence.content_base64))
+            except EvidenceFileError as err:
+                raise HTTPException(400, str(err))
 
         try:
             dispute = await paypal.get_dispute(dispute_id)  # never act on stale state
@@ -464,7 +504,7 @@ def create_app(settings: Settings | None = None,
             raise fail(err)
         try:
             steps = plan_action(body.action, dispute, message=message, note=note,
-                                offer=offer, tracking=tracking)
+                                offer=offer, tracking=tracking, document=document)
         except ActionNotAllowed as err:
             raise HTTPException(409, str(err))
         except ValueError as err:
@@ -490,7 +530,7 @@ def create_app(settings: Settings | None = None,
                 results.append({"endpoint": endpoint, "outcome": "skipped", "reason": reason})
                 continue
             try:
-                response = await run_step(dispute_id, endpoint, sent)
+                response = await run_step(dispute_id, endpoint, sent, document)
             except (PayPalError, httpx.HTTPError) as err:
                 details = error_details(err)
                 if details["paypal_status"] == 422 and details["paypal_issue"] == STATE_CHANGED_ISSUE:
@@ -528,10 +568,17 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(502, {"steps": results, "summary": summary})
         return {"ok": True, "steps": results, "summary": summary}
 
-    async def run_step(dispute_id: str, endpoint: str, sent: dict) -> dict:
-        """Call the PayPal endpoint for one planned step."""
+    async def run_step(dispute_id: str, endpoint: str, sent: dict,
+                       document: tuple[str, EvidenceFile] | None = None) -> dict:
+        """Call the PayPal endpoint for one planned step. `sent` is what the timeline stores;
+        the document's bytes come separately so they're never stored."""
         if endpoint == "send-message":
             return await paypal.send_dispute_message(dispute_id, sent["message"])
+        if endpoint == "provide-evidence" and "document" in sent:
+            file = document[1]
+            return await paypal.provide_document_evidence(
+                dispute_id, evidence_type=sent["evidence_type"], notes=sent["notes"],
+                file_name=file.name, content=file.content, content_type=file.content_type)
         if endpoint == "provide-evidence":
             return await paypal.provide_fulfillment_evidence(
                 dispute_id, carrier=sent["carrier"], tracking_number=sent["tracking_number"],

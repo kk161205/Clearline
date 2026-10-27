@@ -65,6 +65,9 @@ class PayPalError(Exception):
 ISSUE_TEXT = {
     "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE":
         "PayPal didn't allow this step in the dispute's current state",
+    "EVIDENCE_TYPE_IS_NOT_ALLOWED":
+        "PayPal won't accept this kind of evidence at this stage. Attach a document and choose "
+        "the matching type.",
     "PERMISSION_DENIED": "This app isn't allowed to do that on this dispute",
     "NOT_AUTHORIZED": "This app isn't allowed to do that on this dispute",
     "INVALID_PARAMETER_VALUE": "PayPal rejected one of the values we sent",
@@ -98,7 +101,8 @@ class PayPalClient:
 
     async def _request(self, method: str, path: str, *, json: dict | None = None,
                        idempotent: bool = False, params: dict | None = None,
-                       json_part: dict | None = None) -> dict:
+                       json_part: dict | None = None,
+                       attachments: dict[str, tuple[str, bytes, str]] | None = None) -> dict:
         headers = {"Authorization": f"Bearer {await self._access_token()}"}
         if idempotent:
             # PayPal-Request-Id makes retries safe for calls that move money.
@@ -106,8 +110,9 @@ class PayPalClient:
         files = None
         if json_part is not None:
             # Some dispute actions only accept multipart/form-data: the JSON goes in a part
-            # named "input" (no file attached).
-            files = {"input": (None, jsonlib.dumps(json_part), "application/json")}
+            # named "input"; files, if any, go in their own named parts.
+            files = {"input": (None, jsonlib.dumps(json_part), "application/json"),
+                     **(attachments or {})}
         resp = await self.http.request(method, path, json=json, headers=headers,
                                        params=params, files=files)
         if resp.status_code >= 400:
@@ -210,6 +215,19 @@ class PayPalClient:
             evidence["notes"] = notes
         return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/provide-evidence",
                                    json_part={"evidences": [evidence]}, idempotent=True)
+
+    async def provide_document_evidence(self, dispute_id: str, *, evidence_type: str, notes: str,
+                                        file_name: str, content: bytes,
+                                        content_type: str) -> dict:
+        """Submit one seller-provided document as evidence (claim stage). Shape verified in the
+        Sandbox: JSON in "input" referencing the file by name, the file in "evidence-file"."""
+        evidence = {"evidence_type": evidence_type, "documents": [{"name": file_name}]}
+        if notes:
+            evidence["notes"] = notes
+        return await self._request(
+            "POST", f"/v1/customer/disputes/{dispute_id}/provide-evidence",
+            json_part={"evidences": [evidence]},
+            attachments={"evidence-file": (file_name, content, content_type)}, idempotent=True)
 
     async def make_dispute_offer(self, dispute_id: str, *, note: str, offer_type: str,
                                  amount: dict) -> dict:

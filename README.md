@@ -197,6 +197,33 @@ calls PayPal's sandbox-only *Update dispute status* endpoint (`require-evidence`
 the AI recommendation and Approve flow can be tested. It doesn't exist in live mode (the
 button is hidden and the endpoint returns 404).
 
+### 6. Evidence findings (PayPal Sandbox, claim stage)
+
+**Clearline only uploads files the seller provides; it never generates proof.**
+
+On an item-not-received claim (`CHARGEBACK` stage, `WAITING_FOR_SELLER_RESPONSE`) where PayPal
+requested `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND` and `PROOF_OF_DELIVERY_SIGNATURE`, we tried
+these `provide-evidence` requests, one at a time:
+
+| # | Request | Result |
+|---|---|---|
+| 1 | `PROOF_OF_FULFILLMENT`, tracking only (multipart `input`) | 400 `EVIDENCE_TYPE_IS_NOT_ALLOWED` |
+| 2 | Same, as plain JSON | 400 `EVIDENCE_TYPE_IS_NOT_ALLOWED` |
+| 3 | `PROOF_OF_FULFILLMENT`, notes only | 400 `EVIDENCE_TYPE_IS_NOT_ALLOWED` |
+| 4 | `PROOF_OF_FULFILLMENT`, tracking + PDF in `evidence-file` | 400 `EVIDENCE_TYPE_IS_NOT_ALLOWED` |
+| 5 | `PROOF_OF_FULFILLMENT`, PDF + notes | 400 `EVIDENCE_TYPE_IS_NOT_ALLOWED` |
+| 6 | `PROOF_OF_DELIVERY_SIGNATURE`, PDF + notes | **200**, filed by PayPal as `OTHER`; dispute went to `UNDER_REVIEW` |
+
+So in the claim stage PayPal refused proof of fulfillment in every form, and accepted a
+document-backed delivery-signature submission. Clearline's Fight flow therefore works like this:
+
+- **Inquiry stage:** tracking evidence (`PROOF_OF_FULFILLMENT`), then the message to the buyer.
+- **Claim stage:** the seller attaches their own document (one PDF, JPG, PNG or GIF, at most
+  5 MB) and picks the evidence type from what PayPal requests. It is sent like request 6:
+  JSON in `input` (`evidence_type`, `notes`, `documents: [{"name": ...}]`) plus the file in
+  `evidence-file`. The server checks the file type by its content, the size and the name; the
+  timeline keeps only the file's name, type, size and SHA-256, never its contents.
+
 ## Layout
 
 | File | Purpose |

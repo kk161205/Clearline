@@ -111,14 +111,18 @@
 
   // The server stores PayPal failures as a short sentence plus issue/debug_id. Rows from
   // before that hold PayPal's raw error text, so pull the same facts out of it.
-  const LEGACY_ISSUES = { ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE: "PayPal didn't allow this step in the dispute's current state" };
+  const LEGACY_ISSUES = {
+    ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE: "PayPal didn't allow this step in the dispute's current state",
+    EVIDENCE_TYPE_IS_NOT_ALLOWED: "PayPal won't accept this kind of evidence at this stage. Attach a document and choose the matching type.",
+  };
   function errorParts(p, field = "error") {
     const raw = String(p[field] || "");
     const legacy = raw.includes("PayPal API error");
     const issue = p.paypal_issue || (raw.match(/'issue': '([A-Z_]+)'/) || [])[1];
     const debug = p.debug_id || (raw.match(/'debug_id': '([\w-]+)'/) || [])[1];
     const status = p.paypal_status || (raw.match(/PayPal API error (\d+)/) || [])[1];
-    const text = legacy ? (LEGACY_ISSUES[issue] || "PayPal rejected this step") : raw;
+    // Rows stored before an issue had its own sentence still show the plain-words version.
+    const text = LEGACY_ISSUES[issue] || (legacy ? "PayPal rejected this step" : raw);
     // Full PayPal error (stored since "Store PayPal's full error details"): a header line,
     // then one line per details[] entry. Older rows only have status/issue/debug_id.
     const e = p.paypal_error;
@@ -256,8 +260,15 @@
     const offer = r.offer ? `<label>Offer</label><div class="row">
         <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" />
         <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /> ${esc(state.payload.dispute_amount?.currency_code || "")}</div>` : "";
+    // Claim stage: PayPal needs a document the seller provides; Approve waits for the file.
+    const docs = r.decision === "FIGHT" ? (state.payload.document_evidence || []) : [];
+    const picker = docs.length ? `<label>Evidence document (PayPal needs one for this claim)</label>
+        <div class="row"><select data-field="evidence_type">${docs.map((d) =>
+          `<option value="${esc(d.type)}"${d.type === "PROOF_OF_DELIVERY_SIGNATURE" ? " selected" : ""}>${esc(d.label)}</option>`).join("")}</select>
+        <input type="file" data-field="evidence_file" accept=".pdf,.jpg,.jpeg,.png,.gif,application/pdf,image/jpeg,image/png,image/gif" /></div>
+        <div class="muted">One PDF, JPG, PNG or GIF, at most 5 MB. Clearline only uploads files you provide; it never generates proof.</div>` : "";
     const approve = actionAllowed(r.decision, state.payload)
-        ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}">Approve &amp; send</button>`
+        ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}"${docs.length ? ' data-needs-file="1" disabled title="Attach a document first"' : ""}>Approve &amp; send</button>`
         : `<span class="muted">PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.</span>`;
     return `<div class="ai" data-dispute="${esc(id)}">
         <h3>AI recommendation <span class="badge ${esc(r.decision.toLowerCase())}">${esc(DECISIONS[r.decision])}</span>
@@ -265,6 +276,7 @@
         <ul>${reasons}</ul>${missing}${offer}
         <label>Message to buyer</label><textarea data-field="message_to_buyer">${esc(r.message_to_buyer)}</textarea>
         <label>Note to PayPal</label><textarea data-field="note_to_paypal">${esc(r.note_to_paypal)}</textarea>
+        ${picker}
         ${results}
         <div class="row">${approve}${regen}</div><div class="msg"></div>
         <div class="muted">Nothing is sent to PayPal until you click Approve.</div>
@@ -324,8 +336,10 @@
       });
       if (res.ok) { render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
     }));
-    root.querySelectorAll(".ai textarea, .ai input").forEach((el) =>
+    root.querySelectorAll(".ai textarea, .ai input, .ai select").forEach((el) =>
       el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
+    root.querySelectorAll('[data-field="evidence_file"]').forEach((input) =>
+      input.addEventListener("change", () => fileChosen(input)));
     root.querySelectorAll("[data-regen]").forEach((b) => b.addEventListener("click", () => regenerate(b)));
     root.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", () => approve(b)));
     root.querySelectorAll("[data-sandbox]").forEach((b) => b.addEventListener("click", () => sandboxRequireEvidence(b)));
@@ -378,17 +392,42 @@
     });
   }
 
+  const MAX_FILE_BYTES = 5 * 1024 * 1024; // the server checks again (type by content, too)
+
+  // Enable Approve only once a file is chosen; the server does the real checks.
+  function fileChosen(input) {
+    const card = input.closest(".ai"), button = card.querySelector("[data-approve]"), msg = card.querySelector(".msg");
+    const file = input.files[0];
+    input.dataset.dirty = "1";
+    const tooBig = file && file.size > MAX_FILE_BYTES;
+    if (button) button.disabled = !file || !file.size || tooBig;
+    msg.textContent = tooBig ? "That file is too big: PayPal accepts files of at most 5 MB." : "";
+    msg.className = tooBig ? "msg bad" : "msg";
+  }
+
+  const toBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.onerror = () => reject(new Error("Could not read the file. Please choose it again."));
+    reader.readAsDataURL(file);
+  });
+
   function approve(button) {
     const card = button.closest(".ai");
     const field = (name) => card.querySelector(`[data-field="${name}"]`)?.value?.trim();
     const decision = button.dataset.decision;
     const body = { action: decision, message_to_buyer: field("message_to_buyer"), note_to_paypal: field("note_to_paypal") };
     if (decision === "OFFER") body.offer = { type: field("offer_type"), amount: Number(field("offer_amount")) };
-    const what = { FIGHT: "submit your tracking as proof of shipment (if PayPal allows it) and then message the buyer (if still allowed)",
-                   OFFER: `offer the buyer ${body.offer?.amount} (${body.offer?.type})`,
-                   REFUND: "accept the claim and refund the full disputed amount" }[decision];
-    if (!confirm(`This will ${what} on PayPal. Continue?`)) return;
+    const file = button.dataset.needsFile ? card.querySelector('[data-field="evidence_file"]')?.files[0] : null;
+    if (button.dataset.needsFile && !file) return; // Approve stays disabled until a file is attached
+    const typeLabel = card.querySelector('[data-field="evidence_type"]')?.selectedOptions[0]?.textContent;
+    const what = file ? `send "${file.name}" to PayPal as "${typeLabel}" evidence, with your note to PayPal`
+      : { FIGHT: "submit your tracking as proof of shipment (if PayPal allows it) and then message the buyer (if still allowed)",
+          OFFER: `offer the buyer ${body.offer?.amount} (${body.offer?.type})`,
+          REFUND: "accept the claim and refund the full disputed amount" }[decision];
+    if (!confirm(`This will ${what}. Continue?`)) return;
     return withBusy(button, "Sending…", async () => {
+      if (file) body.evidence = { type: field("evidence_type"), file_name: file.name, content_base64: await toBase64(file) };
       const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.approve)}/act`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });

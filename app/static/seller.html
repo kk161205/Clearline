@@ -73,7 +73,9 @@
     ai_provider_switched: "AI provider switched",
     dispute_action_sent: "Sent to PayPal",
     dispute_action_failed: "PayPal rejected action",
+    dispute_action_skipped: "Step skipped",
   };
+  const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message", "make-offer": "Offer", "accept-claim": "Refund" };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
   const DECISIONS = { FIGHT: "Fight", REFUND: "Refund", OFFER: "Offer" };
   // PayPal dispute reason codes in plain words.
@@ -108,6 +110,7 @@
     if (e.kind === "ai_provider_switched") return `${p.from} → ${p.to}: ${p.reason}`;
     if (e.kind === "dispute_action_sent") return `${p.action}: ${p.endpoint}`;
     if (e.kind === "dispute_action_failed") return `${p.action}: ${p.endpoint} · ${p.error}`;
+    if (e.kind === "dispute_action_skipped") return `${p.action}: ${p.endpoint} · ${p.reason}`;
     return "";
   }
 
@@ -143,16 +146,26 @@
     return { badge, panel, disputed: !resolved, resolved };
   }
 
-  // Mirrors the server's checks so we only show Approve when PayPal currently allows it.
-  // The server re-checks against a fresh copy of the dispute before acting.
-  function actionAllowed(decision, p) {
-    if (p.status === "RESOLVED") return false;
-    const links = p.allowed_actions;
-    if (!links) return true; // older rows didn't store links; let the server decide
-    if (decision === "FIGHT") return (links.includes("send-message") && p.dispute_life_cycle_stage === "INQUIRY")
-      || (links.includes("provide-evidence") && p.status === "WAITING_FOR_SELLER_RESPONSE");
-    if (decision === "OFFER") return links.includes("make-offer") && p.dispute_life_cycle_stage === "INQUIRY";
-    return links.includes("accept-claim");
+  // The server stores which decisions PayPal currently allows with every dispute snapshot
+  // (same rules it checks before each step). Older rows lack it: let the server decide.
+  const actionAllowed = (decision, p) => !p.allowed_decisions || p.allowed_decisions.includes(decision);
+
+  // One line per Approve click: "Evidence sent ✓ · Message skipped (dispute is waiting for the buyer)".
+  function actionRuns(actions) {
+    const runs = [];
+    for (const e of actions) {
+      const key = e.payload.run_id || `${e.created_at}`;
+      let run = runs.find((r) => r.key === key);
+      if (!run) runs.push(run = { key, at: e.created_at, action: e.payload.action, steps: [] });
+      run.steps.push(e);
+    }
+    const step = (e) => {
+      const name = esc(STEP_NAMES[e.payload.endpoint] || e.payload.endpoint);
+      if (e.kind === "dispute_action_sent") return `<span class="ok">${name} sent ✓</span>`;
+      if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>`;
+      return `<span class="bad">${name} failed (${esc(e.payload.error)})</span>`;
+    };
+    return runs.map((r) => `<li>${esc(DECISIONS[r.action] || r.action)}: ${r.steps.map(step).join(" · ")} <span class="muted">${fmt(r.at)}</span></li>`).join("");
   }
 
   function aiCard(events, state, resolved) {
@@ -160,10 +173,8 @@
     const id = state.payload.dispute_id;
     const mine = events.filter((e) => e.payload.dispute_id === id);
     const ai = mine.filter((e) => e.kind === "ai_recommendation" || e.kind === "ai_failed").pop();
-    const actions = mine.filter((e) => e.kind === "dispute_action_sent" || e.kind === "dispute_action_failed");
-    const results = actions.length ? `<label>Sent to PayPal</label><ul>${actions.map((e) => e.kind === "dispute_action_sent"
-        ? `<li class="ok">${esc(e.payload.action)}: ${esc(e.payload.endpoint)} ✓ <span class="muted">${fmt(e.created_at)}</span></li>`
-        : `<li class="bad">${esc(e.payload.action)}: ${esc(e.payload.endpoint)} failed: ${esc(e.payload.error)}</li>`).join("")}</ul>` : "";
+    const actions = mine.filter((e) => ["dispute_action_sent", "dispute_action_failed", "dispute_action_skipped"].includes(e.kind));
+    const results = actions.length ? `<label>Sent to PayPal</label><ul>${actionRuns(actions)}</ul>` : "";
     const regen = resolved ? "" : `<button class="secondary" data-regen="${esc(id)}">Regenerate</button>`;
 
     if (!ai) return `<div class="ai"><h3>AI recommendation</h3><div class="muted">None yet.</div>${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
@@ -178,9 +189,12 @@
     const offer = r.offer ? `<label>Offer</label><div class="row">
         <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" />
         <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /> ${esc(state.payload.dispute_amount?.currency_code || "")}</div>` : "";
-    const approve = !resolved && actionAllowed(r.decision, state.payload)
-      ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}">Approve &amp; send</button>`
-      : `<span class="muted">${resolved ? "Dispute resolved." : `PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.`}</span>`;
+    const waiting = state.payload.status === "WAITING_FOR_BUYER_RESPONSE";
+    const approve = resolved ? '<span class="muted">Dispute resolved.</span>'
+      : waiting ? '<span class="muted">Waiting for the buyer, nothing to send right now.</span>'
+      : actionAllowed(r.decision, state.payload)
+        ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}">Approve &amp; send</button>`
+        : `<span class="muted">PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.</span>`;
     return `<div class="ai" data-dispute="${esc(id)}">
         <h3>AI recommendation <span class="badge ${esc(r.decision.toLowerCase())}">${esc(DECISIONS[r.decision])}</span>
           <span class="muted">confidence ${Math.round(r.confidence * 100)}% · ${esc(label)} · ${(p.latency_ms / 1000).toFixed(1)} s</span></h3>
@@ -246,7 +260,7 @@
   async function errorText(res) {
     const body = await res.json().catch(() => ({}));
     const d = body.detail;
-    if (d?.steps) return d.steps.map((s) => `${s.endpoint}: ${s.ok ? "ok" : s.error}`).join("; ");
+    if (d?.summary) return d.summary;
     return typeof d === "string" ? d : JSON.stringify(d || body);
   }
 
@@ -264,7 +278,7 @@
     const decision = button.dataset.decision;
     const body = { action: decision, message_to_buyer: field("message_to_buyer"), note_to_paypal: field("note_to_paypal") };
     if (decision === "OFFER") body.offer = { type: field("offer_type"), amount: Number(field("offer_amount")) };
-    const what = { FIGHT: "send the message to the buyer and, if PayPal allows it, submit your tracking as proof of shipment",
+    const what = { FIGHT: "submit your tracking as proof of shipment (if PayPal allows it) and then message the buyer (if still allowed)",
                    OFFER: `offer the buyer ${body.offer?.amount} (${body.offer?.type})`,
                    REFUND: "accept the claim and refund the full disputed amount" }[decision];
     if (!confirm(`This will ${what} on PayPal. Continue?`)) return;

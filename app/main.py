@@ -1,4 +1,5 @@
 import logging
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -70,40 +71,61 @@ class ActionNotAllowed(Exception):
 PAYPAL_TEXT_LIMIT = 2000  # maxLength of message/note fields in the Disputes schema
 
 
+STATE_CHANGED_ISSUE = "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"
+
+
+def step_blocked(endpoint: str, dispute: dict) -> str | None:
+    """Why PayPal won't accept this action endpoint on the dispute right now, in plain words
+    (None = allowed). Uses the HATEOAS link plus the status/stage rules from PayPal's docs;
+    the link alone isn't enough (provide-evidence stays linked while waiting for the buyer)."""
+    status = dispute.get("status")
+    stage = dispute.get("dispute_life_cycle_stage")
+    if status == "RESOLVED":
+        return "dispute is resolved"
+    if status == "WAITING_FOR_BUYER_RESPONSE" and endpoint != "accept-claim":
+        return "dispute is waiting for the buyer"
+    if endpoint == "provide-evidence" and status != "WAITING_FOR_SELLER_RESPONSE":
+        return f"evidence needs status WAITING_FOR_SELLER_RESPONSE (now {status})"
+    if endpoint in ("send-message", "make-offer") and stage != "INQUIRY":
+        return f"only allowed in the INQUIRY stage (now {stage})"
+    if endpoint not in allowed_actions(dispute):
+        return f"PayPal doesn't offer {endpoint} on this dispute right now"
+    return None
+
+
 def plan_action(action: str, dispute: dict, *, message: str, note: str,
                 offer: dict | None, tracking: dict | None) -> list[tuple[str, dict]]:
-    """The PayPal calls an approved action needs right now, as (endpoint, body) steps.
+    """The PayPal calls an approved action needs, in order, as (endpoint, body) steps.
 
-    Checks the freshly fetched dispute's HATEOAS links, allowed_response_options and the
-    stage/status rules from PayPal's docs. Raises ActionNotAllowed rather than guessing,
+    Planned against a freshly fetched dispute; each step is checked again right before it
+    runs, because one step can change what the next is allowed to do (sending a message moves
+    the dispute to WAITING_FOR_BUYER_RESPONSE). Raises ActionNotAllowed rather than guessing,
     and ValueError for missing or invalid seller input.
     """
-    links = set(allowed_actions(dispute))
-    stage = dispute.get("dispute_life_cycle_stage")
-    status = dispute.get("status")
     options = dispute.get("allowed_response_options") or {}
-    if status == "RESOLVED":
-        raise ActionNotAllowed("The dispute is already resolved.")
 
     if action == "FIGHT":
+        # Evidence first: messaging the buyer hands the turn to them and blocks evidence.
         steps = []
-        if "send-message" in links and stage == "INQUIRY":
-            if not message:
-                raise ValueError("A message to the buyer is required.")
-            steps.append(("send-message", {"message": message}))
-        if "provide-evidence" in links and status == "WAITING_FOR_SELLER_RESPONSE" and tracking:
+        evidence_blocked = step_blocked("provide-evidence", dispute)
+        if tracking and not evidence_blocked:
             steps.append(("provide-evidence", {"carrier": tracking["carrier"],
                                                "tracking_number": tracking["tracking_number"],
                                                "notes": note}))
+        message_blocked = step_blocked("send-message", dispute)
+        if not message_blocked:
+            if not message:
+                raise ValueError("A message to the buyer is required.")
+            steps.append(("send-message", {"message": message}))
         if not steps:
-            raise ActionNotAllowed("PayPal doesn't currently allow messaging the buyer or "
-                                   "providing tracking evidence on this dispute.")
+            why = evidence_blocked if tracking else "no tracking number is stored for this order"
+            raise ActionNotAllowed(f"Nothing PayPal allows right now: evidence ({why}), "
+                                   f"message ({message_blocked}).")
         return steps
 
     if action == "OFFER":
-        if "make-offer" not in links or stage != "INQUIRY":
-            raise ActionNotAllowed("PayPal only allows offers in the INQUIRY stage, and this "
-                                   "dispute doesn't offer make-offer right now.")
+        if blocked := step_blocked("make-offer", dispute):
+            raise ActionNotAllowed(f"Can't make an offer: {blocked}.")
         if not offer:
             raise ValueError("An offer (type and amount) is required.")
         offer_types = options.get("make_offer", {}).get("offer_types")
@@ -121,11 +143,42 @@ def plan_action(action: str, dispute: dict, *, message: str, note: str,
                                                  "value": f"{offer['amount']:.2f}"}})]
 
     # REFUND
+    if blocked := step_blocked("accept-claim", dispute):
+        raise ActionNotAllowed(f"Can't accept the claim: {blocked}.")
     claim_types = options.get("accept_claim", {}).get("accept_claim_types")
-    if "accept-claim" not in links or (claim_types and "REFUND" not in claim_types):
+    if claim_types and "REFUND" not in claim_types:
         raise ActionNotAllowed("PayPal doesn't currently allow accepting this claim with a "
                                "full refund.")
     return [("accept-claim", {"accept_claim_type": "REFUND", "note": note})]
+
+
+def allowed_decisions(dispute: dict) -> list[str]:
+    """Decisions the seller could approve right now; drives the Approve button."""
+    decisions = []
+    if not step_blocked("provide-evidence", dispute) or not step_blocked("send-message", dispute):
+        decisions.append("FIGHT")
+    if not step_blocked("make-offer", dispute):
+        decisions.append("OFFER")
+    if not step_blocked("accept-claim", dispute):
+        decisions.append("REFUND")
+    return decisions
+
+
+STEP_NAMES = {"provide-evidence": "Evidence", "send-message": "Message",
+              "make-offer": "Offer", "accept-claim": "Refund"}
+
+
+def step_summary(results: list[dict]) -> str:
+    """One line for the seller, e.g. "Evidence sent ✓ · Message skipped (dispute is waiting
+    for the buyer)"."""
+    parts = []
+    for r in results:
+        name = STEP_NAMES.get(r["endpoint"], r["endpoint"])
+        if r["outcome"] == "sent":
+            parts.append(f"{name} sent ✓")
+        else:
+            parts.append(f"{name} {r['outcome']} ({r.get('reason') or r.get('error')})")
+    return " · ".join(parts)
 
 
 def create_app(settings: Settings | None = None,
@@ -271,7 +324,8 @@ def create_app(settings: Settings | None = None,
         """Record one dispute snapshot (webhook, sync or post-action re-fetch) on its order.
         The order comes from the disputed capture ID, else from earlier events for the same
         dispute, else "unmatched:<dispute_id>". Returns the order_id used."""
-        payload = {**dispute_summary(dispute), **extra}
+        payload = {**dispute_summary(dispute), **extra,
+                   "allowed_decisions": allowed_decisions(dispute)}
         payload["dispute_id"] = payload["dispute_id"] or dispute_id
         if error:
             payload["enrichment_error"] = error
@@ -376,23 +430,54 @@ def create_app(settings: Settings | None = None,
         except ValueError as err:
             raise HTTPException(400, str(err))
 
+        run_id = uuid.uuid4().hex[:12]  # groups the steps of one Approve click
         results, failed = [], False
         for endpoint, sent in steps:
             base = {"dispute_id": dispute_id, "action": body.action, "endpoint": endpoint,
-                    "sent": sent}
+                    "run_id": run_id}
+            try:
+                current = await paypal.get_dispute(dispute_id)  # re-check before EACH step
+            except (PayPalError, httpx.HTTPError) as err:
+                store.add(order_id, "dispute_action_failed",
+                          {**base, "sent": sent, "error": f"could not re-check dispute: {err}",
+                           "paypal_status": getattr(err, "status", None)})
+                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
+                failed = True
+                break
+            if reason := step_blocked(endpoint, current):
+                store.add(order_id, "dispute_action_skipped",
+                          {**base, "reason": reason, "dispute_status": current.get("status")})
+                results.append({"endpoint": endpoint, "outcome": "skipped", "reason": reason})
+                continue
             try:
                 response = await run_step(dispute_id, endpoint, sent)
-            except (PayPalError, httpx.HTTPError) as err:
+            except PayPalError as err:
+                if err.status == 422 and STATE_CHANGED_ISSUE in err.issues:
+                    # The dispute changed between our check and the call: not a failure.
+                    reason = "PayPal says the dispute state no longer allows this"
+                    store.add(order_id, "dispute_action_skipped",
+                              {**base, "reason": reason, "dispute_status": current.get("status"),
+                               "paypal_issue": STATE_CHANGED_ISSUE, "debug_id": err.debug_id})
+                    results.append({"endpoint": endpoint, "outcome": "skipped", "reason": reason})
+                    continue
                 # No automatic retry: PayPal rejected it, so a human looks at it first.
                 store.add(order_id, "dispute_action_failed",
-                          {**base, "error": str(err), "paypal_status": getattr(err, "status", None)})
-                results.append({"endpoint": endpoint, "ok": False, "error": str(err)})
+                          {**base, "sent": sent, "error": str(err), "paypal_status": err.status,
+                           "debug_id": err.debug_id})
+                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
+                failed = True
+                break
+            except httpx.HTTPError as err:
+                store.add(order_id, "dispute_action_failed",
+                          {**base, "sent": sent, "error": str(err), "paypal_status": None})
+                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
                 failed = True
                 break
             store.add(order_id, "dispute_action_sent",
-                      {**base, "response": {"links": [link.get("rel")
-                                                      for link in response.get("links", [])]}})
-            results.append({"endpoint": endpoint, "ok": True})
+                      {**base, "sent": sent,
+                       "response": {"links": [link.get("rel")
+                                              for link in response.get("links", [])]}})
+            results.append({"endpoint": endpoint, "outcome": "sent"})
 
         try:
             fresh = await paypal.get_dispute(dispute_id)
@@ -403,9 +488,10 @@ def create_app(settings: Settings | None = None,
         except (PayPalError, httpx.HTTPError) as err:
             log.warning("Could not re-fetch dispute %s after action: %s", dispute_id, err)
 
+        summary = step_summary(results)
         if failed:
-            raise HTTPException(502, {"steps": results})
-        return {"ok": True, "steps": results}
+            raise HTTPException(502, {"steps": results, "summary": summary})
+        return {"ok": True, "steps": results, "summary": summary}
 
     async def run_step(dispute_id: str, endpoint: str, sent: dict) -> dict:
         """Call the PayPal endpoint for one planned step."""

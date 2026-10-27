@@ -186,36 +186,129 @@ def disputed_with_recommendation(tmp_path, recommendation, **dispute):
     return client, paypal
 
 
+def paypal_says(paypal, response=None, **changes):
+    """Side effect for an action route: PayPal changes the dispute, then answers."""
+    def handler(request):
+        paypal.data.update(changes)
+        return response or httpx.Response(200, json={"links": [{"rel": "self"}]})
+    return handler
+
+
+def action_calls() -> list[str]:
+    """Dispute action endpoints PayPal received, in order (GETs excluded)."""
+    return [c.request.url.path.rsplit("/", 1)[-1] for c in respx.calls
+            if c.request.method == "POST" and "/customer/disputes/" in c.request.url.path]
+
+
 @respx.mock
-def test_fight_sends_message_and_tracking_evidence(tmp_path):
+def test_fight_sends_evidence_first_then_message(tmp_path):
     client, paypal = disputed_with_recommendation(tmp_path, fight())
-    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
-        return_value=httpx.Response(200, json={"links": [{"rel": "self"}]}))
     evidence = respx.post(f"{DISPUTES}/{DISPUTE_ID}/provide-evidence").mock(
-        side_effect=lambda request: (paypal.data.update(update_time="2026-10-27T10:00:00.000Z",
-                                                        status="UNDER_REVIEW")
-                                     or httpx.Response(200, json={"links": [{"rel": "self"}]})))
+        side_effect=paypal_says(paypal, update_time="2026-10-27T10:00:00.000Z"))
+    # What we saw live: messaging the buyer hands the turn to them.
+    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
+        side_effect=paypal_says(paypal, status="WAITING_FOR_BUYER_RESPONSE",
+                                update_time="2026-10-27T10:05:00.000Z"))
+    gets_before = paypal.route.call_count
 
     resp = client.post(f"/api/disputes/{DISPUTE_ID}/act",
                        json={"action": "FIGHT", "message_to_buyer": "Edited by the seller.",
                              "note_to_paypal": "Shipped with DHL 1234567890."})
     assert resp.status_code == 200, resp.text
-    assert [s["endpoint"] for s in resp.json()["steps"]] == ["send-message", "provide-evidence"]
+    assert action_calls() == ["provide-evidence", "send-message"]
+    assert resp.json()["summary"] == "Evidence sent ✓ · Message sent ✓"
+    # Plan fetch + one re-check before each of the 2 steps + the final re-fetch.
+    assert paypal.route.call_count - gets_before == 4
 
-    assert multipart_json(msg.calls[0].request) == {"message": "Edited by the seller."}
     assert multipart_json(evidence.calls[0].request) == {"evidences": [{
         "evidence_type": "PROOF_OF_FULFILLMENT",
         "evidence_info": {"tracking_info": [{"carrier_name": "DHL",
                                              "tracking_number": "1234567890"}]},
         "notes": "Shipped with DHL 1234567890."}]}
+    assert multipart_json(msg.calls[0].request) == {"message": "Edited by the seller."}
     for route in (msg, evidence):
         assert route.calls[0].request.headers["PayPal-Request-Id"]
 
     sent = events(client, "ORDER1", "dispute_action_sent")
-    assert [e["payload"]["endpoint"] for e in sent] == ["send-message", "provide-evidence"]
-    # The dispute was re-fetched afterwards and its new state recorded.
+    assert [e["payload"]["endpoint"] for e in sent] == ["provide-evidence", "send-message"]
+    assert sent[0]["payload"]["run_id"] == sent[1]["payload"]["run_id"]
+    # The dispute was re-fetched afterwards: now waiting for the buyer, so no Fight/Offer.
     last = events(client, "ORDER1", "dispute_updated")[-1]["payload"]
-    assert last["status"] == "UNDER_REVIEW" and last["source"] == "action"
+    assert last["status"] == "WAITING_FOR_BUYER_RESPONSE" and last["source"] == "action"
+    assert last["allowed_decisions"] == ["REFUND"]
+
+
+@respx.mock
+def test_message_skipped_when_its_link_disappears(tmp_path):
+    client, paypal = disputed_with_recommendation(tmp_path, fight())
+    base = f"{DISPUTES}/{DISPUTE_ID}"
+    respx.post(f"{base}/provide-evidence").mock(side_effect=paypal_says(
+        paypal, status="UNDER_REVIEW", update_time="2026-10-27T10:00:00.000Z",
+        links=[{"rel": "self", "method": "GET", "href": base}]))
+    msg = respx.post(f"{base}/send-message").mock(return_value=httpx.Response(200, json={}))
+
+    resp = client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"})
+    assert resp.status_code == 200, resp.text
+    assert not msg.called
+    assert [s["outcome"] for s in resp.json()["steps"]] == ["sent", "skipped"]
+    assert resp.json()["summary"].startswith("Evidence sent ✓ · Message skipped (")
+    [skipped] = events(client, "ORDER1", "dispute_action_skipped")
+    assert skipped["payload"]["endpoint"] == "send-message"
+    assert skipped["payload"]["dispute_status"] == "UNDER_REVIEW"
+    assert "send-message" in skipped["payload"]["reason"]
+    assert events(client, "ORDER1", "dispute_action_failed") == []
+    # No links left: Approve must be hidden for every decision.
+    assert events(client, "ORDER1", "dispute_updated")[-1]["payload"]["allowed_decisions"] == []
+
+
+@respx.mock
+def test_message_skipped_while_waiting_for_buyer(tmp_path):
+    client, paypal = disputed_with_recommendation(tmp_path, fight())
+    # Live state after our first Approve: links still there, but it's the buyer's turn.
+    respx.post(f"{DISPUTES}/{DISPUTE_ID}/provide-evidence").mock(
+        side_effect=paypal_says(paypal, status="WAITING_FOR_BUYER_RESPONSE"))
+    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
+        return_value=httpx.Response(200, json={}))
+    resp = client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"})
+    assert resp.json()["summary"] == ("Evidence sent ✓ · Message skipped "
+                                      "(dispute is waiting for the buyer)")
+    assert not msg.called
+
+
+@respx.mock
+def test_state_changed_422_is_skipped_not_failed(tmp_path):
+    client, _ = disputed_with_recommendation(tmp_path, fight())
+    respx.post(f"{DISPUTES}/{DISPUTE_ID}/provide-evidence").mock(return_value=httpx.Response(
+        422, json={"name": "UNPROCESSABLE_ENTITY", "debug_id": "dbg-42",
+                   "details": [{"issue": "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"}]}))
+    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
+        return_value=httpx.Response(200, json={}))
+
+    resp = client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"})
+    assert resp.status_code == 200, resp.text
+    assert [s["outcome"] for s in resp.json()["steps"]] == ["skipped", "sent"]
+    [skipped] = events(client, "ORDER1", "dispute_action_skipped")
+    assert skipped["payload"]["debug_id"] == "dbg-42"
+    assert skipped["payload"]["paypal_issue"] == "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"
+    assert events(client, "ORDER1", "dispute_action_failed") == []
+    assert msg.call_count == 1  # nothing retried, the next step still ran
+
+
+@respx.mock
+def test_other_paypal_errors_still_fail_without_retry(tmp_path):
+    client, _ = disputed_with_recommendation(tmp_path, fight())
+    evidence = respx.post(f"{DISPUTES}/{DISPUTE_ID}/provide-evidence").mock(
+        return_value=httpx.Response(422, json={"name": "UNPROCESSABLE_ENTITY", "debug_id": "dbg-7",
+                                               "details": [{"issue": "INVALID_EVIDENCE"}]}))
+    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
+        return_value=httpx.Response(200, json={}))
+    resp = client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"})
+    assert resp.status_code == 502
+    assert evidence.call_count == 1 and not msg.called  # stop at the first real failure
+    [failed] = events(client, "ORDER1", "dispute_action_failed")
+    assert failed["payload"]["paypal_status"] == 422 and failed["payload"]["debug_id"] == "dbg-7"
+    assert events(client, "ORDER1", "dispute_action_skipped") == []
+    assert "Evidence failed" in resp.json()["detail"]["summary"]
 
 
 @respx.mock
@@ -270,17 +363,24 @@ def test_action_not_allowed_returns_409(tmp_path):
 
 
 @respx.mock
-def test_paypal_rejection_is_recorded_without_retry(tmp_path):
-    client, _ = disputed_with_recommendation(tmp_path, fight())
-    msg = respx.post(f"{DISPUTES}/{DISPUTE_ID}/send-message").mock(
-        return_value=httpx.Response(400, json={"name": "INVALID_REQUEST"}))
-    evidence = respx.post(f"{DISPUTES}/{DISPUTE_ID}/provide-evidence").mock(
-        return_value=httpx.Response(200, json={}))
-    resp = client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"})
-    assert resp.status_code == 502
-    assert msg.call_count == 1 and not evidence.called  # stop at the first rejection
-    [failed] = events(client, "ORDER1", "dispute_action_failed")
-    assert failed["payload"]["paypal_status"] == 400 and failed["payload"]["endpoint"] == "send-message"
+def test_no_recommendation_while_waiting_for_buyer(tmp_path):
+    setup_paypal()
+    paypal = DisputeOnPayPal(status="WAITING_FOR_BUYER_RESPONSE")
+    gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
+    client, _ = make_client(tmp_path)
+    shipped_order(client)
+    open_dispute(client)
+    state = events(client, "ORDER1", "dispute_created")[0]["payload"]
+    assert not gemini.called
+    assert state["allowed_decisions"] == ["REFUND"]  # UI shows "Waiting for the buyer"
+
+    # Back to the seller's turn (picked up by Sync): now it runs.
+    paypal.data.update(status="WAITING_FOR_SELLER_RESPONSE", update_time="2026-10-28T00:00:00.000Z")
+    respx.get(DISPUTES).mock(return_value=httpx.Response(200, json={"items": [
+        {"dispute_id": DISPUTE_ID, "update_time": "2026-10-28T00:00:00.000Z",
+         "status": "WAITING_FOR_SELLER_RESPONSE"}], "links": []}))
+    client.post("/api/disputes/sync")
+    assert gemini.call_count == 1
 
 
 # ---- Sync and event order ----------------------------------------------------

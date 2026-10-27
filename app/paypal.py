@@ -25,6 +25,16 @@ class PayPalError(Exception):
         self.body = body
         super().__init__(f"PayPal API error {status}: {body}")
 
+    @property
+    def issues(self) -> list[str]:
+        """PayPal's machine-readable issue codes, e.g. ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE."""
+        details = self.body.get("details", []) if isinstance(self.body, dict) else []
+        return [d.get("issue") for d in details if isinstance(d, dict) and d.get("issue")]
+
+    @property
+    def debug_id(self) -> str | None:
+        return self.body.get("debug_id") if isinstance(self.body, dict) else None
+
 
 class PayPalClient:
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None):

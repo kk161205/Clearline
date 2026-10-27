@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     paypal_webhook_id: str | None = None
     # Dev only: accept webhooks that fail signature verification (e.g. Webhook Simulator).
     allow_unverified_webhooks: bool = False
+    # AI dispute assistant (Day 3). Gemini is primary; Groq is the sticky fallback.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
+    groq_api_key: str | None = None
+    groq_model: str = "openai/gpt-oss-120b"
+    ai_timeout_seconds: float = 20
 
     @property
     def api_base(self) -> str:

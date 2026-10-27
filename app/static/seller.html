@@ -5,33 +5,50 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Clearline · Seller</title>
   <style>
-    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; }
+    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; --warn:#b54708; }
     * { box-sizing: border-box; }
     body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
     main { max-width:760px; margin:40px auto; padding:0 16px; }
-    h1 { font-size:22px; margin:0 0 16px; }
+    header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 16px; }
+    h1 { font-size:22px; margin:0; flex:1; }
     .order { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px; }
     .id { font-family:ui-monospace, monospace; font-size:13px; }
     ol { margin:8px 0; padding-left:20px; font-size:14px; }
     .muted { color:var(--muted); font-size:13px; }
     form { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
-    input, select, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:8px; }
+    input, select, button, textarea { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:8px; }
     button { background:var(--ink); color:#fff; border:0; cursor:pointer; }
+    button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); }
+    button:disabled { opacity:.6; cursor:wait; }
     .msg { font-size:13px; margin-top:6px; }
     .badge { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; margin-left:8px; vertical-align:middle; }
     .badge.bad { background:var(--bad); color:#fff; }
     .badge.neutral { background:var(--line); color:var(--muted); }
+    .badge.fight { background:var(--ink); color:#fff; }
+    .badge.refund { background:var(--warn); color:#fff; }
+    .badge.offer { background:var(--ok); color:#fff; }
     .dispute { border:1px solid #f3c4bf; background:#fef3f2; border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
     .dispute.resolved { border-color:var(--line); background:var(--bg); }
     .due { font-weight:600; color:var(--bad); }
     .order.disputed { border-color:#f3c4bf; }
+    .ai { border:1px solid var(--line); background:#fbfcfe; border-radius:10px; padding:12px; margin-top:8px; font-size:14px; }
+    .ai h3 { font-size:14px; margin:0 0 6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .ai ul { margin:4px 0 8px; padding-left:20px; }
+    .ai label { display:block; font-size:13px; font-weight:600; margin-top:8px; }
+    .ai textarea { width:100%; min-height:84px; resize:vertical; }
+    .ai .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .ok { color:var(--ok); } .bad { color:var(--bad); }
     #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
     #other .order { padding:10px 12px; font-size:13px; }
   </style>
 </head>
 <body>
 <main>
-  <h1>Your orders</h1>
+  <header>
+    <h1>Your orders</h1>
+    <span id="sync-msg" class="muted"></span>
+    <button id="sync" class="secondary">Sync disputes</button>
+  </header>
   <div id="orders"><p class="muted">Loading…</p></div>
   <div id="other"></div>
 </main>
@@ -51,8 +68,14 @@
     webhook_payment_capture_reversed: "PayPal: reversed",
     webhook_other: "PayPal event",
     webhook_processing_failed: "Processing failed",
+    ai_recommendation: "AI recommendation",
+    ai_failed: "AI unavailable",
+    ai_provider_switched: "AI provider switched",
+    dispute_action_sent: "Sent to PayPal",
+    dispute_action_failed: "PayPal rejected action",
   };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
+  const DECISIONS = { FIGHT: "Fight", REFUND: "Refund", OFFER: "Offer" };
   // PayPal dispute reason codes in plain words.
   const REASONS = {
     MERCHANDISE_OR_SERVICE_NOT_RECEIVED: "Item not received",
@@ -70,6 +93,7 @@
   const money = (a) => (a && a.value ? `${a.value} ${a.currency_code || ""}`.trim() : "");
   const fmt = (t) => new Date(t * 1000).toLocaleString();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
 
   function describe(e) {
     const p = e.payload;
@@ -79,6 +103,11 @@
     if (DISPUTE_KINDS.includes(e.kind)) return [humanize(p.reason), money(p.dispute_amount), p.status].filter(Boolean).join(" · ");
     if (e.kind.startsWith("webhook_payment_capture")) return [p.status, money(p.amount), p.pending_reason].filter(Boolean).join(" · ");
     if (e.kind === "webhook_other") return p.event_type;
+    if (e.kind === "ai_recommendation") return `${DECISIONS[p.recommendation?.decision] || "?"} · ${p.provider} ${p.model}`;
+    if (e.kind === "ai_failed") return p.error;
+    if (e.kind === "ai_provider_switched") return `${p.from} → ${p.to}: ${p.reason}`;
+    if (e.kind === "dispute_action_sent") return `${p.action}: ${p.endpoint}`;
+    if (e.kind === "dispute_action_failed") return `${p.action}: ${p.endpoint} · ${p.error}`;
     return "";
   }
 
@@ -91,12 +120,18 @@
     return `<div class="due">Respond by ${esc(date.toLocaleDateString())} (${left})</div>`;
   }
 
-  // Latest dispute state for an order, shown as a red panel above the timeline.
-  function disputePanel(events) {
-    const last = events.filter((e) => DISPUTE_KINDS.includes(e.kind)).pop();
-    if (!last) return { badge: "", panel: "", disputed: false };
-    const p = last.payload;
-    const resolved = last.kind === "dispute_resolved" || p.status === "RESOLVED";
+  // Current dispute state = the event with the newest PayPal update_time, not the last row
+  // inserted (webhooks can arrive out of order). Rows without update_time count as oldest.
+  function currentDispute(events) {
+    const states = events.filter((e) => DISPUTE_KINDS.includes(e.kind));
+    const t = (e) => Date.parse(e.payload.update_time || "") || 0;
+    return states.reduce((best, e) => (!best || t(e) >= t(best) ? e : best), null);
+  }
+
+  function disputePanel(state) {
+    if (!state) return { badge: "", panel: "", disputed: false, resolved: false };
+    const p = state.payload;
+    const resolved = state.kind === "dispute_resolved" || p.status === "RESOLVED";
     const badge = resolved ? '<span class="badge neutral">Dispute resolved</span>'
                            : '<span class="badge bad">Disputed</span>';
     const panel = `<div class="dispute${resolved ? " resolved" : ""}">
@@ -105,7 +140,57 @@
         ${resolved ? "" : respondBy(p.seller_response_due_date)}
         ${p.enrichment_error ? '<div class="muted">Could not load full dispute details from PayPal.</div>' : ""}
       </div>`;
-    return { badge, panel, disputed: !resolved };
+    return { badge, panel, disputed: !resolved, resolved };
+  }
+
+  // Mirrors the server's checks so we only show Approve when PayPal currently allows it.
+  // The server re-checks against a fresh copy of the dispute before acting.
+  function actionAllowed(decision, p) {
+    if (p.status === "RESOLVED") return false;
+    const links = p.allowed_actions;
+    if (!links) return true; // older rows didn't store links; let the server decide
+    if (decision === "FIGHT") return (links.includes("send-message") && p.dispute_life_cycle_stage === "INQUIRY")
+      || (links.includes("provide-evidence") && p.status === "WAITING_FOR_SELLER_RESPONSE");
+    if (decision === "OFFER") return links.includes("make-offer") && p.dispute_life_cycle_stage === "INQUIRY";
+    return links.includes("accept-claim");
+  }
+
+  function aiCard(events, state, resolved) {
+    if (!state) return "";
+    const id = state.payload.dispute_id;
+    const mine = events.filter((e) => e.payload.dispute_id === id);
+    const ai = mine.filter((e) => e.kind === "ai_recommendation" || e.kind === "ai_failed").pop();
+    const actions = mine.filter((e) => e.kind === "dispute_action_sent" || e.kind === "dispute_action_failed");
+    const results = actions.length ? `<label>Sent to PayPal</label><ul>${actions.map((e) => e.kind === "dispute_action_sent"
+        ? `<li class="ok">${esc(e.payload.action)}: ${esc(e.payload.endpoint)} ✓ <span class="muted">${fmt(e.created_at)}</span></li>`
+        : `<li class="bad">${esc(e.payload.action)}: ${esc(e.payload.endpoint)} failed: ${esc(e.payload.error)}</li>`).join("")}</ul>` : "";
+    const regen = resolved ? "" : `<button class="secondary" data-regen="${esc(id)}">Regenerate</button>`;
+
+    if (!ai) return `<div class="ai"><h3>AI recommendation</h3><div class="muted">None yet.</div>${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
+    if (ai.kind === "ai_failed") return `<div class="ai"><h3>AI recommendation</h3>
+        <div class="bad">AI unavailable, try Regenerate.</div><div class="muted">${esc(ai.payload.error)}</div>
+        ${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
+
+    const p = ai.payload, r = p.recommendation;
+    const label = p.provider === "groq" ? `AI: Groq ${p.model} (fallback)` : `AI: Gemini ${p.model}`;
+    const reasons = r.reasons.map((x) => `<li>${esc(x.text)} <span class="muted">(${x.fact_keys.map(esc).join(", ") || "no facts cited"})</span></li>`).join("");
+    const missing = r.missing_evidence.length ? `<label>Missing evidence</label><ul>${r.missing_evidence.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : "";
+    const offer = r.offer ? `<label>Offer</label><div class="row">
+        <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" />
+        <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /> ${esc(state.payload.dispute_amount?.currency_code || "")}</div>` : "";
+    const approve = !resolved && actionAllowed(r.decision, state.payload)
+      ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}">Approve &amp; send</button>`
+      : `<span class="muted">${resolved ? "Dispute resolved." : `PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.`}</span>`;
+    return `<div class="ai" data-dispute="${esc(id)}">
+        <h3>AI recommendation <span class="badge ${esc(r.decision.toLowerCase())}">${esc(DECISIONS[r.decision])}</span>
+          <span class="muted">confidence ${Math.round(r.confidence * 100)}% · ${esc(label)} · ${(p.latency_ms / 1000).toFixed(1)} s</span></h3>
+        <ul>${reasons}</ul>${missing}${offer}
+        <label>Message to buyer</label><textarea data-field="message_to_buyer">${esc(r.message_to_buyer)}</textarea>
+        <label>Note to PayPal</label><textarea data-field="note_to_paypal">${esc(r.note_to_paypal)}</textarea>
+        ${results}
+        <div class="row">${approve}${regen}</div><div class="msg"></div>
+        <div class="muted">Nothing is sent to PayPal until you click Approve.</div>
+      </div>`;
   }
 
   const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
@@ -119,7 +204,8 @@
     if (!orders.length) { root.innerHTML = '<p class="muted">No orders yet. Pay one on the checkout page.</p>'; return; }
     const blocks = await Promise.all(orders.map(async (o) => {
       const events = await getTimeline(o.order_id);
-      const d = disputePanel(events);
+      const state = currentDispute(events);
+      const d = disputePanel(state);
       const captured = events.some((e) => e.kind === "payment_captured");
       const tracked = events.some((e) => e.kind === "tracking_added");
       const steps = events.map((e) =>
@@ -130,7 +216,7 @@
           <select name="carrier"><option>DHL</option><option>FEDEX</option><option>UPS</option><option>USPS</option></select>
           <button>Mark shipped</button>
         </form><div class="msg"></div>` : "";
-      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}<ol>${steps}</ol>${form}</div>`;
+      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}<ol>${steps}</ol>${form}</div>`;
     }));
     root.innerHTML = blocks.join("");
     root.querySelectorAll("form").forEach((f) => f.addEventListener("submit", async (ev) => {
@@ -142,6 +228,53 @@
       });
       if (res.ok) { render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
     }));
+    root.querySelectorAll(".ai textarea, .ai input").forEach((el) =>
+      el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
+    root.querySelectorAll("[data-regen]").forEach((b) => b.addEventListener("click", () => regenerate(b)));
+    root.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", () => approve(b)));
+  }
+
+  async function withBusy(button, text, fn) {
+    const card = button.closest(".ai"), msg = card.querySelector(".msg");
+    const old = button.textContent;
+    button.disabled = true; button.textContent = text; busy++;
+    try { msg.textContent = (await fn()) || ""; msg.className = "msg"; }
+    catch (err) { msg.textContent = err.message; msg.className = "msg bad"; }
+    finally { busy--; button.disabled = false; button.textContent = old; }
+  }
+
+  async function errorText(res) {
+    const body = await res.json().catch(() => ({}));
+    const d = body.detail;
+    if (d?.steps) return d.steps.map((s) => `${s.endpoint}: ${s.ok ? "ok" : s.error}`).join("; ");
+    return typeof d === "string" ? d : JSON.stringify(d || body);
+  }
+
+  function regenerate(button) {
+    return withBusy(button, "Thinking…", async () => {
+      const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.regen)}/recommendation`, { method: "POST" });
+      if (!res.ok) throw new Error(`Regenerate failed: ${await errorText(res)}`);
+      await render();
+    });
+  }
+
+  function approve(button) {
+    const card = button.closest(".ai");
+    const field = (name) => card.querySelector(`[data-field="${name}"]`)?.value?.trim();
+    const decision = button.dataset.decision;
+    const body = { action: decision, message_to_buyer: field("message_to_buyer"), note_to_paypal: field("note_to_paypal") };
+    if (decision === "OFFER") body.offer = { type: field("offer_type"), amount: Number(field("offer_amount")) };
+    const what = { FIGHT: "send the message to the buyer and, if PayPal allows it, submit your tracking as proof of shipment",
+                   OFFER: `offer the buyer ${body.offer?.amount} (${body.offer?.type})`,
+                   REFUND: "accept the claim and refund the full disputed amount" }[decision];
+    if (!confirm(`This will ${what} on PayPal. Continue?`)) return;
+    return withBusy(button, "Sending…", async () => {
+      const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.approve)}/act`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (!res.ok) { await render(); throw new Error(`PayPal: ${await errorText(res)}`); }
+      await render();
+    });
   }
 
   // Webhook events that didn't match one of our orders (e.g. Simulator mock data).
@@ -157,9 +290,27 @@
     root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
   }
 
-  // Refresh every 10s so new disputes appear, but never wipe a half-typed tracking number.
+  document.getElementById("sync").addEventListener("click", async (ev) => {
+    const button = ev.currentTarget, msg = document.getElementById("sync-msg");
+    button.disabled = true; msg.textContent = "Syncing…"; busy++;
+    try {
+      const res = await fetch("/api/disputes/sync", { method: "POST" });
+      const c = await res.json();
+      msg.textContent = res.ok
+        ? `${c.listed} on PayPal · ${c.new} new · ${c.changed} changed · ${c.unchanged} unchanged${c.failed ? ` · ${c.failed} failed` : ""}`
+        : `Sync failed: ${JSON.stringify(c.detail || c)}`; // textContent: no HTML parsing
+      await render();
+    } catch (err) { msg.textContent = `Sync failed: ${err.message}`; }
+    finally { busy--; button.disabled = false; }
+  });
+
+  // Refresh every 10s so new disputes appear, but never while the seller is typing, has
+  // edited an AI draft, has a half-typed tracking number, or is waiting on a button.
   function typing() {
-    return [...document.querySelectorAll("#orders input")].some((i) => i.value || i === document.activeElement);
+    const active = document.activeElement;
+    if (active && active.closest("#orders") && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return true;
+    if (document.querySelector("#orders [data-dirty]")) return true;
+    return busy > 0 || [...document.querySelectorAll("#orders form input")].some((i) => i.value);
   }
 
   render();

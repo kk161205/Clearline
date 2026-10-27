@@ -1,14 +1,17 @@
 import logging
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from .ai import AIClient
+from .assistant import Assistant
 from .config import Settings, get_settings
-from .paypal import (PayPalClient, PayPalError, capture_id_from, dispute_summary,
-                     disputed_capture_ids, parent_capture_id)
+from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
+                     dispute_summary, disputed_capture_ids, parent_capture_id)
 from .store import TimelineStore
 
 STATIC = Path(__file__).parent / "static"
@@ -47,11 +50,92 @@ class TrackingIn(BaseModel):
     carrier: str = "DHL"
 
 
+class OfferIn(BaseModel):
+    type: str
+    amount: float
+
+
+class ActIn(BaseModel):
+    """The seller's approved action. Texts default to the latest AI draft if left out."""
+    action: Literal["FIGHT", "REFUND", "OFFER"]
+    message_to_buyer: str | None = None
+    note_to_paypal: str | None = None
+    offer: OfferIn | None = None
+
+
+class ActionNotAllowed(Exception):
+    """PayPal doesn't currently allow this action on the dispute (-> 409)."""
+
+
+PAYPAL_TEXT_LIMIT = 2000  # maxLength of message/note fields in the Disputes schema
+
+
+def plan_action(action: str, dispute: dict, *, message: str, note: str,
+                offer: dict | None, tracking: dict | None) -> list[tuple[str, dict]]:
+    """The PayPal calls an approved action needs right now, as (endpoint, body) steps.
+
+    Checks the freshly fetched dispute's HATEOAS links, allowed_response_options and the
+    stage/status rules from PayPal's docs. Raises ActionNotAllowed rather than guessing,
+    and ValueError for missing or invalid seller input.
+    """
+    links = set(allowed_actions(dispute))
+    stage = dispute.get("dispute_life_cycle_stage")
+    status = dispute.get("status")
+    options = dispute.get("allowed_response_options") or {}
+    if status == "RESOLVED":
+        raise ActionNotAllowed("The dispute is already resolved.")
+
+    if action == "FIGHT":
+        steps = []
+        if "send-message" in links and stage == "INQUIRY":
+            if not message:
+                raise ValueError("A message to the buyer is required.")
+            steps.append(("send-message", {"message": message}))
+        if "provide-evidence" in links and status == "WAITING_FOR_SELLER_RESPONSE" and tracking:
+            steps.append(("provide-evidence", {"carrier": tracking["carrier"],
+                                               "tracking_number": tracking["tracking_number"],
+                                               "notes": note}))
+        if not steps:
+            raise ActionNotAllowed("PayPal doesn't currently allow messaging the buyer or "
+                                   "providing tracking evidence on this dispute.")
+        return steps
+
+    if action == "OFFER":
+        if "make-offer" not in links or stage != "INQUIRY":
+            raise ActionNotAllowed("PayPal only allows offers in the INQUIRY stage, and this "
+                                   "dispute doesn't offer make-offer right now.")
+        if not offer:
+            raise ValueError("An offer (type and amount) is required.")
+        offer_types = options.get("make_offer", {}).get("offer_types")
+        if offer_types and offer["type"] not in offer_types:
+            raise ActionNotAllowed(f"Offer type {offer['type']} isn't allowed; PayPal allows "
+                                   f"{', '.join(offer_types)}.")
+        amount = dispute.get("dispute_amount") or {}
+        if not 0 < offer["amount"] <= float(amount.get("value") or 0):
+            raise ValueError("The offer amount must be more than 0 and at most the disputed "
+                             "amount.")
+        if not note:
+            raise ValueError("A note for the offer is required.")
+        return [("make-offer", {"note": note, "offer_type": offer["type"],
+                                "offer_amount": {"currency_code": amount.get("currency_code"),
+                                                 "value": f"{offer['amount']:.2f}"}})]
+
+    # REFUND
+    claim_types = options.get("accept_claim", {}).get("accept_claim_types")
+    if "accept-claim" not in links or (claim_types and "REFUND" not in claim_types):
+        raise ActionNotAllowed("PayPal doesn't currently allow accepting this claim with a "
+                               "full refund.")
+    return [("accept-claim", {"accept_claim_type": "REFUND", "note": note})]
+
+
 def create_app(settings: Settings | None = None,
-               http: httpx.AsyncClient | None = None) -> FastAPI:
+               http: httpx.AsyncClient | None = None,
+               ai_http: httpx.AsyncClient | None = None) -> FastAPI:
     settings = settings or get_settings()
     paypal = PayPalClient(settings, http)
     store = TimelineStore(settings.database_path)
+    ai = AIClient(settings, store, ai_http)
+    assistant = Assistant(store, ai)
     app = FastAPI(title="Clearline", version="0.1.0")
 
     def fail(err: PayPalError) -> HTTPException:
@@ -177,13 +261,40 @@ def create_app(settings: Settings | None = None,
             except (PayPalError, httpx.HTTPError) as err:
                 # Keep what the webhook itself told us rather than losing the event.
                 error = str(err)
-        payload = {**dispute_summary(dispute), "event_id": event.get("id")}
+        store_dispute(kind, dispute, dispute_id=dispute_id,
+                      extra={"event_id": event.get("id")}, error=error)
+        if kind == "dispute_created" and dispute_id:
+            await assistant.auto_recommend(dispute_id)
+
+    def store_dispute(kind: str, dispute: dict, *, dispute_id: str | None, extra: dict,
+                      error: str | None = None) -> str:
+        """Record one dispute snapshot (webhook, sync or post-action re-fetch) on its order.
+        The order comes from the disputed capture ID, else from earlier events for the same
+        dispute, else "unmatched:<dispute_id>". Returns the order_id used."""
+        payload = {**dispute_summary(dispute), **extra}
         payload["dispute_id"] = payload["dispute_id"] or dispute_id
         if error:
             payload["enrichment_error"] = error
         order_id = next((o for o in map(store.find_order_by_capture,
                                         disputed_capture_ids(dispute)) if o), None)
-        store.add(order_id or f"unmatched:{dispute_id}", kind, payload)
+        if not order_id and (known := store.latest_dispute_state(payload["dispute_id"] or "")):
+            order_id = known["order_id"]
+        order_id = order_id or f"unmatched:{dispute_id}"
+        store.add(order_id, kind, payload)
+        return order_id
+
+    def is_new_state(known: dict | None, dispute: dict) -> bool:
+        """True if PayPal's update_time or status differs from what we stored last."""
+        if not known:
+            return True
+        return (known["payload"].get("update_time") != dispute.get("update_time")
+                or known["payload"].get("status") != dispute.get("status"))
+
+    def snapshot_kind(known: dict | None, dispute: dict) -> str:
+        """Timeline kind for a dispute snapshot that didn't come from a webhook."""
+        if dispute.get("status") == "RESOLVED":
+            return "dispute_resolved"
+        return "dispute_updated" if known else "dispute_created"
 
     def record_capture_event(event_type: str, event: dict, resource: dict) -> None:
         """Record a PAYMENT.CAPTURE.* webhook on its order (or under unmatched:)."""
@@ -206,6 +317,139 @@ def create_app(settings: Settings | None = None,
                 return order_id
         order_id = resource.get("supplementary_data", {}).get("related_ids", {}).get("order_id")
         return order_id if order_id and store.timeline(order_id) else None
+
+    # ---- AI dispute assistant (Day 3) ---------------------------------------
+
+    @app.get("/api/ai/status")
+    async def ai_status():
+        return ai.status()
+
+    @app.post("/api/ai/reset")
+    async def ai_reset():
+        ai.reset()
+        return ai.status()
+
+    @app.get("/api/disputes/{dispute_id}/recommendation")
+    async def get_recommendation(dispute_id: str):
+        result = assistant.latest_result(dispute_id)
+        if not result:
+            raise HTTPException(404, "No recommendation for this dispute yet")
+        return {"kind": result["kind"], "payload": result["payload"]}
+
+    @app.post("/api/disputes/{dispute_id}/recommendation")
+    async def regenerate_recommendation(dispute_id: str):
+        if not store.latest_dispute_state(dispute_id):
+            raise HTTPException(404, "Unknown dispute")
+        if not ai.configured:
+            raise HTTPException(503, "No AI key configured. Set GEMINI_API_KEY and/or "
+                                     "GROQ_API_KEY in .env and restart the app.")
+        return await assistant.recommend(dispute_id, force=True)
+
+    @app.post("/api/disputes/{dispute_id}/act")
+    async def act_on_dispute(dispute_id: str, body: ActIn):
+        """Run the seller-approved action against PayPal. The only place Clearline changes a
+        dispute; it is triggered by the seller's Approve click, never by the AI."""
+        known = store.latest_dispute_state(dispute_id)
+        if not known:
+            raise HTTPException(404, "Unknown dispute")
+        order_id = known["order_id"]
+        draft = {}
+        if (latest := assistant.latest_result(dispute_id)) and latest["kind"] == "ai_recommendation":
+            draft = latest["payload"]["recommendation"]
+        message = (body.message_to_buyer or draft.get("message_to_buyer") or "").strip()
+        note = (body.note_to_paypal or draft.get("note_to_paypal") or "").strip()
+        offer = body.offer.model_dump() if body.offer else draft.get("offer")
+        if len(message) > PAYPAL_TEXT_LIMIT or len(note) > PAYPAL_TEXT_LIMIT:
+            raise HTTPException(400, f"Texts must be at most {PAYPAL_TEXT_LIMIT} characters")
+        tracked = [e for e in store.timeline(order_id) if e["kind"] == "tracking_added"]
+        tracking = tracked[-1]["payload"] if tracked else None
+
+        try:
+            dispute = await paypal.get_dispute(dispute_id)  # never act on stale state
+        except PayPalError as err:
+            raise fail(err)
+        try:
+            steps = plan_action(body.action, dispute, message=message, note=note,
+                                offer=offer, tracking=tracking)
+        except ActionNotAllowed as err:
+            raise HTTPException(409, str(err))
+        except ValueError as err:
+            raise HTTPException(400, str(err))
+
+        results, failed = [], False
+        for endpoint, sent in steps:
+            base = {"dispute_id": dispute_id, "action": body.action, "endpoint": endpoint,
+                    "sent": sent}
+            try:
+                response = await run_step(dispute_id, endpoint, sent)
+            except (PayPalError, httpx.HTTPError) as err:
+                # No automatic retry: PayPal rejected it, so a human looks at it first.
+                store.add(order_id, "dispute_action_failed",
+                          {**base, "error": str(err), "paypal_status": getattr(err, "status", None)})
+                results.append({"endpoint": endpoint, "ok": False, "error": str(err)})
+                failed = True
+                break
+            store.add(order_id, "dispute_action_sent",
+                      {**base, "response": {"links": [link.get("rel")
+                                                      for link in response.get("links", [])]}})
+            results.append({"endpoint": endpoint, "ok": True})
+
+        try:
+            fresh = await paypal.get_dispute(dispute_id)
+            current = store.latest_dispute_state(dispute_id)
+            if is_new_state(current, fresh):
+                store_dispute(snapshot_kind(current, fresh), fresh, dispute_id=dispute_id,
+                              extra={"source": "action"})
+        except (PayPalError, httpx.HTTPError) as err:
+            log.warning("Could not re-fetch dispute %s after action: %s", dispute_id, err)
+
+        if failed:
+            raise HTTPException(502, {"steps": results})
+        return {"ok": True, "steps": results}
+
+    async def run_step(dispute_id: str, endpoint: str, sent: dict) -> dict:
+        """Call the PayPal endpoint for one planned step."""
+        if endpoint == "send-message":
+            return await paypal.send_dispute_message(dispute_id, sent["message"])
+        if endpoint == "provide-evidence":
+            return await paypal.provide_fulfillment_evidence(
+                dispute_id, carrier=sent["carrier"], tracking_number=sent["tracking_number"],
+                notes=sent["notes"])
+        if endpoint == "make-offer":
+            return await paypal.make_dispute_offer(dispute_id, note=sent["note"],
+                                                   offer_type=sent["offer_type"],
+                                                   amount=sent["offer_amount"])
+        return await paypal.accept_dispute_claim(dispute_id, note=sent["note"])
+
+    @app.post("/api/disputes/sync")
+    async def sync_disputes(background: BackgroundTasks):
+        """Pull disputes from PayPal and record the ones that are new or changed since we last
+        stored them (same recording path as webhooks; unchanged ones add no rows)."""
+        try:
+            items = await paypal.list_disputes()
+        except PayPalError as err:
+            raise fail(err)
+        counts = {"listed": len(items), "new": 0, "changed": 0, "unchanged": 0, "failed": 0}
+        for item in items:
+            dispute_id = item.get("dispute_id")
+            known = store.latest_dispute_state(dispute_id) if dispute_id else None
+            if not dispute_id or not is_new_state(known, item):
+                counts["unchanged"] += 1
+                continue
+            try:
+                dispute = await paypal.get_dispute(dispute_id)
+            except (PayPalError, httpx.HTTPError) as err:
+                log.warning("Sync: could not fetch dispute %s: %s", dispute_id, err)
+                counts["failed"] += 1
+                continue
+            if not is_new_state(known, dispute):
+                counts["unchanged"] += 1
+                continue
+            store_dispute(snapshot_kind(known, dispute), dispute, dispute_id=dispute_id,
+                          extra={"source": "sync"})
+            counts["changed" if known else "new"] += 1
+            background.add_task(assistant.auto_recommend, dispute_id)
+        return counts
 
     @app.get("/api/orders")
     async def list_orders():

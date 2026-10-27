@@ -6,6 +6,7 @@ Subscriptions. Clearline also needs Disputes, Invoicing, Tracking and Webhooks,
 so one client for everything keeps the code consistent.
 """
 
+import json as jsonlib
 import logging
 import time
 import uuid
@@ -49,12 +50,19 @@ class PayPalClient:
         return self._token
 
     async def _request(self, method: str, path: str, *, json: dict | None = None,
-                       idempotent: bool = False) -> dict:
+                       idempotent: bool = False, params: dict | None = None,
+                       json_part: dict | None = None) -> dict:
         headers = {"Authorization": f"Bearer {await self._access_token()}"}
         if idempotent:
             # PayPal-Request-Id makes retries safe for calls that move money.
             headers["PayPal-Request-Id"] = str(uuid.uuid4())
-        resp = await self.http.request(method, path, json=json, headers=headers)
+        files = None
+        if json_part is not None:
+            # Some dispute actions only accept multipart/form-data: the JSON goes in a part
+            # named "input" (no file attached).
+            files = {"input": (None, jsonlib.dumps(json_part), "application/json")}
+        resp = await self.http.request(method, path, json=json, headers=headers,
+                                       params=params, files=files)
         if resp.status_code >= 400:
             raise PayPalError(resp.status_code, _body(resp))
         return resp.json() if resp.content else {}
@@ -125,6 +133,53 @@ class PayPalClient:
         """Fetch the full dispute record (reason, amount, deadline, disputed transactions)."""
         return await self._request("GET", f"/v1/customer/disputes/{dispute_id}")
 
+    async def list_disputes(self, *, max_pages: int = 10) -> list[dict]:
+        """Dispute summaries from the last 180 days (PayPal's default window), all pages."""
+        items: list[dict] = []
+        for page in range(1, max_pages + 1):
+            data = await self._request("GET", "/v1/customer/disputes",
+                                       params={"page_size": 50, "page": page})
+            items += data.get("items", [])
+            if not any(link.get("rel") == "next" for link in data.get("links", [])):
+                break
+        return items
+
+    # Dispute actions. Only ever called after the seller clicks Approve.
+
+    async def send_dispute_message(self, dispute_id: str, message: str) -> dict:
+        """Message the buyer (INQUIRY stage only)."""
+        return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/send-message",
+                                   json_part={"message": message}, idempotent=True)
+
+    async def provide_fulfillment_evidence(self, dispute_id: str, *, carrier: str,
+                                           tracking_number: str, notes: str) -> dict:
+        """Submit proof of fulfillment (shipment tracking) for the dispute."""
+        evidence = {
+            "evidence_type": "PROOF_OF_FULFILLMENT",
+            "evidence_info": {"tracking_info": [{"carrier_name": carrier,
+                                                 "tracking_number": tracking_number}]},
+        }
+        if notes:
+            evidence["notes"] = notes
+        return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/provide-evidence",
+                                   json_part={"evidences": [evidence]}, idempotent=True)
+
+    async def make_dispute_offer(self, dispute_id: str, *, note: str, offer_type: str,
+                                 amount: dict) -> dict:
+        """Offer the buyer a resolution, e.g. a partial refund (INQUIRY stage only)."""
+        body = {"note": note, "offer_type": offer_type, "offer_amount": amount}
+        return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/make-offer",
+                                   json=body, idempotent=True)
+
+    async def accept_dispute_claim(self, dispute_id: str, *, note: str) -> dict:
+        """Accept the claim with a full refund. PayPal refunds the whole disputed amount;
+        refund_amount must be omitted for accept_claim_type REFUND."""
+        body = {"accept_claim_type": "REFUND"}
+        if note:
+            body["note"] = note
+        return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/accept-claim",
+                                   json_part=body, idempotent=True)
+
 
 def _body(resp: httpx.Response) -> dict | str:
     try:
@@ -152,7 +207,22 @@ def dispute_summary(dispute: dict) -> dict:
         "dispute_amount": {"value": amount.get("value"),
                            "currency_code": amount.get("currency_code")},
         "seller_response_due_date": dispute.get("seller_response_due_date"),
+        "update_time": dispute.get("update_time"),
+        "allowed_actions": allowed_actions(dispute),
+        "allowed_response_options": dispute.get("allowed_response_options") or {},
+        "requested_evidence": [e.get("evidence_type") for e in dispute.get("evidences", [])
+                               if e.get("source") == "REQUESTED_FROM_SELLER"],
+        "buyer_messages": [{"time_posted": m.get("time_posted"), "content": m.get("content")}
+                           for m in dispute.get("messages", []) if m.get("posted_by") == "BUYER"],
     }
+
+
+def allowed_actions(dispute: dict) -> list[str]:
+    """Actions PayPal currently offers on a dispute, from its HATEOAS links
+    (e.g. ["send-message", "make-offer", "accept-claim", "provide-evidence"])."""
+    return sorted({link["href"].rstrip("/").rsplit("/", 1)[-1]
+                   for link in dispute.get("links", [])
+                   if link.get("method") == "POST" and link.get("href")})
 
 
 def disputed_capture_ids(dispute: dict) -> list[str]:

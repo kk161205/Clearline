@@ -23,7 +23,15 @@ CREATE TABLE IF NOT EXISTS processed_webhooks (
     event_id TEXT PRIMARY KEY,
     received_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    active_provider TEXT NOT NULL,
+    switched_at REAL,
+    reason TEXT
+);
 """
+
+DISPUTE_KINDS = ("dispute_created", "dispute_updated", "dispute_resolved")
 
 
 class TimelineStore:
@@ -83,3 +91,46 @@ class TimelineStore:
                 (event_id, time.time()),
             )
         return cur.rowcount == 1
+
+    # ---- Disputes (Day 3) ---------------------------------------------------
+
+    def dispute_events(self, dispute_id: str) -> list[dict]:
+        """Every event (any order, any kind) whose payload names this dispute, oldest first."""
+        with closing(self._conn()) as conn:
+            rows = conn.execute(
+                """SELECT order_id, kind, payload, created_at FROM events
+                   WHERE json_extract(payload, '$.dispute_id') = ? ORDER BY id""",
+                (dispute_id,),
+            ).fetchall()
+        return [{"order_id": r["order_id"], "kind": r["kind"], "payload": json.loads(r["payload"]),
+                 "created_at": r["created_at"]} for r in rows]
+
+    def latest_dispute_state(self, dispute_id: str) -> dict | None:
+        """The stored dispute event with the newest PayPal update_time (webhooks arrive out of
+        order, so the last inserted row isn't necessarily the current state)."""
+        states = [e for e in self.dispute_events(dispute_id) if e["kind"] in DISPUTE_KINDS]
+        if not states:
+            return None
+        # max() keeps the first of equal keys, so reverse to prefer the newest row on ties.
+        return max(reversed(states), key=lambda e: e["payload"].get("update_time") or "")
+
+    # ---- AI provider state (Day 3) -----------------------------------------
+
+    def ai_state(self) -> dict:
+        """Which AI provider is active. Defaults to gemini until something switches it."""
+        with closing(self._conn()) as conn:
+            row = conn.execute(
+                "SELECT active_provider, switched_at, reason FROM ai_state WHERE id = 1").fetchone()
+        if not row:
+            return {"active_provider": "gemini", "switched_at": None, "reason": None}
+        return dict(row)
+
+    def set_ai_provider(self, provider: str, reason: str) -> None:
+        """Persist the active AI provider so the choice survives restarts."""
+        with closing(self._conn()) as conn, conn:
+            conn.execute(
+                """INSERT INTO ai_state (id, active_provider, switched_at, reason) VALUES (1, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET active_provider = excluded.active_provider,
+                       switched_at = excluded.switched_at, reason = excluded.reason""",
+                (provider, time.time(), reason),
+            )

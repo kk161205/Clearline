@@ -126,12 +126,69 @@ dispute isn't about one of your orders. Set it back to `false` when you're done.
   sent the event, or the event came from the Simulator. Check the uvicorn log.
 - Nothing arrives: the tunnel URL changed. Update it in the Dashboard.
 
+## Day 3: AI dispute assistant
+
+When a dispute is waiting for the seller, Clearline gathers the facts it knows (order,
+payment, tracking, dispute reason, amount, deadline, the buyer's messages) and asks an AI to
+recommend **Fight**, **Refund** or **Offer**, with reasons that cite those facts plus a draft
+message to the buyer and a note to PayPal.
+
+**Nothing is ever sent to PayPal until the seller clicks "Approve & send".** The AI only
+reasons and drafts; code collects the facts and makes the PayPal calls, and only after
+Approve. Names, emails, addresses and account IDs are never sent to the AI.
+
+### 1. Get two free API keys (no card needed)
+
+- Gemini: https://aistudio.google.com → **Get API key**
+- Groq: https://console.groq.com → **API Keys** → **Create API Key**
+
+Add them to `.env` (see `.env.example` for all AI settings):
+
+```
+GEMINI_API_KEY=...
+GROQ_API_KEY=...
+```
+
+Restart the app after editing `.env`.
+
+### 2. Sticky fallback
+
+Gemini (`gemini-3.5-flash-lite`) is used first. If it fails with a rate limit (429), a server
+error (5xx), a timeout or network error, a bad key (401/403), or returns invalid JSON twice,
+Clearline switches to Groq (`openai/gpt-oss-120b`) **and stays on Groq**, even after a
+restart. It never switches back by itself. A 400 from Gemini means our request is wrong, so
+it does not switch; it records "AI unavailable" so the bug can be fixed.
+
+```powershell
+curl.exe http://localhost:8000/api/ai/status            # which provider is active and why
+curl.exe -X POST http://localhost:8000/api/ai/reset     # go back to Gemini
+```
+
+### 3. Test with the existing dispute
+
+1. Open http://localhost:8000/seller. Click **Sync disputes** at the top: it pulls disputes
+   from PayPal and records only new or changed ones (it shows the counts).
+2. Under the red dispute panel, the **AI recommendation** card appears (or click
+   **Regenerate**). It shows the decision, confidence, reasons with the facts they cite,
+   missing evidence, and which AI answered ("AI: Gemini …" or "AI: Groq … (fallback)").
+3. Edit the message to the buyer and the note to PayPal if you like.
+4. Click **Approve & send** and confirm. What happens:
+   - **Fight**: messages the buyer (inquiry stage) and, if PayPal allows it, submits your
+     tracking number as proof of shipment.
+   - **Offer**: sends the offer (inquiry stage only).
+   - **Refund**: accepts the claim; PayPal refunds the full disputed amount.
+5. The result appears on the timeline ("Sent to PayPal" or "PayPal rejected action").
+   Clearline checks a fresh copy of the dispute first and refuses actions PayPal doesn't
+   currently allow. It never retries a rejected action on its own.
+
 ## Layout
 
 | File | Purpose |
 |---|---|
-| `app/paypal.py` | REST client: token caching, orders, capture, tracking, webhook verification, disputes |
-| `app/store.py` | SQLite timeline of events per order, processed webhook IDs |
-| `app/main.py` | FastAPI routes, server-side price catalogue, `/webhooks/paypal` |
+| `app/paypal.py` | REST client: token caching, orders, capture, tracking, webhook verification, disputes and dispute actions |
+| `app/store.py` | SQLite timeline of events per order, processed webhook IDs, active AI provider |
+| `app/ai.py` | OpenAI-compatible AI client with sticky Gemini → Groq fallback |
+| `app/assistant.py` | Facts, prompt, schema and guardrails for dispute recommendations |
+| `app/main.py` | FastAPI routes, server-side price catalogue, `/webhooks/paypal`, dispute actions and sync |
 | `app/static/buyer.html` | Checkout page using PayPal JS SDK v6 |
-| `app/static/seller.html` | Seller's order list with "Mark shipped" and dispute alerts |
+| `app/static/seller.html` | Seller's orders, dispute alerts, AI recommendation card with Approve |

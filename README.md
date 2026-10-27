@@ -44,13 +44,11 @@ verifies each webhook with PayPal, ignores repeats, and puts dispute events on
 the right order's timeline, so the seller page shows a red **Disputed** badge with
 the reason, amount and response deadline.
 
-PayPal has to reach your laptop, so we use a free Cloudflare quick tunnel.
+PayPal has to reach your laptop, so the app runs behind a tunnel. The default is **ngrok
+with your free fixed dev domain**: the URL never changes, so you register the PayPal webhook
+once. Cloudflare quick tunnels still work as a fallback, but their URL changes on every restart.
 
 ### 1. Start the app and a tunnel (PowerShell)
-
-```powershell
-winget install --id Cloudflare.cloudflared     # once; open a new terminal afterwards
-```
 
 Terminal 1:
 
@@ -59,17 +57,30 @@ Terminal 1:
 uvicorn app.main:create_app --factory --reload
 ```
 
-Terminal 2:
+#### Tunnel on Windows: ngrok (default)
+
+One-time setup (`tools/` is git-ignored):
+
+1. Create a free account at https://ngrok.com.
+2. Download the Windows (amd64) zip from https://ngrok.com/download, extract it, and put
+   `ngrok.exe` in `tools\`. Check it with `tools\ngrok.exe version`.
+3. Save your authtoken (dashboard → **Your Authtoken**). This stores it in ngrok's own
+   config in your user profile, not in this project:
+   ```powershell
+   tools\ngrok.exe config add-authtoken <your token>
+   ```
+4. Note your dev domain (dashboard → **Domains**), e.g. `<your-domain>.ngrok-free.dev`.
+
+Every session, in terminal 2:
 
 ```powershell
-cloudflared tunnel --url http://localhost:8000
+tools\ngrok.exe http 8000 --url=https://<your-domain>.ngrok-free.dev
 ```
 
-Copy the `https://<random>.trycloudflare.com` URL it prints.
+Leave it running. The public URL is always `https://<your-domain>.ngrok-free.dev`. ngrok
+connects out over port 443, so it also works on networks that block Cloudflare tunnels.
 
-#### Tunnel on Windows (if winget doesn't work)
-
-Use the standalone exe instead. `tools/` is git-ignored.
+#### Fallback: Cloudflare quick tunnel
 
 ```powershell
 New-Item -ItemType Directory -Force tools
@@ -77,16 +88,20 @@ Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/down
 tools\cloudflared.exe tunnel --url http://localhost:8000
 ```
 
-Wait for `Registered tunnel connection` in the output before using the URL.
-If you get Cloudflare **Error 1033** and the log says `QUIC connection failed` /
-`HTTP/2 connection is blocked`, your network blocks port 7844 (common on college or
-office Wi-Fi). Turn on the Cloudflare WARP VPN (1.1.1.1 app) or use a phone hotspot,
-then start the tunnel again.
+Wait for `Registered tunnel connection`, then copy the `https://<random>.trycloudflare.com`
+URL. It changes **every time cloudflared restarts**, so you must update the webhook URL in the
+Dashboard each time. If you get Cloudflare **Error 1033** and the log says
+`QUIC connection failed` / `HTTP/2 connection is blocked`, your network blocks port 7844
+(common on college or office Wi-Fi): turn on the Cloudflare WARP VPN (1.1.1.1 app) or use a
+phone hotspot, or use ngrok instead. The background auto-sync (Day 3) picks up disputes whose
+webhooks were missed while a tunnel was down.
 
 ### 2. Register the webhook
 
-1. Developer Dashboard → **Apps & Credentials** → your Sandbox app → **Webhooks** → **Add Webhook**.
-2. Webhook URL: `https://<random>.trycloudflare.com/webhooks/paypal`
+1. Developer Dashboard → **Apps & Credentials** → your Sandbox app → **Webhooks** → **Add Webhook**
+   (or edit the existing one).
+2. Webhook URL: `https://<your-domain>.ngrok-free.dev/webhooks/paypal`
+   (with the Cloudflare fallback: `https://<random>.trycloudflare.com/webhooks/paypal`).
 3. Select these events:
    - `CUSTOMER.DISPUTE.CREATED`, `CUSTOMER.DISPUTE.UPDATED`, `CUSTOMER.DISPUTE.RESOLVED`
    - `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.PENDING`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`
@@ -96,8 +111,8 @@ then start the tunnel again.
    ```
 5. Restart the app (Ctrl+C in terminal 1, run uvicorn again).
 
-> **Warning:** a quick tunnel gets a new random URL every time `cloudflared` restarts.
-> Each time, edit the webhook in the Dashboard to the new URL. The Webhook ID stays the same
+> With ngrok's fixed domain you do this once. With the Cloudflare fallback the URL changes on
+> every restart, so edit the webhook in the Dashboard each time. The Webhook ID stays the same
 > when you edit the URL. If you delete the webhook and add a new one, update `PAYPAL_WEBHOOK_ID`.
 
 ### 3. Real dispute test
@@ -124,7 +139,11 @@ dispute isn't about one of your orders. Set it back to `false` when you're done.
 - `503` from `/webhooks/paypal`: `PAYPAL_WEBHOOK_ID` is not set or the app wasn't restarted.
 - `400 Webhook signature verification failed`: the Webhook ID doesn't belong to the URL that
   sent the event, or the event came from the Simulator. Check the uvicorn log.
-- Nothing arrives: the tunnel URL changed. Update it in the Dashboard.
+- Nothing arrives: the tunnel isn't running, or (Cloudflare fallback) its URL changed. Check that
+  the Dashboard's webhook URL is your tunnel URL + `/webhooks/paypal`. Meanwhile **Sync disputes**
+  on `/seller` (or the auto-sync) picks up missed disputes.
+- ngrok `ERR_NGROK_4018` / authentication failed: the authtoken isn't saved; run the
+  `config add-authtoken` command again.
 
 ## Day 3: AI dispute assistant
 

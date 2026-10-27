@@ -37,6 +37,13 @@
     .ai label { display:block; font-size:13px; font-weight:600; margin-top:8px; }
     .ai textarea { width:100%; min-height:84px; resize:vertical; }
     .ai .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .ai.compact { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 12px; color:var(--muted); }
+    .ai.compact .msg { flex-basis:100%; margin:0; }
+    button.sandbox { background:#fffaeb; color:#93370d; border:1px dashed #f79009; font-size:13px; }
+    details.tech, details.earlier { display:inline; margin-left:6px; }
+    details.tech summary, details.earlier summary { display:inline; cursor:pointer; color:var(--muted); font-size:12px; }
+    details.tech[open] { display:block; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
+    details.earlier ul { margin:4px 0; padding-left:18px; }
     .ok { color:var(--ok); } .bad { color:var(--bad); }
     #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
     #other .order { padding:10px 12px; font-size:13px; }
@@ -47,6 +54,7 @@
   <header>
     <h1>Your orders</h1>
     <span id="sync-msg" class="muted"></span>
+    <span id="sync-status" class="muted"></span>
     <button id="sync" class="secondary">Sync disputes</button>
   </header>
   <div id="orders"><p class="muted">Loading…</p></div>
@@ -74,6 +82,8 @@
     dispute_action_sent: "Sent to PayPal",
     dispute_action_failed: "PayPal rejected action",
     dispute_action_skipped: "Step skipped",
+    sandbox_status_changed: "Sandbox: status changed",
+    sandbox_status_change_failed: "Sandbox: status change failed",
   };
   const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message", "make-offer": "Offer", "accept-claim": "Refund" };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
@@ -96,6 +106,24 @@
   const fmt = (t) => new Date(t * 1000).toLocaleString();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
+  let ENV = null; // "sandbox" or "live", from /api/config; sandbox-only tools need "sandbox"
+
+  // The server stores PayPal failures as a short sentence plus issue/debug_id. Rows from
+  // before that hold PayPal's raw error text, so pull the same facts out of it.
+  const LEGACY_ISSUES = { ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE: "PayPal didn't allow this step in the dispute's current state" };
+  function errorParts(p, field = "error") {
+    const raw = String(p[field] || "");
+    const legacy = raw.includes("PayPal API error");
+    const issue = p.paypal_issue || (raw.match(/'issue': '([A-Z_]+)'/) || [])[1];
+    const debug = p.debug_id || (raw.match(/'debug_id': '([\w-]+)'/) || [])[1];
+    const status = p.paypal_status || (raw.match(/PayPal API error (\d+)/) || [])[1];
+    const text = legacy ? (LEGACY_ISSUES[issue] || "PayPal rejected this step") : raw;
+    return { text, tech: [status && `HTTP ${status}`, issue && `issue ${issue}`, debug && `debug_id ${debug}`].filter(Boolean).join(" · ") };
+  }
+  function errorHtml(p, field = "error") {
+    const { text, tech } = errorParts(p, field);
+    return esc(text) + (tech ? `<details class="tech"><summary>details</summary>${esc(tech)}</details>` : "");
+  }
 
   function describe(e) {
     const p = e.payload;
@@ -105,12 +133,14 @@
     if (DISPUTE_KINDS.includes(e.kind)) return [humanize(p.reason), money(p.dispute_amount), p.status].filter(Boolean).join(" · ");
     if (e.kind.startsWith("webhook_payment_capture")) return [p.status, money(p.amount), p.pending_reason].filter(Boolean).join(" · ");
     if (e.kind === "webhook_other") return p.event_type;
-    if (e.kind === "ai_recommendation") return `${DECISIONS[p.recommendation?.decision] || "?"} · ${p.provider} ${p.model}`;
+    if (e.kind === "ai_recommendation") return `${DECISIONS[p.recommendation?.decision] || "?"} · ${p.provider} ${p.model}${p.trigger ? ` · ${p.trigger}` : ""}`;
     if (e.kind === "ai_failed") return p.error;
     if (e.kind === "ai_provider_switched") return `${p.from} → ${p.to}: ${p.reason}`;
     if (e.kind === "dispute_action_sent") return `${p.action}: ${p.endpoint}`;
-    if (e.kind === "dispute_action_failed") return `${p.action}: ${p.endpoint} · ${p.error}`;
+    if (e.kind === "dispute_action_failed") return `${p.action}: ${p.endpoint} · ${errorParts(p).text}`;
     if (e.kind === "dispute_action_skipped") return `${p.action}: ${p.endpoint} · ${p.reason}`;
+    if (e.kind === "sandbox_status_changed") return `${p.from_status} → asked seller for evidence`;
+    if (e.kind === "sandbox_status_change_failed") return errorParts(p).text;
     return "";
   }
 
@@ -162,10 +192,19 @@
     const step = (e) => {
       const name = esc(STEP_NAMES[e.payload.endpoint] || e.payload.endpoint);
       if (e.kind === "dispute_action_sent") return `<span class="ok">${name} sent ✓</span>`;
-      if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>`;
-      return `<span class="bad">${name} failed (${esc(e.payload.error)})</span>`;
+      if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>${errorParts(e.payload).tech ? `<details class="tech"><summary>details</summary>${esc(errorParts(e.payload).tech)}</details>` : ""}`;
+      return `<span class="bad">${name} failed (${errorHtml(e.payload)})</span>`;
     };
     return runs.map((r) => `<li>${esc(DECISIONS[r.action] || r.action)}: ${r.steps.map(step).join(" · ")} <span class="muted">${fmt(r.at)}</span></li>`).join("");
+  }
+
+  // Why the seller can't act right now (null = some decision is allowed).
+  function noActionReason(p, resolved) {
+    if (resolved) return "Dispute resolved";
+    if (p.status === "WAITING_FOR_BUYER_RESPONSE") return "Waiting for the buyer, nothing to send right now";
+    if (p.allowed_decisions && !p.allowed_decisions.length)
+      return p.status === "UNDER_REVIEW" ? "PayPal is reviewing this case" : "PayPal allows no seller action right now";
+    return null;
   }
 
   function aiCard(events, state, resolved) {
@@ -177,9 +216,19 @@
     const results = actions.length ? `<label>Sent to PayPal</label><ul>${actionRuns(actions)}</ul>` : "";
     const regen = resolved ? "" : `<button class="secondary" data-regen="${esc(id)}">Regenerate</button>`;
 
+    // Nothing to approve: one line instead of editable drafts.
+    const blocked = noActionReason(state.payload, resolved);
+    if (blocked) {
+      const r = ai?.kind === "ai_recommendation" ? ai.payload.recommendation : null;
+      const last = r ? `Last AI suggestion: ${DECISIONS[r.decision]}, ${Math.round(r.confidence * 100)}%` : "No AI suggestion";
+      const sandbox = ENV === "sandbox" && state.payload.status === "UNDER_REVIEW"
+        ? `<button class="sandbox" data-sandbox="${esc(id)}" title="Test tool: only exists in the PayPal Sandbox">Sandbox: simulate PayPal asking the seller for evidence</button>` : "";
+      return `<div class="ai compact"><span>${esc(last)} · ${esc(blocked)}</span>${sandbox}<div class="msg"></div></div>`;
+    }
+
     if (!ai) return `<div class="ai"><h3>AI recommendation</h3><div class="muted">None yet.</div>${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
     if (ai.kind === "ai_failed") return `<div class="ai"><h3>AI recommendation</h3>
-        <div class="bad">AI unavailable, try Regenerate.</div><div class="muted">${esc(ai.payload.error)}</div>
+        <div class="bad">AI unavailable, try Regenerate.</div><div class="muted">${errorHtml(ai.payload)}</div>
         ${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
 
     const p = ai.payload, r = p.recommendation;
@@ -189,10 +238,7 @@
     const offer = r.offer ? `<label>Offer</label><div class="row">
         <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" />
         <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /> ${esc(state.payload.dispute_amount?.currency_code || "")}</div>` : "";
-    const waiting = state.payload.status === "WAITING_FOR_BUYER_RESPONSE";
-    const approve = resolved ? '<span class="muted">Dispute resolved.</span>'
-      : waiting ? '<span class="muted">Waiting for the buyer, nothing to send right now.</span>'
-      : actionAllowed(r.decision, state.payload)
+    const approve = actionAllowed(r.decision, state.payload)
         ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}">Approve &amp; send</button>`
         : `<span class="muted">PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.</span>`;
     return `<div class="ai" data-dispute="${esc(id)}">
@@ -209,6 +255,23 @@
 
   const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
   const isSide = (id) => id === "other" || id.startsWith("unmatched:");
+  const row = (e, extra = "") =>
+    `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${extra}</li>`;
+
+  // Timeline rows, keeping only the latest AI recommendation per dispute in place; earlier
+  // ones fold into "(+N earlier)" on that row.
+  function timelineRows(events) {
+    const recs = {};
+    events.filter((e) => e.kind === "ai_recommendation")
+      .forEach((e) => (recs[e.payload.dispute_id] ||= []).push(e));
+    return events.map((e) => {
+      if (e.kind !== "ai_recommendation") return row(e);
+      const list = recs[e.payload.dispute_id];
+      if (e !== list[list.length - 1]) return "";
+      const earlier = list.slice(0, -1);
+      return row(e, earlier.length ? `<details class="earlier"><summary>(+${earlier.length} earlier)</summary><ul>${earlier.map((x) => row(x)).join("")}</ul></details>` : "");
+    }).join("");
+  }
 
   async function render() {
     const all = await (await fetch("/api/orders")).json();
@@ -222,8 +285,7 @@
       const d = disputePanel(state);
       const captured = events.some((e) => e.kind === "payment_captured");
       const tracked = events.some((e) => e.kind === "tracking_added");
-      const steps = events.map((e) =>
-        `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span></li>`).join("");
+      const steps = timelineRows(events);
       const form = captured && !tracked ? `
         <form data-order="${esc(o.order_id)}">
           <input name="tracking_number" placeholder="Tracking number" required />
@@ -246,6 +308,29 @@
       el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
     root.querySelectorAll("[data-regen]").forEach((b) => b.addEventListener("click", () => regenerate(b)));
     root.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", () => approve(b)));
+    root.querySelectorAll("[data-sandbox]").forEach((b) => b.addEventListener("click", () => sandboxRequireEvidence(b)));
+    loadSyncStatus();
+  }
+
+  async function loadSyncStatus() {
+    const el = document.getElementById("sync-status");
+    try {
+      const s = await (await fetch("/api/disputes/sync/status")).json();
+      const auto = s.auto_sync_minutes > 0 ? `auto every ${s.auto_sync_minutes} min` : "auto-sync off";
+      el.textContent = s.error ? `Last sync failed: ${s.error} (${auto})`
+        : s.last_synced_at ? `Last synced: ${fmt(s.last_synced_at)} (${s.trigger}) · ${auto}`
+        : `Not synced yet · ${auto}`;
+    } catch { el.textContent = ""; }
+  }
+
+  // Sandbox-only test tool; the server refuses it (404) in live mode as well.
+  function sandboxRequireEvidence(button) {
+    if (!confirm("SANDBOX TEST TOOL: ask PayPal's Sandbox to move this dispute from UNDER_REVIEW to waiting for the seller's evidence?")) return;
+    return withBusy(button, "Asking PayPal Sandbox…", async () => {
+      const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.sandbox)}/sandbox/require-seller-evidence`, { method: "POST" });
+      if (!res.ok) throw new Error(await errorText(res));
+      await render();
+    });
   }
 
   async function withBusy(button, text, fn) {
@@ -261,6 +346,7 @@
     const body = await res.json().catch(() => ({}));
     const d = body.detail;
     if (d?.summary) return d.summary;
+    if (d?.paypal_status) return `PayPal returned HTTP ${d.paypal_status}${d.paypal_error?.name ? ` (${d.paypal_error.name})` : ""}`;
     return typeof d === "string" ? d : JSON.stringify(d || body);
   }
 
@@ -297,9 +383,7 @@
     if (!side.length) { root.innerHTML = ""; return; }
     const blocks = await Promise.all(side.map(async (o) => {
       const events = await getTimeline(o.order_id);
-      const rows = events.map((e) =>
-        `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span></li>`).join("");
-      return `<div class="order"><div class="id">${esc(o.order_id)}</div><ol>${rows}</ol></div>`;
+      return `<div class="order"><div class="id">${esc(o.order_id)}</div><ol>${timelineRows(events)}</ol></div>`;
     }));
     root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
   }
@@ -327,7 +411,7 @@
     return busy > 0 || [...document.querySelectorAll("#orders form input")].some((i) => i.value);
   }
 
-  render();
+  fetch("/api/config").then((r) => r.json()).then((c) => { ENV = c.env; }).catch(() => {}).finally(render);
   setInterval(() => { if (!typing()) render().catch(() => {}); }, 10000);
 </script>
 </body>

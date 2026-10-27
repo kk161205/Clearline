@@ -9,3 +9,5 @@ def no_real_ai_keys(monkeypatch):
     # Tests that need AI pass keys explicitly to Settings(...), which beats both.
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GROQ_API_KEY", "")
+    # No background PayPal polling in tests unless a test turns it on explicitly.
+    monkeypatch.setenv("AUTO_SYNC_MINUTES", "0")

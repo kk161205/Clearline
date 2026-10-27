@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import time
 import uuid
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +16,7 @@ from .assistant import Assistant
 from .config import Settings, get_settings
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
+from .scheduler import run_every
 from .store import TimelineStore
 
 STATIC = Path(__file__).parent / "static"
@@ -152,6 +156,21 @@ def plan_action(action: str, dispute: dict, *, message: str, note: str,
     return [("accept-claim", {"accept_claim_type": "REFUND", "note": note})]
 
 
+def readable_error(err: Exception) -> str:
+    """Short sentence for the seller page (PayPal's raw body stays in the logs)."""
+    if isinstance(err, PayPalError):
+        return err.readable
+    return "Could not reach PayPal (network error)"
+
+
+def error_details(err: Exception) -> dict:
+    """What support needs to trace a PayPal failure; shown collapsed on /seller."""
+    if isinstance(err, PayPalError):
+        return {"paypal_status": err.status, "paypal_issue": next(iter(err.issues), None),
+                "debug_id": err.debug_id}
+    return {"paypal_status": None, "paypal_issue": None, "debug_id": None}
+
+
 def allowed_decisions(dispute: dict) -> list[str]:
     """Decisions the seller could approve right now; drives the Approve button."""
     decisions = []
@@ -189,7 +208,26 @@ def create_app(settings: Settings | None = None,
     store = TimelineStore(settings.database_path)
     ai = AIClient(settings, store, ai_http)
     assistant = Assistant(store, ai)
-    app = FastAPI(title="Clearline", version="0.1.0")
+    sync_lock = asyncio.Lock()
+    sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
+                  "error": None, "auto_sync_minutes": settings.auto_sync_minutes}
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Start the auto-sync safety net with the app and stop it cleanly on shutdown."""
+        task = None
+        if settings.auto_sync_minutes > 0:
+            task = asyncio.create_task(run_every(settings.auto_sync_minutes * 60, auto_sync))
+        app.state.auto_sync_task = task
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan)
 
     def fail(err: PayPalError) -> HTTPException:
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
@@ -397,7 +435,7 @@ def create_app(settings: Settings | None = None,
         if not ai.configured:
             raise HTTPException(503, "No AI key configured. Set GEMINI_API_KEY and/or "
                                      "GROQ_API_KEY in .env and restart the app.")
-        return await assistant.recommend(dispute_id, force=True)
+        return await assistant.recommend(dispute_id, force=True, trigger="regenerate")
 
     @app.post("/api/disputes/{dispute_id}/act")
     async def act_on_dispute(dispute_id: str, body: ActIn):
@@ -438,10 +476,10 @@ def create_app(settings: Settings | None = None,
             try:
                 current = await paypal.get_dispute(dispute_id)  # re-check before EACH step
             except (PayPalError, httpx.HTTPError) as err:
+                error = f"Could not re-check the dispute: {readable_error(err)}"
                 store.add(order_id, "dispute_action_failed",
-                          {**base, "sent": sent, "error": f"could not re-check dispute: {err}",
-                           "paypal_status": getattr(err, "status", None)})
-                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
+                          {**base, "sent": sent, "error": error, **error_details(err)})
+                results.append({"endpoint": endpoint, "outcome": "failed", "error": error})
                 failed = True
                 break
             if reason := step_blocked(endpoint, current):
@@ -451,26 +489,21 @@ def create_app(settings: Settings | None = None,
                 continue
             try:
                 response = await run_step(dispute_id, endpoint, sent)
-            except PayPalError as err:
-                if err.status == 422 and STATE_CHANGED_ISSUE in err.issues:
+            except (PayPalError, httpx.HTTPError) as err:
+                details = error_details(err)
+                if details["paypal_status"] == 422 and details["paypal_issue"] == STATE_CHANGED_ISSUE:
                     # The dispute changed between our check and the call: not a failure.
-                    reason = "PayPal says the dispute state no longer allows this"
+                    reason = readable_error(err)
                     store.add(order_id, "dispute_action_skipped",
                               {**base, "reason": reason, "dispute_status": current.get("status"),
-                               "paypal_issue": STATE_CHANGED_ISSUE, "debug_id": err.debug_id})
+                               **details})
                     results.append({"endpoint": endpoint, "outcome": "skipped", "reason": reason})
                     continue
                 # No automatic retry: PayPal rejected it, so a human looks at it first.
+                error = readable_error(err)
                 store.add(order_id, "dispute_action_failed",
-                          {**base, "sent": sent, "error": str(err), "paypal_status": err.status,
-                           "debug_id": err.debug_id})
-                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
-                failed = True
-                break
-            except httpx.HTTPError as err:
-                store.add(order_id, "dispute_action_failed",
-                          {**base, "sent": sent, "error": str(err), "paypal_status": None})
-                results.append({"endpoint": endpoint, "outcome": "failed", "error": str(err)})
+                          {**base, "sent": sent, "error": error, **details})
+                results.append({"endpoint": endpoint, "outcome": "failed", "error": error})
                 failed = True
                 break
             store.add(order_id, "dispute_action_sent",
@@ -509,13 +542,57 @@ def create_app(settings: Settings | None = None,
 
     @app.post("/api/disputes/sync")
     async def sync_disputes(background: BackgroundTasks):
-        """Pull disputes from PayPal and record the ones that are new or changed since we last
-        stored them (same recording path as webhooks; unchanged ones add no rows)."""
+        """The Sync disputes button. AI recommendations for new/changed disputes run after
+        the response is sent."""
         try:
-            items = await paypal.list_disputes()
+            result = await sync_once("manual")
         except PayPalError as err:
             raise fail(err)
+        if result is None:
+            raise HTTPException(409, "A sync is already running")
+        counts, changed = result
+        for dispute_id in changed:
+            background.add_task(assistant.auto_recommend, dispute_id)
+        return counts
+
+    @app.get("/api/disputes/sync/status")
+    async def sync_status():
+        return sync_state
+
+    async def auto_sync() -> None:
+        """One auto-sync run (the scheduler catches and logs any error)."""
+        result = await sync_once("auto")
+        for dispute_id in (result[1] if result else []):
+            await assistant.auto_recommend(dispute_id)
+
+    app.state.auto_sync = auto_sync  # lets tests run one scheduler tick without sleeping
+
+    async def sync_once(trigger: str) -> tuple[dict, list[str]] | None:
+        """Run one dispute sync unless one is already running (then return None). Returns the
+        counts and the IDs of disputes that are new or changed."""
+        if sync_lock.locked():
+            log.info("Dispute sync (%s) skipped: another sync is still running", trigger)
+            return None
+        async with sync_lock:
+            sync_state["running"] = True
+            try:
+                counts, changed = await pull_disputes()
+            except Exception as err:
+                sync_state.update(error=err.readable if isinstance(err, PayPalError) else str(err),
+                                  trigger=trigger)
+                raise
+            finally:
+                sync_state["running"] = False
+            sync_state.update(last_synced_at=time.time(), trigger=trigger, counts=counts,
+                              error=None)
+            return counts, changed
+
+    async def pull_disputes() -> tuple[dict, list[str]]:
+        """Pull disputes from PayPal and record the ones that are new or changed since we last
+        stored them (same recording path as webhooks; unchanged ones add no rows)."""
+        items = await paypal.list_disputes()
         counts = {"listed": len(items), "new": 0, "changed": 0, "unchanged": 0, "failed": 0}
+        changed = []
         for item in items:
             dispute_id = item.get("dispute_id")
             known = store.latest_dispute_state(dispute_id) if dispute_id else None
@@ -534,8 +611,49 @@ def create_app(settings: Settings | None = None,
             store_dispute(snapshot_kind(known, dispute), dispute, dispute_id=dispute_id,
                           extra={"source": "sync"})
             counts["changed" if known else "new"] += 1
-            background.add_task(assistant.auto_recommend, dispute_id)
-        return counts
+            changed.append(dispute_id)
+        return counts, changed
+
+    # ---- Sandbox-only test helper --------------------------------------------
+
+    @app.post("/api/disputes/{dispute_id}/sandbox/require-seller-evidence")
+    async def sandbox_require_seller_evidence(dispute_id: str, background: BackgroundTasks):
+        """SANDBOX ONLY: simulate PayPal asking the seller for evidence (UNDER_REVIEW ->
+        WAITING_FOR_SELLER_RESPONSE). Doesn't exist at all in live mode."""
+        if settings.paypal_env != "sandbox":
+            raise HTTPException(404, "Not Found")
+        known = store.latest_dispute_state(dispute_id)
+        if not known:
+            raise HTTPException(404, "Unknown dispute")
+        try:
+            dispute = await paypal.get_dispute(dispute_id)
+        except PayPalError as err:
+            raise fail(err)
+        if dispute.get("status") != "UNDER_REVIEW":
+            raise HTTPException(409, "Only disputes that PayPal is reviewing (UNDER_REVIEW) can "
+                                     f"be moved; this one is {dispute.get('status')}.")
+        order_id = known["order_id"]
+        base = {"dispute_id": dispute_id, "action": "SELLER_EVIDENCE",
+                "from_status": dispute.get("status")}
+        try:
+            await paypal.sandbox_require_seller_evidence(dispute_id)
+        except PayPalError as err:
+            store.add(order_id, "sandbox_status_change_failed",
+                      {**base, "error": err.readable, "paypal_status": err.status,
+                       "paypal_issue": next(iter(err.issues), None), "debug_id": err.debug_id})
+            raise HTTPException(502, err.readable)
+        store.add(order_id, "sandbox_status_changed", base)
+        try:
+            fresh = await paypal.get_dispute(dispute_id)
+        except PayPalError as err:
+            raise fail(err)
+        current = store.latest_dispute_state(dispute_id)
+        if is_new_state(current, fresh):
+            store_dispute(snapshot_kind(current, fresh), fresh, dispute_id=dispute_id,
+                          extra={"source": "sandbox"})
+        # The normal rules decide whether an AI recommendation runs for the new state.
+        background.add_task(assistant.auto_recommend, dispute_id)
+        return {"status": fresh.get("status")}
 
     @app.get("/api/orders")
     async def list_orders():

@@ -181,6 +181,22 @@ curl.exe -X POST http://localhost:8000/api/ai/reset     # go back to Gemini
    Clearline checks a fresh copy of the dispute first and refuses actions PayPal doesn't
    currently allow. It never retries a rejected action on its own.
 
+### 4. Auto-sync (safety net for missed webhooks)
+
+Quick tunnels die (sleep, network changes), and PayPal's webhooks then go nowhere. The app
+therefore also pulls disputes from PayPal every `AUTO_SYNC_MINUTES` (default 3; `0` turns it
+off). It only reads from PayPal. "Last synced: … (auto)" next to **Sync disputes** shows when
+it last ran.
+
+### 5. Sandbox test tool: "PayPal asks the seller for evidence"
+
+Sandbox claims often sit in `UNDER_REVIEW`, where the seller can't act. On `/seller`, such
+disputes show a dashed button **Sandbox: simulate PayPal asking the seller for evidence**. It
+calls PayPal's sandbox-only *Update dispute status* endpoint (`require-evidence` with
+`{"action": "SELLER_EVIDENCE"}`), which moves the dispute to `WAITING_FOR_SELLER_RESPONSE` so
+the AI recommendation and Approve flow can be tested. It doesn't exist in live mode (the
+button is hidden and the endpoint returns 404).
+
 ## Layout
 
 | File | Purpose |

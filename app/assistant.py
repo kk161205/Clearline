@@ -225,12 +225,14 @@ class Assistant:
         if (not self.ai.configured or not state or state["order_id"].startswith("unmatched:")
                 or state["payload"].get("status") != "WAITING_FOR_SELLER_RESPONSE"):
             return
-        await self.recommend(dispute_id)
+        await self.recommend(dispute_id, trigger="auto")
 
-    async def recommend(self, dispute_id: str, *, force: bool = False) -> dict | None:
+    async def recommend(self, dispute_id: str, *, force: bool = False,
+                        trigger: str = "regenerate") -> dict | None:
         """Generate and store a recommendation for the dispute's current state. Returns the
         stored event ({kind, payload}), or None if one already exists for this update_time
-        (unless force=True, i.e. the seller clicked Regenerate)."""
+        (unless force=True, i.e. the seller clicked Regenerate). `trigger` ("auto" or
+        "regenerate") is stored so the timeline shows why it ran."""
         state = self.store.latest_dispute_state(dispute_id)
         if not state:
             raise LookupError(dispute_id)
@@ -241,7 +243,7 @@ class Assistant:
             return None
 
         base = {"dispute_id": dispute_id, "dispute_update_time": update_time,
-                "prompt_version": PROMPT_VERSION}
+                "prompt_version": PROMPT_VERSION, "trigger": trigger}
         facts = build_facts(self.store, order_id, dispute_id)
         try:
             result = await self._ask(facts)

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_model: str = "openai/gpt-oss-120b"
     ai_timeout_seconds: float = 20
+    # Pull disputes from PayPal every N minutes as a safety net for missed webhooks; 0 = off.
+    auto_sync_minutes: float = 3
 
     @property
     def api_base(self) -> str:

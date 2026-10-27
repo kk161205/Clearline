@@ -35,6 +35,29 @@ class PayPalError(Exception):
     def debug_id(self) -> str | None:
         return self.body.get("debug_id") if isinstance(self.body, dict) else None
 
+    @property
+    def readable(self) -> str:
+        """A short sentence for the seller instead of PayPal's raw error body."""
+        for issue in self.issues:
+            if issue in ISSUE_TEXT:
+                return ISSUE_TEXT[issue]
+        if self.status in (401, 403):
+            return "PayPal refused access (check the app credentials and permissions)"
+        message = self.body.get("message") if isinstance(self.body, dict) else None
+        return message or f"PayPal rejected the request (HTTP {self.status})"
+
+
+# PayPal issue codes we explain in plain words; others fall back to PayPal's own message.
+ISSUE_TEXT = {
+    "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE":
+        "PayPal didn't allow this step in the dispute's current state",
+    "PERMISSION_DENIED": "This app isn't allowed to do that on this dispute",
+    "NOT_AUTHORIZED": "This app isn't allowed to do that on this dispute",
+    "INVALID_PARAMETER_VALUE": "PayPal rejected one of the values we sent",
+    "MISSING_REQUIRED_PARAMETER": "PayPal says a required field is missing",
+    "INVALID_REQUEST_BODY": "PayPal couldn't read the request we sent",
+}
+
 
 class PayPalClient:
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None):
@@ -189,6 +212,14 @@ class PayPalClient:
             body["note"] = note
         return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/accept-claim",
                                    json_part=body, idempotent=True)
+
+    async def sandbox_require_seller_evidence(self, dispute_id: str) -> dict:
+        """SANDBOX ONLY ("Update dispute status"): move an UNDER_REVIEW dispute to
+        WAITING_FOR_SELLER_RESPONSE, as if PayPal asked the seller for evidence."""
+        if self.settings.paypal_env != "sandbox":
+            raise RuntimeError("require-evidence exists only in the PayPal Sandbox")
+        return await self._request("POST", f"/v1/customer/disputes/{dispute_id}/require-evidence",
+                                   json={"action": "SELLER_EVIDENCE"}, idempotent=True)
 
 
 def _body(resp: httpx.Response) -> dict | str:

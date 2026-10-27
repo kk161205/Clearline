@@ -130,13 +130,20 @@ def test_ai_failure_or_invented_date_falls_back_to_template(tmp_path):
         assert client.get(api_of(link)).json()["summary"]["source"] == "template"
     assert gemini.call_count == 2  # one corrective retry, then never again for this state
 
-    (tmp_path / "down").mkdir()
-    gemini.mock(return_value=httpx.Response(503))
-    groq = respx.post(GROQ).mock(return_value=httpx.Response(500))
-    client, _ = make_client(tmp_path / "down")
+
+@respx.mock
+def test_summary_failure_never_switches_the_ai_provider(tmp_path):
+    """Day 5 fix: only the dispute assistant may switch Gemini -> Groq."""
+    setup_paypal()
+    gemini = respx.post(GEMINI).mock(return_value=httpx.Response(503))  # would switch for disputes
+    groq = respx.post(GROQ).mock(return_value=summary_reply("You paid 120.00 USD."))
+    client, settings = make_client(tmp_path)
     link = captured_with_pii(client)["buyerLink"]
     page = client.get(api_of(link)).json()
-    assert page["summary"]["source"] == "template" and groq.call_count == 1
+    assert page["summary"]["source"] == "template"  # shown at once, failure only logged
+    assert gemini.call_count == 1 and not groq.called
+    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert client.get("/api/orders/other/timeline").status_code == 404  # no ai_provider_switched
 
 
 def test_summary_guardrail_and_template():

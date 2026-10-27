@@ -84,7 +84,7 @@
         ${r.replies.length ? r.replies.map((x) => `<div class="reply"><strong>${esc(d.seller)}:</strong> ${esc(x.message)}</div>`).join("")
           : `<div class="muted">Waiting for the seller's reply.</div>`}</div>`).join("");
     return `<div class="card">
-        <div class="muted">Order …${esc(d.order_ref)}</div>
+        <div class="muted">${d.kind === "invoice" ? "Invoice" : "Order"} …${esc(d.order_ref)}</div>
         <h1>${esc(d.seller)}</h1>
         <div>${esc(d.item)}</div>
         <div class="amount">${esc(d.amount)} ${esc(d.currency)}</div>
@@ -92,7 +92,7 @@
         <p class="summary" data-source="${esc(d.summary.source)}">${esc(d.summary.text)}</p>
         ${d.refunds.map(refundLine).join("")}
       </div>
-      <div class="card"><h2>Shipping</h2>${shippingHtml(d.shipping)}</div>
+      ${d.shipping ? `<div class="card"><h2>Shipping</h2>${shippingHtml(d.shipping)}</div>` : ""}
       <div class="card"><h2>Need help?</h2><div class="help">${help}</div>
         ${msg ? `<div class="notice" role="status">${esc(msg)}</div>` : ""}<div class="error" role="alert"></div></div>
       ${d.requests.length ? `<div class="card"><h2>Your messages</h2>${requests}</div>` : ""}`;

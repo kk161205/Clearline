@@ -77,10 +77,18 @@ class AIClient:
                            {"from": previous, "to": "gemini", "reason": "manual reset"})
 
     async def complete(self, messages: list[dict], *, schema_name: str, schema: dict,
-                       model_cls: type[BaseModel], prompt_version: str) -> AIResult:
+                       model_cls: type[BaseModel], prompt_version: str,
+                       allow_switch: bool = True) -> AIResult:
         """Run one structured request on the active provider, switching Gemini -> Groq for good
-        if Gemini looks down or misconfigured. Raises AIError if the request can't be served."""
+        if Gemini looks down or misconfigured. Raises AIError if the request can't be served.
+
+        allow_switch=False (buyer summaries, invoice drafts, reminders, purpose suggestions):
+        use the active provider only and raise on failure; only the dispute assistant may
+        switch the app's provider."""
         provider = self.store.ai_state()["active_provider"]
+        if not allow_switch:
+            return await self._call_validated(provider, messages, schema_name, schema,
+                                              model_cls, prompt_version)
         if provider == "gemini":
             try:
                 return await self._call_validated("gemini", messages, schema_name, schema,

@@ -52,6 +52,20 @@
     .buyer .req { border-top:1px solid var(--line); padding:8px 0; }
     .buyer .reply { background:#effaf3; border-radius:8px; padding:6px 8px; margin-top:4px; }
     .buyer textarea { width:100%; min-height:60px; margin-top:6px; }
+    .invoices { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:12px; }
+    .invoices h2 { font-size:16px; margin:0 0 8px; }
+    .invoices summary { cursor:pointer; font-weight:600; margin-bottom:8px; }
+    .invoice-panel textarea { width:100%; min-height:56px; }
+    .invoice-panel label { display:block; font-size:13px; font-weight:600; margin-top:8px; }
+    .invoice-panel .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:4px 12px; }
+    .invoice-panel .grid input, .invoice-panel .grid select { width:100%; }
+    .item-row { display:grid; grid-template-columns:1fr 70px 110px auto; gap:6px; margin-top:4px; }
+    .invoices table { width:100%; border-collapse:collapse; font-size:14px; margin-top:8px; }
+    .invoices th, .invoices td { text-align:left; padding:6px 4px; border-top:1px solid var(--line); vertical-align:top; }
+    .invoices td textarea, .invoices td input { width:100%; }
+    .export { border:1px dashed var(--line); border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
+    .export h4 { margin:0 0 4px; font-size:14px; }
+    .export label { display:block; margin-top:6px; }
     .ok { color:var(--ok); } .bad { color:var(--bad); }
     #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
     #other .order { padding:10px 12px; font-size:13px; }
@@ -67,6 +81,31 @@
     <button id="logout" class="secondary">Log out</button>
   </header>
   <div id="stats" class="stats" hidden></div>
+  <section class="invoices">
+    <h2>Invoices</h2>
+    <details id="new-invoice"><summary>New invoice</summary>
+      <div class="invoice-panel">
+        <label for="invoice-text">Describe it in your own words</label>
+        <textarea id="invoice-text" maxlength="1000" placeholder="Bill Acme Corp 1200 USD for logo design, due in 14 days"></textarea>
+        <div class="row"><button class="secondary" id="invoice-extract">Draft with AI</button>
+          <span class="muted">The AI only fills the form below; review everything before creating.</span></div>
+        <div class="grid">
+          <label>Client name <input id="inv-client" maxlength="300" /></label>
+          <label>Client email <input id="inv-email" type="email" maxlength="254" placeholder="typed by you, never by the AI" /></label>
+          <label>Currency <select id="inv-currency"></select></label>
+          <label>Due date <input id="inv-due" type="date" /></label>
+        </div>
+        <label>Line items</label>
+        <div id="inv-items"></div>
+        <button class="secondary" id="inv-add-item">Add line</button>
+        <label>Note to the client (optional) <textarea id="inv-note" maxlength="1000"></textarea></label>
+        <div class="row"><button id="invoice-create">Create draft</button>
+          <span class="muted">Creates a PayPal draft only. Sending is a separate click in the list.</span></div>
+        <div class="msg"></div>
+      </div>
+    </details>
+    <div id="invoice-list"></div>
+  </section>
   <div id="orders"><p class="muted">Loading…</p></div>
   <div id="other"></div>
 </main>
@@ -344,7 +383,7 @@
         <textarea data-reply-text placeholder="Reply to the buyer (shown on their order page)" maxlength="1000"></textarea>
         <div class="row">
           <button class="secondary" data-reply="${esc(r.id)}" data-order="${esc(orderId)}">Send reply</button>
-          ${r.type === "refund" && canRefund ? `
+          ${canRefund ? `
             <button data-refund="full" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund full amount (${esc(b.refundable)} ${esc(b.currency)})</button>
             <button class="secondary" data-refund="partial" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund partial…</button>` : ""}
         </div><div class="msg"></div></div>`).join("");
@@ -365,9 +404,53 @@
     el.hidden = false;
   }
 
+  // India export paperwork for a received international payment. Guidance only: the AI may
+  // suggest a purpose code, but only the seller's pick is recorded.
+  function exportSection(orderId, x) {
+    if (!x) return "";
+    const s = x.suggestion;
+    const options = Object.entries(x.purpose_codes).map(([code, label]) =>
+      `<option value="${esc(code)}"${code === x.purpose_code ? " selected" : ""}>${esc(code)} · ${esc(label)}</option>`).join("");
+    return `<div class="export" data-export="${esc(orderId)}">
+        <h4>Export paperwork <span class="muted">(${esc(x.disclaimer)})</span></h4>
+        <div class="muted">Payment from ${esc(x.payment.country || "abroad")}: ${esc(x.payment.amount)} ${esc(x.payment.currency)} · ${esc(x.payment.description)}</div>
+        <label>Purpose code ${x.purpose_code ? `<span class="ok">✓ ${esc(x.purpose_code)}</span>` : '<span class="bad">not chosen</span>'}</label>
+        <div class="row"><select data-purpose><option value="">Choose the code that fits this payment…</option>${options}</select>
+          <button class="secondary" data-purpose-save="${esc(orderId)}">Save</button>
+          <button class="secondary" data-purpose-suggest="${esc(orderId)}">Ask AI to suggest</button></div>
+        ${s ? `<div class="muted">AI suggests <strong>${esc(s.code)}</strong>: ${esc(s.reason)} (not applied; pick it above if it fits)</div>` : ""}
+        <div class="muted">PayPal applies the purpose code set on your account (Settings → Purpose code) to your payments; check it matches.</div>
+        <label><input type="checkbox" data-fira="${esc(orderId)}"${x.fira_downloaded ? " checked" : ""} /> FIRA downloaded
+          <span class="muted">(PayPal monthly digital FIRA: Reports → Statements → FIRA, by the 15th of next month)</span></label>
+        <div class="muted">Sources: ${x.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.label)}</a>`).join(" · ")}</div>
+        <div class="msg"></div></div>`;
+  }
+
+  const INVOICE_STATUS_CLASS = { Paid: "ok", Overdue: "bad", Cancelled: "muted", Draft: "muted" };
+
+  async function renderInvoices() {
+    const res = await fetch("/api/invoices");
+    if (!res.ok) return;
+    const rows = await res.json(), list = document.getElementById("invoice-list");
+    list.innerHTML = rows.length ? `<table><thead><tr><th>Number</th><th>Client</th><th>Amount</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>${
+      rows.map((r) => `<tr data-invoice="${esc(r.invoice_id)}">
+        <td>${esc(r.number || "—")}</td><td>${esc(r.client || "—")}</td><td>${esc(r.amount)} ${esc(r.currency)}</td>
+        <td>${esc(r.due_date || "—")}</td>
+        <td class="${INVOICE_STATUS_CLASS[r.display_status] || ""}">${esc(r.display_status)}${r.days_overdue ? ` (${esc(r.days_overdue)} days)` : ""}</td>
+        <td>${r.display_status === "Draft" ? `<button data-invoice-send="${esc(r.invoice_id)}">Send invoice</button>` : ""}
+            ${r.display_status === "Overdue" ? `<button class="secondary" data-invoice-remind="${esc(r.invoice_id)}">Send reminder</button>` : ""}</td></tr>
+        <tr class="reminder-row" hidden><td colspan="6" data-reminder="${esc(r.invoice_id)}"></td></tr>`).join("")}</tbody></table>`
+      : '<p class="muted">No invoices yet.</p>';
+    list.querySelectorAll("[data-invoice-send]").forEach((b) => b.addEventListener("click", () => sendInvoice(b)));
+    list.querySelectorAll("[data-invoice-remind]").forEach((b) => b.addEventListener("click", () => draftReminder(b)));
+  }
+
   async function render() {
     const all = await (await fetch("/api/orders")).json();
-    const orders = all.filter((o) => !isSide(o.order_id));
+    renderInvoices();
+    // Invoices show in the orders list once paid (with a buyer link like any order).
+    const orders = all.filter((o) => !isSide(o.order_id)
+      && !(o.kinds.includes("invoice_status") && !o.kinds.includes("invoice_paid")));
     const root = document.getElementById("orders");
     renderOther(all.filter((o) => isSide(o.order_id)));
     if (!orders.length) { root.innerHTML = '<p class="muted">No orders yet. Pay one on the checkout page.</p>'; return; }
@@ -375,17 +458,20 @@
       const events = await getTimeline(o.order_id);
       const state = currentDispute(events);
       const d = disputePanel(state);
-      const captured = events.some((e) => e.kind === "payment_captured");
+      const invoicePaid = events.find((e) => e.kind === "invoice_paid");
+      const captured = events.some((e) => e.kind === "payment_captured") || Boolean(invoicePaid);
       const tracked = events.some((e) => e.kind === "tracking_added");
       const buyer = captured ? await (await fetch(`/api/orders/${encodeURIComponent(o.order_id)}/buyer`)).json().catch(() => null) : null;
+      const exp = captured ? await fetch(`/api/export/${encodeURIComponent(o.order_id)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
       const steps = timelineRows(events);
-      const form = captured && !tracked ? `
+      const title = invoicePaid ? `Invoice ${esc(invoicePaid.payload.number || o.order_id)} · paid` : esc(o.order_id);
+      const form = captured && !tracked && !invoicePaid ? `
         <form data-order="${esc(o.order_id)}">
           <input name="tracking_number" placeholder="Tracking number" required />
           <select name="carrier"><option>DHL</option><option>FEDEX</option><option>UPS</option><option>USPS</option></select>
           <button>Mark shipped</button>
         </form><div class="msg"></div>` : "";
-      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}${buyerSection(o.order_id, buyer)}<ol>${steps}</ol>${form}</div>`;
+      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${title}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}${buyerSection(o.order_id, buyer)}${exportSection(o.order_id, exp)}<ol>${steps}</ol>${form}</div>`;
     }));
     root.innerHTML = blocks.join("");
     root.querySelectorAll("form").forEach((f) => f.addEventListener("submit", async (ev) => {
@@ -408,6 +494,9 @@
     root.querySelectorAll("[data-refund]").forEach((b) => b.addEventListener("click", () => refund(b)));
     root.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () =>
       navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "Copied ✓"; })));
+    root.querySelectorAll("[data-purpose-save]").forEach((b) => b.addEventListener("click", () => savePurpose(b)));
+    root.querySelectorAll("[data-purpose-suggest]").forEach((b) => b.addEventListener("click", () => suggestPurpose(b)));
+    root.querySelectorAll("[data-fira]").forEach((c) => c.addEventListener("change", () => saveFira(c)));
     loadStats();
     root.querySelectorAll(".ai textarea, .ai input, .ai select").forEach((el) =>
       el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
@@ -477,7 +566,8 @@
   }
 
   async function withBusy(button, text, fn) {
-    const card = button.closest(".ai, .sandbox-tool, .req"), msg = card.querySelector(".msg");
+    const card = button.closest(".ai, .sandbox-tool, .req, .export, .invoice-panel, [data-reminder]") || document.querySelector(".invoice-panel");
+    const msg = card.querySelector(".msg");
     const old = button.textContent;
     button.disabled = true; button.textContent = text; busy++;
     try { msg.textContent = (await fn()) || ""; msg.className = "msg"; }
@@ -556,6 +646,127 @@
     root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
   }
 
+  // ---- Invoices: the AI drafts, the seller reviews, creates, sends and reminds ------------
+
+  const CURRENCIES = ["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "AED", "JPY", "CHF"];
+  const $ = (id) => document.getElementById(id);
+  $("inv-currency").innerHTML = CURRENCIES.map((c) => `<option>${c}</option>`).join("");
+
+  const itemRow = (it = {}) => `<div class="item-row">
+      <input data-item="name" placeholder="What you're billing for" maxlength="200" value="${esc(it.name || "")}" />
+      <input data-item="quantity" type="number" min="0.00001" step="any" value="${esc(it.quantity ?? 1)}" />
+      <input data-item="unit_amount" type="number" min="0.01" step="0.01" placeholder="Amount" value="${esc(it.unit_amount ?? "")}" />
+      <button class="secondary" data-item-remove>✕</button></div>`;
+  function setItems(items) {
+    $("inv-items").innerHTML = (items.length ? items : [{}]).map(itemRow).join("");
+    $("inv-items").querySelectorAll("[data-item-remove]").forEach((b) => b.addEventListener("click", () => {
+      b.closest(".item-row").remove();
+      if (!$("inv-items").children.length) setItems([]);
+    }));
+  }
+  setItems([]);
+  $("inv-add-item").addEventListener("click", () => setItems([...readItems(), {}]));
+  const readItems = () => [...$("inv-items").querySelectorAll(".item-row")].map((row) => ({
+    name: row.querySelector('[data-item="name"]').value.trim(),
+    quantity: Number(row.querySelector('[data-item="quantity"]').value),
+    unit_amount: Number(row.querySelector('[data-item="unit_amount"]').value),
+  }));
+
+  $("invoice-extract").addEventListener("click", (ev) => withBusy(ev.currentTarget, "Drafting…", async () => {
+    const res = await fetch("/api/invoices/extract", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("invoice-text").value }),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    const d = await res.json();
+    $("inv-client").value = d.client_name || "";
+    if (d.currency) $("inv-currency").value = d.currency;
+    $("inv-due").value = d.due_date || "";
+    $("inv-note").value = d.note || "";
+    setItems(d.items || []);
+    return `Draft filled in by AI (${d.provider}). Check it, type the client's email, then Create draft.`;
+  }));
+
+  $("invoice-create").addEventListener("click", (ev) => {
+    const body = { client_name: $("inv-client").value.trim(), email: $("inv-email").value.trim(),
+                   currency: $("inv-currency").value, items: readItems().filter((i) => i.name),
+                   due_date: $("inv-due").value || null, note: $("inv-note").value.trim() || null };
+    if (!body.client_name || !body.email || !body.items.length) { alert("Fill in the client, their email and at least one line."); return; }
+    return withBusy(ev.currentTarget, "Creating…", async () => {
+      const res = await fetch("/api/invoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`Not created: ${await errorText(res)}`);
+      const row = await res.json();
+      await renderInvoices();
+      return `Draft ${row.number || ""} created in PayPal. Send it from the list when you're ready.`;
+    });
+  });
+
+  function sendInvoice(button) {
+    if (!confirm("Send this invoice to the client by PayPal email now?")) return;
+    return withBusy(button, "Sending…", async () => {
+      const res = await fetch(`/api/invoices/${encodeURIComponent(button.dataset.invoiceSend)}/send`, { method: "POST" });
+      if (!res.ok) throw new Error(`Not sent: ${await errorText(res)}`);
+      await renderInvoices();
+    });
+  }
+
+  // The AI (or a template) drafts the reminder; the seller edits it and clicks to send.
+  function draftReminder(button) {
+    const id = button.dataset.invoiceRemind, cell = document.querySelector(`[data-reminder="${CSS.escape(id)}"]`);
+    cell.parentElement.hidden = false;
+    cell.innerHTML = '<span class="muted">Drafting…</span><div class="msg"></div>';
+    return withBusy(button, "Drafting…", async () => {
+      const res = await fetch(`/api/invoices/${encodeURIComponent(id)}/reminder-draft`, { method: "POST" });
+      if (!res.ok) throw new Error(await errorText(res));
+      const d = await res.json();
+      cell.innerHTML = `<label>Subject <input data-rem="subject" maxlength="100" value="${esc(d.subject)}" /></label>
+        <label>Note <textarea data-rem="note" maxlength="600">${esc(d.note)}</textarea></label>
+        <div class="muted">${d.source === "ai" ? `Drafted by AI for ${esc(d.days_overdue)} days overdue.` : "Plain template (AI unavailable)."} Edit freely; nothing is sent until you click.</div>
+        <button data-rem-send="${esc(id)}">Send reminder via PayPal</button><div class="msg"></div>`;
+      cell.querySelectorAll("input, textarea").forEach((el) => el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
+      cell.querySelector("[data-rem-send]").addEventListener("click", (e) => sendReminder(e.currentTarget, cell));
+    });
+  }
+
+  function sendReminder(button, cell) {
+    const subject = cell.querySelector('[data-rem="subject"]').value.trim(), note = cell.querySelector('[data-rem="note"]').value.trim();
+    if (!confirm("Send this reminder to the client through PayPal?")) return;
+    return withBusy(button, "Sending…", async () => {
+      const res = await fetch(`/api/invoices/${encodeURIComponent(button.dataset.remSend)}/remind`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject, note }),
+      });
+      if (!res.ok) throw new Error(`Not sent: ${await errorText(res)}`);
+      await renderInvoices();
+    });
+  }
+
+  // ---- Export paperwork (India) ---------------------------------------------------------
+
+  function savePurpose(button) {
+    const code = button.closest(".export").querySelector("[data-purpose]").value;
+    if (!code) { alert("Choose a purpose code first."); return; }
+    return withBusy(button, "Saving…", async () => {
+      const res = await fetch(`/api/export/${encodeURIComponent(button.dataset.purposeSave)}/purpose`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }),
+      });
+      if (!res.ok) throw new Error(await errorText(res));
+      await render();
+    });
+  }
+
+  function suggestPurpose(button) {
+    return withBusy(button, "Thinking…", async () => {
+      const res = await fetch(`/api/export/${encodeURIComponent(button.dataset.purposeSuggest)}/suggest`, { method: "POST" });
+      if (!res.ok) throw new Error(await errorText(res));
+      await render();
+    });
+  }
+
+  async function saveFira(checkbox) {
+    await fetch(`/api/export/${encodeURIComponent(checkbox.dataset.fira)}/fira`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ downloaded: checkbox.checked }),
+    });
+  }
+
   document.getElementById("logout").addEventListener("click", async () => {
     await fetch("/api/logout", { method: "POST" }).catch(() => {});
     location.href = "/login";
@@ -579,8 +790,9 @@
   // edited an AI draft, has a half-typed tracking number, or is waiting on a button.
   function typing() {
     const active = document.activeElement;
-    if (active && active.closest("#orders") && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return true;
-    if (document.querySelector("#orders [data-dirty]")) return true;
+    if (active && active.closest("#orders, .invoices") && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return true;
+    if (document.querySelector("#orders [data-dirty], .invoices [data-dirty]")) return true;
+    if (document.querySelector(".reminder-row:not([hidden])")) return true; // a reminder is being drafted
     return busy > 0 || [...document.querySelectorAll("#orders form input")].some((i) => i.value);
   }
 

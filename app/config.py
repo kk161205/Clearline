@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     seller_password: str | None = None
     # Shown to buyers on their order page ("what is this charge?").
     seller_display_name: str = "Demo Design Studio"
+    # Day 5: the seller's country (ISO code). "IN" shows the India export paperwork checklist.
+    seller_country: str = "IN"
 
     @property
     def api_base(self) -> str:

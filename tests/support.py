@@ -21,7 +21,7 @@ SELLER_PASSWORD = "test-pass"
 
 
 def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env="sandbox",
-                auto_sync_minutes=0, login=True, seller_password=SELLER_PASSWORD):
+                auto_sync_minutes=0, login=True, seller_password=SELLER_PASSWORD, **overrides):
     # Every AI setting is explicit so a real .env can't change the result.
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
                         database_path=str(tmp_path / "test.db"), paypal_webhook_id="WH-1",
@@ -29,7 +29,8 @@ def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env=
                         groq_api_key=groq_key, groq_model="openai/gpt-oss-120b",
                         ai_timeout_seconds=5, paypal_env=paypal_env,
                         auto_sync_minutes=auto_sync_minutes, app_secret="test-secret",
-                        seller_password=seller_password)
+                        seller_password=seller_password,
+                        **{"seller_country": "IN", **overrides})
     http = httpx.AsyncClient(base_url=settings.api_base)
     client = TestClient(create_app(settings, http))
     if login and seller_password:

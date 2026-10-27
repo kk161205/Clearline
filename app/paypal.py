@@ -102,8 +102,9 @@ class PayPalClient:
     async def _request(self, method: str, path: str, *, json: dict | None = None,
                        idempotent: bool = False, params: dict | None = None,
                        json_part: dict | None = None,
-                       attachments: dict[str, tuple[str, bytes, str]] | None = None) -> dict:
-        headers = {"Authorization": f"Bearer {await self._access_token()}"}
+                       attachments: dict[str, tuple[str, bytes, str]] | None = None,
+                       extra_headers: dict | None = None) -> dict:
+        headers = {"Authorization": f"Bearer {await self._access_token()}", **(extra_headers or {})}
         if idempotent:
             # PayPal-Request-Id makes retries safe for calls that move money.
             headers["PayPal-Request-Id"] = str(uuid.uuid4())
@@ -143,6 +144,42 @@ class PayPalClient:
         body = {"amount": amount} if amount else {}
         return await self._request("POST", f"/v2/payments/captures/{capture_id}/refund",
                                    json=body, idempotent=True)
+
+    # ---- Invoicing v2 (only ever on the seller's click; send and remind are separate) ----
+
+    async def create_draft_invoice(self, body: dict) -> dict:
+        """Create a DRAFT invoice (nothing is sent to the client). Prefer: return=representation
+        makes PayPal return the full invoice instead of just a link."""
+        return await self._request("POST", "/v2/invoicing/invoices", json=body, idempotent=True,
+                                   extra_headers={"Prefer": "return=representation"})
+
+    async def get_invoice(self, invoice_id: str) -> dict:
+        return await self._request("GET", f"/v2/invoicing/invoices/{invoice_id}")
+
+    async def list_invoices(self, *, max_pages: int = 5) -> list[dict]:
+        """All invoices, newest first (page_size 100, PayPal's maximum)."""
+        items: list[dict] = []
+        for page in range(1, max_pages + 1):
+            data = await self._request("GET", "/v2/invoicing/invoices",
+                                       params={"page": page, "page_size": 100,
+                                               "total_required": "true"})
+            items += data.get("items", [])
+            if page >= int(data.get("total_pages") or 1):
+                break
+        return items
+
+    async def send_invoice(self, invoice_id: str) -> dict:
+        """Send a draft to the client by PayPal email (notification body per the schema)."""
+        return await self._request("POST", f"/v2/invoicing/invoices/{invoice_id}/send",
+                                   json={"send_to_recipient": True, "send_to_invoicer": True},
+                                   idempotent=True)
+
+    async def remind_invoice(self, invoice_id: str, *, subject: str, note: str) -> dict:
+        """Send a payment reminder (PayPal allows 2 per invoice per day)."""
+        return await self._request("POST", f"/v2/invoicing/invoices/{invoice_id}/remind",
+                                   json={"subject": subject, "note": note,
+                                         "send_to_recipient": True, "send_to_invoicer": True},
+                                   idempotent=True)
 
     async def get_order(self, order_id: str) -> dict:
         return await self._request("GET", f"/v2/checkout/orders/{order_id}")

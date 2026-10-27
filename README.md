@@ -308,6 +308,73 @@ SELLER_PASSWORD=<your password>
 4. On `/seller`, reply to it, then click **Refund partial…** (e.g. 40.00) and confirm.
 5. Reload the buyer page: your reply and "Refund of 40.00 USD sent" appear.
 
+## Day 5: invoices, reminders and India export paperwork
+
+### Invoices (PayPal Invoicing v2)
+
+On `/seller` → **Invoices** → **New invoice**, type what you want to bill, e.g.
+*"Bill Acme Corp 1200 USD for logo design, due in 14 days"*, and click **Draft with AI**.
+
+- The AI only fills the form: client name, line items, currency, due date. Emails, links and
+  phone numbers are removed from your text before the AI sees it.
+- Its draft is rejected if it uses an amount, quantity, client name, currency or due date
+  that isn't in your text, or adds an email. No AI key, or AI down? Fill in the form yourself.
+  These AI calls never switch the app's AI provider.
+- **You type the client's email** in its own field; the AI never fills it.
+- **Create draft** makes a PayPal *draft* invoice. Nothing is sent to the client.
+- **Send invoice** (in the list, a separate click) sends it by PayPal email.
+
+The list shows number, client, amount, due date and status. Status is Draft, Sent, Paid,
+Overdue, Cancelled or Refunded. PayPal has no "overdue" status, so Clearline shows Overdue for
+a sent, unpaid invoice past its due date. Statuses update from PayPal's `INVOICING.INVOICE.*`
+webhooks and from the background auto-sync, and each invoice keeps its own timeline (keyed by
+invoice ID).
+
+**Smart reminders:** an overdue invoice gets **Send reminder**. The AI drafts a short, polite
+note whose tone depends on how many days overdue it is. Facts only: drafts with threats, late
+fees, interest, legal language or invented numbers are rejected and replaced by a plain
+template. You edit it and click to send it through PayPal's `remind` endpoint. Nothing is
+sent automatically, and PayPal allows 2 reminders per invoice per day.
+
+**Paid invoices** appear in your orders with a buyer link like any order. The buyer page shows
+the last 6 characters of the invoice number, what was billed, and the amount; there's no
+shipping section for invoices. Refund buttons aren't offered for invoice payments yet.
+
+**PayPal webhook events to tick** (Developer Dashboard → your app → Webhooks):
+`INVOICING.INVOICE.CREATED`, `INVOICING.INVOICE.UPDATED`, `INVOICING.INVOICE.SENT`,
+`INVOICING.INVOICE.SCHEDULED`, `INVOICING.INVOICE.PAID`, `INVOICING.INVOICE.UNPAID`,
+`INVOICING.INVOICE.CANCELLED`, `INVOICING.INVOICE.REFUNDED`,
+`INVOICING.INVOICE.AUTOMATIC-REMINDER-SENT`. (The `USAGE-BILLING.INVOICE.*` events belong to
+PayPal's usage-based billing product, not Invoicing.)
+
+### India export paperwork checklist
+
+*Guidance, not legal or tax advice.* With `SELLER_COUNTRY=IN` (the default), every payment
+received from abroad gets an **Export paperwork** box:
+
+- **Purpose code:** pick one from the 14 codes PayPal accepts (PayPal's official
+  `purpose_code_enum`, "Required only for India"). **Ask AI to suggest** gives one code with a
+  one-line reason. It is shown as a suggestion only and never set for you. Note: PayPal
+  applies the purpose code set **on your PayPal account** (Settings → Purpose code); its API
+  has no per-invoice or per-payment purpose code, so this box is your record of what the
+  payment was for. Check that your account's code matches.
+- **FIRA:** tick "downloaded" once you have it. PayPal's free monthly digital FIRA covers the
+  previous month's international payments and is ready by the 15th (Reports → Statements →
+  FIRA); single transactions need a Custom FIRA request.
+- **Sources:** [PayPal: What is the purpose code?](https://www.paypal.com/in/cshelp/article/what-is-the-purpose-code-help978),
+  [PayPal: Change your purpose code](https://www.paypal.com/in/cshelp/article/how-do-i-change-my-purpose-code-help977),
+  [PayPal: Monthly Digital FIRA](https://www.paypal.com/in/brc/article/paypal-monthly-digital-firc),
+  [PayPal: purpose code list](https://developer.paypal.com/api/partner-referrals/v2/definitions/purpose_code_enum),
+  [RBI: purpose codes for forex receipts](https://www.rbi.org.in/upload/notification/pdfs/52220.pdf).
+
+### Test it
+
+1. On `/seller`, open **New invoice**, type the example sentence, click **Draft with AI**, add
+   a client email (a Sandbox personal account), then **Create draft**.
+2. Click **Send invoice**. Log in to https://www.sandbox.paypal.com as that buyer and pay it.
+3. Within a few minutes (webhook or auto-sync) it shows **Paid** and appears in your orders
+   with a buyer link and the Export paperwork box.
+
 ## Layout
 
 | File | Purpose |
@@ -324,3 +391,4 @@ SELLER_PASSWORD=<your password>
 | `app/buyer.py` | Buyer links, buyer page facts, cached AI summary, refund totals |
 | `app/auth.py` | Seller login, sessions, rate limits, the public-route list |
 | `app/evidence.py` | Checks for seller-provided dispute documents |
+| `app/invoicing.py` | Invoice drafts, statuses, reminder drafts, verified purpose codes |

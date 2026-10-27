@@ -1,9 +1,12 @@
 import asyncio
+import json
 import logging
+import re
 import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
@@ -13,12 +16,19 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from .ai import AIClient
+from .ai import AIClient, AIError
 from .assistant import Assistant, strip_pii
 from .auth import SESSION_COOKIE, SESSION_SECONDS, RateLimiter, SellerAuth, is_public
 from .buyer import (SummaryCache, answered_before_dispute, buyer_token, buyer_view,
                     order_for_token, refund_totals)
 from .config import Settings, get_settings
+from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
+                        OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
+                        PURPOSE_PROMPT_VERSION, PURPOSE_SCHEMA, REMINDER_PROMPT,
+                        REMINDER_PROMPT_VERSION, REMINDER_SCHEMA, InvoiceDraft,
+                        PurposeSuggestion, ReminderDraft, days_overdue, display_status,
+                        due_date_from, extract_problems, invoice_body, invoice_summary,
+                        reminder_facts, reminder_problems, state_signature, text_currency)
 from .evidence import (DOCUMENT_TYPES, MAX_BASE64_CHARS, EvidenceFile, EvidenceFileError,
                        document_evidence_types, parse_upload)
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
@@ -103,6 +113,49 @@ class RefundIn(BaseModel):
 
 class LoginIn(BaseModel):
     password: str = Field(max_length=200)
+
+
+class ExtractIn(BaseModel):
+    text: str = Field(min_length=3, max_length=1000)
+
+
+class InvoiceItemIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    quantity: float = Field(gt=0, le=1_000_000)
+    unit_amount: float = Field(gt=0, le=10_000_000)
+
+
+class CreateInvoiceIn(BaseModel):
+    """The seller-reviewed draft. The client email is always typed by the seller."""
+    client_name: str = Field(min_length=1, max_length=300)
+    email: str = Field(min_length=3, max_length=254)
+    currency: Literal["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "AED", "JPY", "CHF"]
+    items: list[InvoiceItemIn] = Field(min_length=1, max_length=20)
+    due_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ReminderIn(BaseModel):
+    subject: str = Field(min_length=3, max_length=100)
+    note: str = Field(min_length=10, max_length=600)
+
+
+class PurposeIn(BaseModel):
+    code: Literal["P0104", "P0301", "P0801", "P0802", "P0803", "P0805", "P0806", "P0902",
+                  "P1004", "P1005", "P1006", "P1007", "P1008", "P1009"]
+
+
+class FiraIn(BaseModel):
+    downloaded: bool
+
+
+EXPORT_DISCLAIMER = "Guidance, not legal or tax advice."
+EMAIL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
+INVOICE_EVENTS = {"INVOICING.INVOICE.CREATED", "INVOICING.INVOICE.UPDATED",
+                  "INVOICING.INVOICE.SENT", "INVOICING.INVOICE.SCHEDULED",
+                  "INVOICING.INVOICE.PAID", "INVOICING.INVOICE.UNPAID",
+                  "INVOICING.INVOICE.CANCELLED", "INVOICING.INVOICE.REFUNDED",
+                  "INVOICING.INVOICE.AUTOMATIC-REMINDER-SENT"}
 
 
 class ActionNotAllowed(Exception):
@@ -284,7 +337,7 @@ def create_app(settings: Settings | None = None,
     tracking_lock = asyncio.Lock()  # one "Mark shipped" at a time, so repeats are caught
     sync_lock = asyncio.Lock()
     sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
-                  "error": None, "auto_sync_minutes": settings.auto_sync_minutes}
+                  "error": None, "invoices": None, "auto_sync_minutes": settings.auto_sync_minutes}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -537,11 +590,275 @@ def create_app(settings: Settings | None = None,
     async def stats():
         return {"questions_answered_before_dispute": answered_before_dispute(store)}
 
+    # ---- Invoices (Day 5): AI drafts, the seller creates, sends and reminds ----
+
+    def today() -> date:
+        return datetime.now(timezone.utc).date()
+
+    def latest_invoice(invoice_id: str) -> dict | None:
+        rows = [e for e in store.timeline(invoice_id) if e["kind"] == "invoice_status"]
+        return rows[-1]["payload"] if rows else None
+
+    def record_invoice(summary: dict, *, source: str, event_id: str | None = None) -> bool:
+        """Store an invoice snapshot on its own timeline (keyed by invoice id) if anything
+        changed, and record invoice_paid once when it gets paid. Returns True if stored."""
+        invoice_id = summary.get("invoice_id")
+        if not invoice_id:
+            return False
+        known = latest_invoice(invoice_id)
+        changed = not known or state_signature(known) != state_signature(summary)
+        if changed:
+            store.add(invoice_id, "invoice_status", {**summary, "source": source,
+                                                     "event_id": event_id})
+        events = store.timeline(invoice_id)
+        if summary.get("status") in PAID and not any(e["kind"] == "invoice_paid" for e in events):
+            store.add(invoice_id, "invoice_paid", {k: summary.get(k) for k in (
+                "invoice_id", "number", "amount", "currency", "items", "paid_on",
+                "recipient_country")})
+        return changed
+
+    async def record_invoice_webhook(event: dict, resource: dict) -> None:
+        """INVOICING.INVOICE.* webhook: re-fetch the invoice (the webhook may be stale or
+        partial) and record its current state."""
+        invoice = resource.get("invoice") if isinstance(resource.get("invoice"), dict) else resource
+        invoice_id = invoice.get("id")
+        try:
+            invoice = await paypal.get_invoice(invoice_id)
+        except (PayPalError, httpx.HTTPError) as err:
+            log.warning("Invoice %s webhook: re-fetch failed (%s); using the webhook copy",
+                        invoice_id, err)
+        record_invoice(invoice_summary(invoice), source="webhook", event_id=event.get("id"))
+
+    def invoice_row(summary: dict) -> dict:
+        """One line of the seller's invoice list."""
+        return {**{k: summary.get(k) for k in ("invoice_id", "number", "client", "email",
+                                               "amount", "currency", "due_date", "status")},
+                "display_status": display_status(summary, today()),
+                "days_overdue": days_overdue(summary, today())}
+
+    @app.get("/api/invoices")
+    async def list_invoices():
+        rows = [invoice_row(s) for o in store.orders() if "invoice_status" in o["kinds"]
+                if (s := latest_invoice(o["order_id"]))]
+        return sorted(rows, key=lambda r: r.get("number") or "", reverse=True)
+
+    @app.post("/api/invoices/extract")
+    async def extract_invoice(body: ExtractIn):
+        """AI turns the seller's sentence into a draft to review. Nothing is created here.
+        Emails, links and phone numbers are stripped before the AI sees the text."""
+        if not ai.configured:
+            raise HTTPException(503, "No AI key configured: fill in the invoice form yourself.")
+        text = strip_pii(body.text)
+        messages = [{"role": "system", "content": EXTRACT_PROMPT},
+                    {"role": "user", "content": text}]
+        problems: list[str] = []
+        try:
+            for _ in range(2):
+                result = await ai.complete(messages, schema_name="invoice_draft",
+                                           schema=EXTRACT_SCHEMA, model_cls=InvoiceDraft,
+                                           prompt_version=EXTRACT_PROMPT_VERSION,
+                                           allow_switch=False)
+                problems = extract_problems(result.data, text)
+                if not problems:
+                    draft = result.data.model_dump()
+                    return {**draft, "currency": draft["currency"] or text_currency(text),
+                            "due_date": due_date_from(draft["due_in_days"], today()),
+                            "provider": result.provider, "model": result.model}
+                messages = messages + [
+                    {"role": "assistant", "content": result.data.model_dump_json()},
+                    {"role": "user", "content": "Fix these problems: " + "; ".join(problems)}]
+        except AIError as err:
+            raise HTTPException(502, f"AI unavailable ({err.reason}): fill in the form yourself.")
+        raise HTTPException(422, "The AI draft didn't match your text (" + "; ".join(problems)
+                                 + "). Fill in the form yourself.")
+
+    @app.post("/api/invoices")
+    async def create_invoice(body: CreateInvoiceIn):
+        """Create a PayPal DRAFT invoice from the seller-reviewed form. Doesn't send it."""
+        if not EMAIL_ADDRESS.fullmatch(body.email.strip()):
+            raise HTTPException(400, "Enter the client's email address.")
+        if body.due_date and body.due_date < today().isoformat():
+            raise HTTPException(400, "The due date is in the past.")
+        payload = invoice_body(client_name=body.client_name.strip(), email=body.email.strip(),
+                               currency=body.currency, items=[i.model_dump() for i in body.items],
+                               due_date=body.due_date, note=body.note, today=today())
+        try:
+            invoice = await paypal.create_draft_invoice(payload)
+        except PayPalError as err:
+            store.add("other", "invoice_action_failed",
+                      {"action": "create", "error": err.readable, **error_details(err)})
+            raise HTTPException(502, err.readable)
+        summary = invoice_summary(invoice)
+        record_invoice(summary, source="create")
+        return invoice_row(summary)
+
+    async def fresh_invoice(invoice_id: str) -> dict:
+        if not latest_invoice(invoice_id):
+            raise HTTPException(404, "Unknown invoice")
+        try:
+            summary = invoice_summary(await paypal.get_invoice(invoice_id))
+        except PayPalError as err:
+            raise fail(err)
+        record_invoice(summary, source="refresh")
+        return summary
+
+    async def invoice_action(invoice_id: str, action: str, call, sent: dict) -> dict:
+        """Run one seller-approved invoice call; record sent/failed; never retry."""
+        try:
+            await call()
+        except PayPalError as err:
+            store.add(invoice_id, "invoice_action_failed",
+                      {"invoice_id": invoice_id, "action": action, "sent": sent,
+                       "error": err.readable, **error_details(err)})
+            raise HTTPException(502, err.readable)
+        store.add(invoice_id, f"invoice_{action}_sent", {"invoice_id": invoice_id, **sent})
+        try:
+            record_invoice(invoice_summary(await paypal.get_invoice(invoice_id)), source=action)
+        except PayPalError as err:
+            log.warning("Invoice %s: re-fetch after %s failed: %s", invoice_id, action, err)
+        return invoice_row(latest_invoice(invoice_id))
+
+    @app.post("/api/invoices/{invoice_id}/send")
+    async def send_invoice(invoice_id: str):
+        """Send a draft to the client (a separate click from creating it)."""
+        summary = await fresh_invoice(invoice_id)
+        if summary["status"] != "DRAFT":
+            raise HTTPException(409, f"Only draft invoices can be sent; this one is "
+                                     f"{display_status(summary, today())}.")
+        return await invoice_action(invoice_id, "send",
+                                    lambda: paypal.send_invoice(invoice_id), {})
+
+    @app.post("/api/invoices/{invoice_id}/reminder-draft")
+    async def draft_reminder(invoice_id: str):
+        """A reminder for the seller to edit: AI-drafted (tone by days overdue), or a plain
+        template if the AI is unavailable or its draft breaks the rules. Sends nothing."""
+        summary = await fresh_invoice(invoice_id)
+        overdue = days_overdue(summary, today())
+        if not overdue:
+            raise HTTPException(409, "Reminders are only for overdue invoices.")
+        facts = reminder_facts(summary, settings.seller_display_name, today())
+        template = {"subject": f"Reminder: invoice {summary.get('number')} is overdue",
+                    "note": (f"Hello {summary.get('client') or 'there'}, this is a friendly "
+                             f"reminder that invoice {summary.get('number')} for "
+                             f"{summary.get('amount')} {summary.get('currency')} was due on "
+                             f"{summary.get('due_date')}. Thank you!"),
+                    "source": "template", "days_overdue": overdue}
+        if not ai.configured:
+            return template
+        messages = [{"role": "system", "content": REMINDER_PROMPT},
+                    {"role": "user", "content": "FACTS:\n" + json.dumps(facts, indent=1)}]
+        try:
+            for _ in range(2):
+                result = await ai.complete(messages, schema_name="invoice_reminder",
+                                           schema=REMINDER_SCHEMA, model_cls=ReminderDraft,
+                                           prompt_version=REMINDER_PROMPT_VERSION,
+                                           allow_switch=False)
+                problems = reminder_problems(result.data, facts)
+                if not problems:
+                    return {**result.data.model_dump(), "source": "ai",
+                            "provider": result.provider, "days_overdue": overdue}
+                messages = messages + [
+                    {"role": "assistant", "content": result.data.model_dump_json()},
+                    {"role": "user", "content": "Fix these problems: " + "; ".join(problems)}]
+            log.warning("Reminder draft for %s rejected by guardrails: %s", invoice_id, problems)
+        except AIError as err:
+            log.warning("Reminder draft for %s failed (%s); using the template", invoice_id, err)
+        return template
+
+    @app.post("/api/invoices/{invoice_id}/remind")
+    async def remind_invoice(invoice_id: str, body: ReminderIn):
+        """Send the seller-edited reminder through PayPal (overdue invoices only)."""
+        summary = await fresh_invoice(invoice_id)
+        overdue = days_overdue(summary, today())
+        if not overdue:
+            raise HTTPException(409, "Reminders are only for overdue invoices.")
+        sent = {"subject": body.subject.strip(), "note": body.note.strip(), "days_overdue": overdue}
+        return await invoice_action(invoice_id, "reminder", lambda: paypal.remind_invoice(
+            invoice_id, subject=sent["subject"], note=sent["note"]), sent)
+
+    # ---- India export paperwork (Day 5): guidance only, the seller decides --------
+
+    def export_payment(order_id: str) -> dict | None:
+        """A received international payment, or None (not paid, or not from abroad)."""
+        events = store.timeline(order_id)
+        if paid := next((e for e in reversed(events) if e["kind"] == "invoice_paid"), None):
+            p = paid["payload"]
+            country = p.get("recipient_country")
+            if country == settings.seller_country or (not country and p.get("currency") == "INR"):
+                return None
+            return {"description": ", ".join(i.get("name") or "" for i in p.get("items") or []),
+                    "amount": p.get("amount"), "currency": p.get("currency"), "country": country}
+        captured = next((e for e in reversed(events) if e["kind"] == "payment_captured"), None)
+        if not captured or captured["payload"].get("payer_country") in (None, settings.seller_country):
+            return None
+        created = next((e for e in events if e["kind"] == "order_created"), {"payload": {}})
+        return {"description": item_names.get(created["payload"].get("item_id"), ""),
+                "amount": created["payload"].get("amount"),
+                "currency": created["payload"].get("currency"),
+                "country": captured["payload"].get("payer_country")}
+
+    @app.get("/api/export/{order_id}")
+    async def export_checklist(order_id: str):
+        """The export paperwork checklist for one received international payment."""
+        if settings.seller_country != "IN":
+            raise HTTPException(404, "The export checklist is for India-based sellers.")
+        payment = export_payment(order_id)
+        if not payment:
+            raise HTTPException(404, "Not a received international payment")
+        events = store.timeline(order_id)
+
+        def last(kind: str) -> dict | None:
+            return next((e["payload"] for e in reversed(events) if e["kind"] == kind), None)
+
+        return {"payment": payment, "purpose_code": (last("export_purpose_set") or {}).get("code"),
+                "suggestion": last("export_purpose_suggested"),
+                "fira_downloaded": bool((last("export_fira") or {}).get("downloaded")),
+                "purpose_codes": PURPOSE_CODES, "sources": OFFICIAL_SOURCES,
+                "disclaimer": EXPORT_DISCLAIMER}
+
+    @app.post("/api/export/{order_id}/suggest")
+    async def suggest_purpose(order_id: str):
+        """AI suggests a purpose code with a one-line reason. It's stored as a suggestion
+        only; the code is never set until the seller picks it."""
+        if settings.seller_country != "IN" or not (payment := export_payment(order_id)):
+            raise HTTPException(404, "Not a received international payment")
+        if not ai.configured:
+            raise HTTPException(503, "No AI key configured: pick the code yourself.")
+        facts = {"description": payment["description"], "allowed": PURPOSE_CODES}
+        try:
+            result = await ai.complete(
+                [{"role": "system", "content": PURPOSE_PROMPT},
+                 {"role": "user", "content": json.dumps(facts, indent=1)}],
+                schema_name="purpose_code", schema=PURPOSE_SCHEMA, model_cls=PurposeSuggestion,
+                prompt_version=PURPOSE_PROMPT_VERSION, allow_switch=False)
+        except AIError as err:
+            raise HTTPException(502, f"AI unavailable ({err.reason}): pick the code yourself.")
+        suggestion = {**result.data.model_dump(), "provider": result.provider}
+        store.add(order_id, "export_purpose_suggested", suggestion)
+        return suggestion
+
+    @app.post("/api/export/{order_id}/purpose")
+    async def set_purpose(order_id: str, body: PurposeIn):
+        """The seller's own choice of purpose code for this payment (a checklist record in
+        Clearline; PayPal's API has no per-payment purpose code)."""
+        if settings.seller_country != "IN" or not export_payment(order_id):
+            raise HTTPException(404, "Not a received international payment")
+        store.add(order_id, "export_purpose_set", {"code": body.code,
+                                                   "label": PURPOSE_CODES[body.code]})
+        return {"ok": True}
+
+    @app.post("/api/export/{order_id}/fira")
+    async def set_fira(order_id: str, body: FiraIn):
+        if settings.seller_country != "IN" or not export_payment(order_id):
+            raise HTTPException(404, "Not a received international payment")
+        store.add(order_id, "export_fira", {"downloaded": body.downloaded})
+        return {"ok": True}
+
     @app.get("/api/orders/{order_id}/buyer")
     async def seller_buyer_view(order_id: str):
         """The seller's view of an order's buyer page: link, requests, refunds, refundable."""
         events = store.timeline(order_id)
-        if not any(e["kind"] == "payment_captured" for e in events):
+        if not any(e["kind"] in ("payment_captured", "invoice_paid") for e in events):
             raise HTTPException(404, "Order has not been captured yet")
         page, _ = buyer_view(store, summaries, order_id,
                              seller_name=settings.seller_display_name, item_names=item_names)
@@ -586,6 +903,8 @@ def create_app(settings: Settings | None = None,
                 await record_dispute(DISPUTE_EVENTS[event_type], event, resource)
             elif event_type in CAPTURE_EVENTS:
                 record_capture_event(event_type, event, resource)
+            elif event_type in INVOICE_EVENTS:
+                await record_invoice_webhook(event, resource)
             else:
                 store.add("other", "webhook_other",
                           {"event_type": event_type, "event_id": event.get("id"),
@@ -859,8 +1178,19 @@ def create_app(settings: Settings | None = None,
             finally:
                 sync_state["running"] = False
             sync_state.update(last_synced_at=time.time(), trigger=trigger, counts=counts,
-                              error=None)
+                              error=None, invoices=await pull_invoices())
             return counts, changed
+
+    async def pull_invoices() -> dict:
+        """Sync invoice statuses from PayPal (safety net for missed INVOICING webhooks).
+        Never breaks the dispute sync: errors are reported in the sync status instead."""
+        try:
+            invoices = await paypal.list_invoices()
+        except Exception as err:  # e.g. Invoicing not enabled for the app
+            log.warning("Invoice sync failed: %s", err)
+            return {"error": err.readable if isinstance(err, PayPalError) else str(err)}
+        changed = sum(record_invoice(invoice_summary(inv), source="sync") for inv in invoices)
+        return {"listed": len(invoices), "changed": changed, "error": None}
 
     async def pull_disputes() -> tuple[dict, list[str]]:
         """Pull disputes from PayPal and record the ones that are new or changed since we last

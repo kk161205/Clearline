@@ -60,7 +60,7 @@ def order_for_token(store: TimelineStore, secret: str, token: str) -> str | None
         return None
     found = None
     for o in store.orders():
-        if "payment_captured" in o["kinds"]:
+        if "payment_captured" in o["kinds"] or "invoice_paid" in o["kinds"]:
             if hmac.compare_digest(buyer_token(secret, o["order_id"]), token):
                 found = o["order_id"]
     return found
@@ -95,6 +95,8 @@ def refund_totals(events: list[dict]) -> tuple[Decimal, Decimal, str]:
 def order_facts(events: list[dict], seller_name: str, item_names: dict[str, str]) -> dict:
     """Facts the buyer page (and its AI summary) may use. No buyer PII by construction:
     only order, payment, shipping and refund facts, plus the seller's display name."""
+    if invoice := _last(events, "invoice_paid"):
+        return invoice_facts(invoice, seller_name)
     created = _last(events, "order_created") or {"payload": {}, "created_at": None}
     captured = _last(events, "payment_captured")
     tracked = _last(events, "tracking_added")
@@ -120,8 +122,23 @@ def order_facts(events: list[dict], seller_name: str, item_names: dict[str, str]
     return {k: v for k, v in facts.items() if v not in (None, "")}
 
 
+def invoice_facts(paid: dict, seller_name: str) -> dict:
+    """Facts for a paid invoice: what was billed and paid, never the client's email."""
+    p = paid["payload"]
+    names = [i.get("name") for i in p.get("items") or [] if i.get("name")]
+    facts = {"seller": seller_name, "invoice_ref": (p.get("number") or p["invoice_id"])[-6:],
+             "item": ", ".join(names) or "your invoice", "amount": p.get("amount"),
+             "currency": p.get("currency"), "paid_with": "PayPal",
+             "paid_on": _day(paid["created_at"]), "country": p.get("recipient_country")}
+    return {k: v for k, v in facts.items() if v not in (None, "")}
+
+
 def template_summary(facts: dict) -> str:
     """Plain sentence used until the AI summary is ready, or if the AI fails."""
+    if facts.get("invoice_ref"):
+        return (f"You paid {facts.get('amount')} {facts.get('currency')} to {facts['seller']} "
+                f"for invoice …{facts['invoice_ref']} ({facts['item']}) with PayPal"
+                + (f" on {facts['paid_on']}." if facts.get("paid_on") else "."))
     text = (f"You paid {facts.get('amount')} {facts.get('currency')} to {facts['seller']} for "
             f"{facts['item']} with PayPal" + (f" on {facts['paid_on']}." if facts.get("paid_on") else "."))
     if facts.get("shipped"):
@@ -137,8 +154,10 @@ def template_summary(facts: dict) -> str:
 
 def explain_charge(facts: dict) -> str:
     """Plain-words answer to "I don't recognise this charge"."""
+    what = (f"invoice …{facts['invoice_ref']} (\"{facts['item']}\")" if facts.get("invoice_ref")
+            else f"\"{facts['item']}\"")
     return (f"This is a payment of {facts.get('amount')} {facts.get('currency')} to "
-            f"{facts['seller']} for \"{facts['item']}\", paid with PayPal"
+            f"{facts['seller']} for {what}, paid with PayPal"
             + (f" on {facts['paid_on']}" if facts.get("paid_on") else "")
             + ". It may appear on your statement under the seller's PayPal name.")
 
@@ -202,7 +221,8 @@ class SummaryCache:
             for _ in range(2):  # one corrective retry, like the dispute assistant
                 result = await self.ai.complete(messages, schema_name="buyer_summary",
                                                 schema=SUMMARY_SCHEMA, model_cls=BuyerSummary,
-                                                prompt_version=SUMMARY_PROMPT_VERSION)
+                                                prompt_version=SUMMARY_PROMPT_VERSION,
+                                                allow_switch=False)  # never flips the app to Groq
                 problems = summary_problems(result.data.summary, facts)
                 if not problems:
                     self.store.set_buyer_summary(order_id, key, result.data.summary,
@@ -243,20 +263,24 @@ def buyer_view(store: TimelineStore, cache: SummaryCache, order_id: str, *, sell
     refunds = [{"amount": e["payload"]["amount"], "currency": e["payload"]["currency"],
                 "status": e["payload"].get("status"), "at": e["created_at"]}
                for e in events if e["kind"] == "refund_sent"]
+    is_invoice = "invoice_ref" in facts
     page = {
-        "order_ref": order_id[-6:],
+        "kind": "invoice" if is_invoice else "order",
+        "order_ref": facts["invoice_ref"] if is_invoice else order_id[-6:],
         "seller": facts["seller"], "item": facts["item"],
         "amount": facts.get("amount"), "currency": facts.get("currency"),
         "paid_on": facts.get("paid_on"), "paid_with": "PayPal", "country": facts.get("country"),
-        "shipping": {"shipped": facts["shipped"], "carrier": facts.get("carrier"),
-                     "tracking_number": facts.get("tracking_number"),
-                     "shipped_on": facts.get("shipped_on")},
+        # Invoices are for services: nothing ships, so no shipping card or "hasn't arrived".
+        "shipping": None if is_invoice else {
+            "shipped": facts["shipped"], "carrier": facts.get("carrier"),
+            "tracking_number": facts.get("tracking_number"), "shipped_on": facts.get("shipped_on")},
         "summary": ({"text": cached["text"], "source": "ai"} if cached
                     else {"text": template_summary(facts), "source": "template"}),
         "charge_explanation": explain_charge(facts),
         "requests": requests,
         "refunds": refunds,
-        "request_types": REQUEST_TYPES,
+        "request_types": ({k: v for k, v in REQUEST_TYPES.items() if k != "not_arrived"}
+                          if is_invoice else REQUEST_TYPES),
         "refund_reasons": REFUND_REASONS,
     }
     return page, facts

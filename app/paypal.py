@@ -36,6 +36,20 @@ class PayPalError(Exception):
         return self.body.get("debug_id") if isinstance(self.body, dict) else None
 
     @property
+    def record(self) -> dict:
+        """PayPal's full error, kept for diagnosis: name, message, debug_id, HTTP status and
+        every details[] entry (issue, field, value, location, description)."""
+        body = self.body if isinstance(self.body, dict) else {}
+        return {
+            "http_status": self.status,
+            "name": body.get("name"),
+            "message": body.get("message") or (self.body if isinstance(self.body, str) else None),
+            "debug_id": body.get("debug_id"),
+            "details": [{k: d.get(k) for k in ("issue", "field", "value", "location", "description")}
+                        for d in body.get("details", []) if isinstance(d, dict)],
+        }
+
+    @property
     def readable(self) -> str:
         """A short sentence for the seller instead of PayPal's raw error body."""
         for issue in self.issues:

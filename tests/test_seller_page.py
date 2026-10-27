@@ -1,11 +1,19 @@
 """Seller page rendering logic, run in node against realistic timelines (skipped without node)."""
 
+import html as htmllib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
+
+from tests.support import (DISPUTE_ID, GEMINI, DisputeOnPayPal, ai_reply, events, fight,
+                           make_client, open_dispute, setup_paypal, shipped_order)
+from tests.test_webhooks import API
 
 ROOT = Path(__file__).parent.parent
 NODE = shutil.which("node")
@@ -16,7 +24,7 @@ def render(*scenarios):
     out = subprocess.run([NODE, str(ROOT / "tests/js/page_harness.js"),
                           str(ROOT / "app/static/seller.html")],
                          input=json.dumps(list(scenarios)), capture_output=True, text=True,
-                         timeout=30, check=True)
+                         encoding="utf-8", timeout=30, check=True)  # not the Windows code page
     return json.loads(out.stdout)
 
 
@@ -75,7 +83,80 @@ def test_out_of_order_rows_use_latest_update_time():
 
 
 def test_pages_are_served_with_no_cache(tmp_path):
-    from tests.support import make_client
     client, _ = make_client(tmp_path)
     for path in ("/", "/seller"):
         assert client.get(path).headers["cache-control"] == "no-cache"
+
+
+# ---- PayPal's full error is stored and shown -------------------------------------
+
+MULTI_DETAIL_ERROR = {
+    "name": "INVALID_REQUEST",
+    "message": "Request is not well-formed, syntactically incorrect, or violates schema.",
+    "debug_id": "f858994916f8d",
+    "details": [
+        {"field": "/evidences/0/evidence_type", "value": "PROOF_OF_FULFILLMENT", "location": "body",
+         "issue": "EVIDENCE_TYPE_IS_NOT_ALLOWED",
+         "description": "The evidence type is not allowed for this dispute."},
+        {"field": "/evidences/0/documents", "location": "body", "issue": "MISSING_REQUIRED_PARAMETER",
+         "description": "A required document is missing."},
+    ],
+}
+EXPECTED_LINES = [
+    "HTTP 400 · INVALID_REQUEST · Request is not well-formed, syntactically incorrect, or violates "
+    "schema. · debug_id f858994916f8d",
+    "EVIDENCE_TYPE_IS_NOT_ALLOWED · field /evidences/0/evidence_type · value PROOF_OF_FULFILLMENT"
+    " · location body · The evidence type is not allowed for this dispute.",
+    "MISSING_REQUIRED_PARAMETER · field /evidences/0/documents · location body"
+    " · A required document is missing.",
+]
+
+
+def html_lines(html):
+    """The text of each line inside the collapsed details."""
+    return [htmllib.unescape(line) for line in re.findall(r"<div>(.*?)</div>", html)]
+
+
+@respx.mock
+def test_multi_detail_paypal_error_is_stored_and_rendered_in_full(tmp_path):
+    setup_paypal()
+    DisputeOnPayPal()
+    respx.post(GEMINI).mock(return_value=ai_reply(fight()))
+    client, _ = make_client(tmp_path)
+    shipped_order(client)
+    open_dispute(client)
+    respx.post(f"{API}/v1/customer/disputes/{DISPUTE_ID}/provide-evidence").mock(
+        return_value=httpx.Response(400, json=MULTI_DETAIL_ERROR))
+
+    assert client.post(f"/api/disputes/{DISPUTE_ID}/act", json={"action": "FIGHT"}).status_code == 502
+    [failed] = events(client, "ORDER1", "dispute_action_failed")
+    assert failed["payload"]["paypal_error"] == {"http_status": 400, **{
+        k: MULTI_DETAIL_ERROR[k] for k in ("name", "message", "debug_id")}, "details": [
+        {"issue": "EVIDENCE_TYPE_IS_NOT_ALLOWED", "field": "/evidences/0/evidence_type",
+         "value": "PROOF_OF_FULFILLMENT", "location": "body",
+         "description": "The evidence type is not allowed for this dispute."},
+        {"issue": "MISSING_REQUIRED_PARAMETER", "field": "/evidences/0/documents", "value": None,
+         "location": "body", "description": "A required document is missing."}]}
+
+    # Rendered from the stored timeline: card ("Sent to PayPal") and timeline row, collapsed.
+    timeline = client.get("/api/orders/ORDER1/timeline").json()
+    [page] = render({"env": "sandbox", "events": timeline})
+    for html in (page["card"], page["timeline"]):
+        assert '<details class="tech"><summary>details</summary>' in html
+        assert all(line in html_lines(html) for line in EXPECTED_LINES), html_lines(html)
+
+
+@respx.mock
+def test_sandbox_helper_failure_stores_full_error(tmp_path):
+    setup_paypal()
+    DisputeOnPayPal(status="UNDER_REVIEW", dispute_life_cycle_stage="CHARGEBACK")
+    client, _ = make_client(tmp_path)
+    shipped_order(client)
+    open_dispute(client)
+    respx.post(f"{API}/v1/customer/disputes/{DISPUTE_ID}/require-evidence").mock(
+        return_value=httpx.Response(400, json=MULTI_DETAIL_ERROR))
+    assert client.post(f"/api/disputes/{DISPUTE_ID}/sandbox/require-seller-evidence").status_code == 502
+    [failed] = events(client, "ORDER1", "sandbox_status_change_failed")
+    assert len(failed["payload"]["paypal_error"]["details"]) == 2
+    [page] = render({"env": "sandbox", "events": client.get("/api/orders/ORDER1/timeline").json()})
+    assert all(line in html_lines(page["timeline"]) for line in EXPECTED_LINES)

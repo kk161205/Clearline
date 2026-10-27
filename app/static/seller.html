@@ -119,11 +119,21 @@
     const debug = p.debug_id || (raw.match(/'debug_id': '([\w-]+)'/) || [])[1];
     const status = p.paypal_status || (raw.match(/PayPal API error (\d+)/) || [])[1];
     const text = legacy ? (LEGACY_ISSUES[issue] || "PayPal rejected this step") : raw;
-    return { text, tech: [status && `HTTP ${status}`, issue && `issue ${issue}`, debug && `debug_id ${debug}`].filter(Boolean).join(" · ") };
+    // Full PayPal error (stored since "Store PayPal's full error details"): a header line,
+    // then one line per details[] entry. Older rows only have status/issue/debug_id.
+    const e = p.paypal_error;
+    const tech = e
+      ? [[e.http_status && `HTTP ${e.http_status}`, e.name, e.message, e.debug_id && `debug_id ${e.debug_id}`].filter(Boolean).join(" · "),
+         ...(e.details || []).map((d) => [d.issue, d.field && `field ${d.field}`, d.value != null && `value ${d.value}`,
+                                           d.location && `location ${d.location}`, d.description].filter(Boolean).join(" · "))]
+      : [[status && `HTTP ${status}`, issue && `issue ${issue}`, debug && `debug_id ${debug}`].filter(Boolean).join(" · ")];
+    return { text, tech: tech.filter(Boolean) };
   }
+  const techHtml = (lines) => lines.length
+    ? `<details class="tech"><summary>details</summary>${lines.map((l) => `<div>${esc(l)}</div>`).join("")}</details>` : "";
   function errorHtml(p, field = "error") {
     const { text, tech } = errorParts(p, field);
-    return esc(text) + (tech ? `<details class="tech"><summary>details</summary>${esc(tech)}</details>` : "");
+    return esc(text) + techHtml(tech);
   }
 
   function describe(e) {
@@ -202,7 +212,7 @@
     const step = (e) => {
       const name = esc(STEP_NAMES[e.payload.endpoint] || e.payload.endpoint);
       if (e.kind === "dispute_action_sent") return `<span class="ok">${name} sent ✓</span>`;
-      if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>${errorParts(e.payload).tech ? `<details class="tech"><summary>details</summary>${esc(errorParts(e.payload).tech)}</details>` : ""}`;
+      if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>${techHtml(errorParts(e.payload).tech)}`;
       return `<span class="bad">${name} failed (${errorHtml(e.payload)})</span>`;
     };
     return runs.map((r) => `<li>${esc(DECISIONS[r.action] || r.action)}: ${r.steps.map(step).join(" · ")} <span class="muted">${fmt(r.at)}</span></li>`).join("");
@@ -263,8 +273,10 @@
 
   const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
   const isSide = (id) => id === "other" || id.startsWith("unmatched:");
+  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed"];
   const row = (e, extra = "") =>
-    `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${extra}</li>`;
+    `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${
+      PAYPAL_FAILURE_KINDS.includes(e.kind) ? techHtml(errorParts(e.payload).tech) : ""}${extra}</li>`;
 
   // Timeline rows, keeping only the latest AI recommendation per dispute in place; earlier
   // ones fold into "(+N earlier)" on that row.

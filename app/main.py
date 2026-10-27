@@ -164,11 +164,12 @@ def readable_error(err: Exception) -> str:
 
 
 def error_details(err: Exception) -> dict:
-    """What support needs to trace a PayPal failure; shown collapsed on /seller."""
+    """What support needs to trace a PayPal failure; shown collapsed on /seller.
+    `paypal_error` is PayPal's full error (every details[] entry), not just the first issue."""
     if isinstance(err, PayPalError):
         return {"paypal_status": err.status, "paypal_issue": next(iter(err.issues), None),
-                "debug_id": err.debug_id}
-    return {"paypal_status": None, "paypal_issue": None, "debug_id": None}
+                "debug_id": err.debug_id, "paypal_error": err.record}
+    return {"paypal_status": None, "paypal_issue": None, "debug_id": None, "paypal_error": None}
 
 
 def allowed_decisions(dispute: dict) -> list[str]:
@@ -640,8 +641,7 @@ def create_app(settings: Settings | None = None,
             await paypal.sandbox_require_seller_evidence(dispute_id)
         except PayPalError as err:
             store.add(order_id, "sandbox_status_change_failed",
-                      {**base, "error": err.readable, "paypal_status": err.status,
-                       "paypal_issue": next(iter(err.issues), None), "debug_id": err.debug_id})
+                      {**base, "error": err.readable, **error_details(err)})
             raise HTTPException(502, err.readable)
         store.add(order_id, "sandbox_status_changed", base)
         try:

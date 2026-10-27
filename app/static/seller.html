@@ -40,6 +40,7 @@
     .ai.compact { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 12px; color:var(--muted); }
     .ai.compact .msg { flex-basis:100%; margin:0; }
     button.sandbox { background:#fffaeb; color:#93370d; border:1px dashed #f79009; font-size:13px; }
+    .sandbox-tool { margin-top:8px; }
     details.tech, details.earlier { display:inline; margin-left:6px; }
     details.tech summary, details.earlier summary { display:inline; cursor:pointer; color:var(--muted); font-size:12px; }
     details.tech[open] { display:block; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
@@ -161,6 +162,14 @@
     return states.reduce((best, e) => (!best || t(e) >= t(best) ? e : best), null);
   }
 
+  // Sandbox-only test tool for disputes PayPal is reviewing. Lives in the dispute panel, so it
+  // doesn't depend on the AI card (UNDER_REVIEW disputes often have no recommendation, or
+  // still allow a Refund, which shows the full card). Never rendered in live mode.
+  function sandboxTool(state) {
+    if (ENV !== "sandbox" || state?.payload.status !== "UNDER_REVIEW") return "";
+    return `<div class="sandbox-tool"><button class="sandbox" data-sandbox="${esc(state.payload.dispute_id)}" title="Test tool: only exists in the PayPal Sandbox">Sandbox: simulate PayPal asking the seller for evidence</button><div class="msg"></div></div>`;
+  }
+
   function disputePanel(state) {
     if (!state) return { badge: "", panel: "", disputed: false, resolved: false };
     const p = state.payload;
@@ -172,6 +181,7 @@
         <div class="muted">Status: ${esc(p.status || "?")}${p.dispute_life_cycle_stage ? ` · Stage: ${esc(p.dispute_life_cycle_stage)}` : ""} · Case ${esc(p.dispute_id)}</div>
         ${resolved ? "" : respondBy(p.seller_response_due_date)}
         ${p.enrichment_error ? '<div class="muted">Could not load full dispute details from PayPal.</div>' : ""}
+        ${sandboxTool(state)}
       </div>`;
     return { badge, panel, disputed: !resolved, resolved };
   }
@@ -221,9 +231,7 @@
     if (blocked) {
       const r = ai?.kind === "ai_recommendation" ? ai.payload.recommendation : null;
       const last = r ? `Last AI suggestion: ${DECISIONS[r.decision]}, ${Math.round(r.confidence * 100)}%` : "No AI suggestion";
-      const sandbox = ENV === "sandbox" && state.payload.status === "UNDER_REVIEW"
-        ? `<button class="sandbox" data-sandbox="${esc(id)}" title="Test tool: only exists in the PayPal Sandbox">Sandbox: simulate PayPal asking the seller for evidence</button>` : "";
-      return `<div class="ai compact"><span>${esc(last)} · ${esc(blocked)}</span>${sandbox}<div class="msg"></div></div>`;
+      return `<div class="ai compact"><span>${esc(last)} · ${esc(blocked)}</span></div>`;
     }
 
     if (!ai) return `<div class="ai"><h3>AI recommendation</h3><div class="muted">None yet.</div>${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
@@ -334,7 +342,7 @@
   }
 
   async function withBusy(button, text, fn) {
-    const card = button.closest(".ai"), msg = card.querySelector(".msg");
+    const card = button.closest(".ai, .sandbox-tool"), msg = card.querySelector(".msg");
     const old = button.textContent;
     button.disabled = true; button.textContent = text; busy++;
     try { msg.textContent = (await fn()) || ""; msg.className = "msg"; }

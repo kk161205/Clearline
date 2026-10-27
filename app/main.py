@@ -233,13 +233,14 @@ def create_app(settings: Settings | None = None,
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
                                                        "paypal_error": err.body})
 
+    # no-cache: browsers revalidate every load, so a new page version shows up right away.
     @app.get("/", include_in_schema=False)
     async def buyer_page():
-        return FileResponse(STATIC / "buyer.html")
+        return FileResponse(STATIC / "buyer.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/seller", include_in_schema=False)
     async def seller_page():
-        return FileResponse(STATIC / "seller.html")
+        return FileResponse(STATIC / "seller.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/config")
     async def config():

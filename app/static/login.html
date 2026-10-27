@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clearline · Seller login</title>
+  <style>
+    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width:380px; margin:72px auto; padding:0 16px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:24px; }
+    h1 { font-size:20px; margin:0 0 16px; }
+    label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
+    input, button { font:inherit; width:100%; padding:8px 10px; border-radius:8px; }
+    input { border:1px solid var(--line); }
+    button { margin-top:12px; background:var(--ink); color:#fff; border:0; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:wait; }
+    #msg { color:var(--bad); font-size:14px; min-height:1.5em; margin-top:10px; }
+  </style>
+</head>
+<body>
+<main>
+  <form class="card" id="login">
+    <h1>Seller login</h1>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+    <button>Log in</button>
+    <div id="msg" role="alert"></div>
+  </form>
+</main>
+<script>
+  document.getElementById("login").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const button = ev.currentTarget.querySelector("button"), msg = document.getElementById("msg");
+    button.disabled = true; msg.textContent = "";
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("password").value }),
+      });
+      if (res.ok) { location.href = "/seller"; return; }
+      const body = await res.json().catch(() => ({}));
+      msg.textContent = body.detail || `Login failed (HTTP ${res.status})`; // textContent: no HTML
+    } catch (err) { msg.textContent = "Could not reach the server."; }
+    finally { button.disabled = false; }
+  });
+</script>
+</body>
+</html>

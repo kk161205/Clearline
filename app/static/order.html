@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>Your order</title>
+  <style>
+    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width:560px; margin:40px auto; padding:0 16px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:12px; }
+    h1 { font-size:20px; margin:0 0 2px; }
+    h2 { font-size:16px; margin:0 0 8px; }
+    .muted { color:var(--muted); font-size:14px; }
+    .amount { font-size:26px; font-weight:600; margin:10px 0 4px; }
+    .summary { background:#eef4ff; border-radius:10px; padding:12px 14px; margin:12px 0 0; }
+    dl { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; margin:0; font-size:15px; }
+    dt { color:var(--muted); } dd { margin:0; overflow-wrap:anywhere; }
+    .ok { color:var(--ok); }
+    .help { display:grid; gap:8px; }
+    button { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer; text-align:left; }
+    button.primary { background:var(--ink); color:#fff; border:0; text-align:center; }
+    button[aria-expanded="true"] { border-color:var(--ink); }
+    button:disabled { opacity:.6; cursor:wait; }
+    .panel { border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:-2px; }
+    textarea, select { font:inherit; width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin:6px 0; }
+    textarea { min-height:90px; resize:vertical; }
+    .req { border-top:1px solid var(--line); padding:10px 0; }
+    .req:first-of-type { border-top:0; padding-top:0; }
+    .reply { background:#effaf3; border-radius:8px; padding:8px 10px; margin-top:6px; }
+    .notice { color:var(--ok); font-size:14px; margin-top:6px; }
+    .error { color:var(--bad); font-size:14px; margin-top:6px; }
+  </style>
+</head>
+<body>
+<main id="root"><p class="muted">Loading your order…</p></main>
+
+<script>
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const token = location.pathname.split("/").pop();
+  let data = null, open = null, notice = "", busy = false;
+
+  function shippingHtml(s) {
+    if (!s.shipped) return `<p>Not shipped yet. The seller adds tracking as soon as it ships.</p>`;
+    return `<dl><dt>Carrier</dt><dd>${esc(s.carrier)}</dd>
+      <dt>Tracking number</dt><dd>${esc(s.tracking_number)}</dd>
+      ${s.shipped_on ? `<dt>Shipped</dt><dd>${esc(s.shipped_on)}</dd>` : ""}</dl>`;
+  }
+
+  function refundLine(r) {
+    const done = !r.status || r.status === "COMPLETED";
+    return `<p class="ok">Refund of ${esc(r.amount)} ${esc(r.currency)} ${done ? "sent" : "is being processed"} · ${esc(day(r.at))}</p>`;
+  }
+
+  function panel(d, type) {
+    const box = (placeholder) => `<textarea data-message placeholder="${esc(placeholder)}" maxlength="1000"></textarea>`;
+    if (type === "unrecognised") return `<div class="panel">
+        <p>${esc(d.charge_explanation)}</p>
+        <p class="muted">Still not right? Contact the seller:</p>
+        ${box("Tell the seller what looks wrong")}
+        <button class="primary" data-send="unrecognised">Send to the seller</button></div>`;
+    if (type === "not_arrived") return `<div class="panel">
+        ${shippingHtml(d.shipping)}
+        ${box("Anything the seller should know? (e.g. what you see on the tracking page)")}
+        <button class="primary" data-send="not_arrived">Send to the seller</button></div>`;
+    return `<div class="panel">
+        <label class="muted" for="reason">Reason</label>
+        <select id="reason" data-reason><option value="">Choose a reason…</option>
+          ${Object.entries(d.refund_reasons).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join("")}</select>
+        ${box("Add details for the seller (optional)")}
+        <button class="primary" data-send="refund">Ask for a refund</button></div>`;
+  }
+
+  // Pure: page HTML for the API data. Every value from the server is escaped.
+  function view(d, openType = null, msg = "") {
+    const help = Object.entries(d.request_types).map(([type, label]) =>
+      `<button data-open="${esc(type)}" aria-expanded="${openType === type}">${esc(label)}</button>${openType === type ? panel(d, type) : ""}`).join("");
+    const requests = d.requests.map((r) => `<div class="req">
+        <strong>${esc(r.type_label)}</strong>${r.reason ? ` · ${esc(r.reason)}` : ""} <span class="muted">· ${esc(day(r.at))}</span>
+        ${r.message ? `<div>${esc(r.message)}</div>` : ""}
+        ${r.replies.length ? r.replies.map((x) => `<div class="reply"><strong>${esc(d.seller)}:</strong> ${esc(x.message)}</div>`).join("")
+          : `<div class="muted">Waiting for the seller's reply.</div>`}</div>`).join("");
+    return `<div class="card">
+        <div class="muted">Order …${esc(d.order_ref)}</div>
+        <h1>${esc(d.seller)}</h1>
+        <div>${esc(d.item)}</div>
+        <div class="amount">${esc(d.amount)} ${esc(d.currency)}</div>
+        <div class="muted">Paid with ${esc(d.paid_with)}${d.paid_on ? ` on ${esc(d.paid_on)}` : ""}${d.country ? ` · ${esc(d.country)}` : ""}</div>
+        <p class="summary" data-source="${esc(d.summary.source)}">${esc(d.summary.text)}</p>
+        ${d.refunds.map(refundLine).join("")}
+      </div>
+      <div class="card"><h2>Shipping</h2>${shippingHtml(d.shipping)}</div>
+      <div class="card"><h2>Need help?</h2><div class="help">${help}</div>
+        ${msg ? `<div class="notice" role="status">${esc(msg)}</div>` : ""}<div class="error" role="alert"></div></div>
+      ${d.requests.length ? `<div class="card"><h2>Your messages</h2>${requests}</div>` : ""}`;
+  }
+
+  function draw() {
+    const root = document.getElementById("root");
+    root.innerHTML = view(data, open, notice);
+    root.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => {
+      open = open === b.dataset.open ? null : b.dataset.open; notice = ""; draw();
+    }));
+    root.querySelectorAll("[data-send]").forEach((b) => b.addEventListener("click", () => send(b)));
+  }
+
+  async function send(button) {
+    const card = button.closest(".card"), error = card.querySelector(".error");
+    const body = { type: button.dataset.send, message: card.querySelector("[data-message]")?.value || "" };
+    if (body.type === "refund") {
+      body.reason = card.querySelector("[data-reason]")?.value || null;
+      if (!body.reason) { error.textContent = "Please choose a reason."; return; }
+    }
+    button.disabled = true; busy = true; error.textContent = "";
+    try {
+      const res = await fetch(`/api/o/${encodeURIComponent(token)}/requests`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) { error.textContent = out.detail || "Something went wrong. Please try again."; return; }
+      open = null; notice = "Sent. The seller will reply here.";
+      await load();
+    } catch { error.textContent = "Could not reach the seller's site. Please try again."; }
+    finally { busy = false; button.disabled = false; }
+  }
+
+  async function load() {
+    const res = await fetch(`/api/o/${encodeURIComponent(token)}`);
+    if (!res.ok) { document.getElementById("root").innerHTML = '<div class="card"><h1>Order not found</h1><p class="muted">Check the link in your confirmation.</p></div>'; return; }
+    data = await res.json();
+    draw();
+  }
+
+  // Pick up seller replies and refunds, but never while the buyer is typing or sending.
+  const typing = () => busy || [...document.querySelectorAll("textarea, select")].some((el) => el.value);
+  load();
+  setInterval(() => { if (data && !typing()) load().catch(() => {}); }, 20000);
+</script>
+</body>
+</html>

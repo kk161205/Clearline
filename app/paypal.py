@@ -137,6 +137,13 @@ class PayPalClient:
         return await self._request("POST", f"/v2/checkout/orders/{order_id}/capture",
                                    json={}, idempotent=True)
 
+    async def refund_capture(self, capture_id: str, *, amount: dict | None = None) -> dict:
+        """Refund a captured payment (Payments v2). Full refund: empty body, which PayPal
+        treats as "captured amount minus previous refunds". Partial: {"amount": money}."""
+        body = {"amount": amount} if amount else {}
+        return await self._request("POST", f"/v2/payments/captures/{capture_id}/refund",
+                                   json=body, idempotent=True)
+
     async def get_order(self, order_id: str) -> dict:
         return await self._request("GET", f"/v2/checkout/orders/{order_id}")
 

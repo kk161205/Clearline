@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 20
     # Pull disputes from PayPal every N minutes as a safety net for missed webhooks; 0 = off.
     auto_sync_minutes: float = 3
+    # Day 4: signs buyer links (/o/{token}) and seller sessions. If empty, a random one is made
+    # at startup, so links and logins stop working after a restart.
+    app_secret: str | None = None
+    # Password for the seller pages and APIs. Empty = the seller side is locked (503).
+    seller_password: str | None = None
+    # Shown to buyers on their order page ("what is this charge?").
+    seller_display_name: str = "Demo Design Studio"
 
     @property
     def api_base(self) -> str:

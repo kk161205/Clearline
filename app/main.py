@@ -1,18 +1,23 @@
 import asyncio
 import logging
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .ai import AIClient
-from .assistant import Assistant
+from .assistant import Assistant, strip_pii
+from .auth import SESSION_COOKIE, SESSION_SECONDS, RateLimiter, SellerAuth, is_public
+from .buyer import (SummaryCache, answered_before_dispute, buyer_token, buyer_view,
+                    order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .evidence import (DOCUMENT_TYPES, MAX_BASE64_CHARS, EvidenceFile, EvidenceFileError,
                        document_evidence_types, parse_upload)
@@ -78,11 +83,41 @@ class ActIn(BaseModel):
     evidence: EvidenceIn | None = None
 
 
+class BuyerRequestIn(BaseModel):
+    """One tap on the buyer page. The message is stored PII-stripped."""
+    type: Literal["unrecognised", "not_arrived", "refund"]
+    reason: Literal["not_received", "damaged", "not_as_described", "changed_mind", "other"] | None = None
+    message: str = Field(default="", max_length=1000)
+
+
+class ReplyIn(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class RefundIn(BaseModel):
+    """Seller-approved refund. "full" refunds whatever is left; "partial" needs an amount."""
+    mode: Literal["full", "partial"]
+    amount: str | None = None
+    request_id: str | None = None
+
+
+class LoginIn(BaseModel):
+    password: str = Field(max_length=200)
+
+
 class ActionNotAllowed(Exception):
     """PayPal doesn't currently allow this action on the dispute (-> 409)."""
 
 
 PAYPAL_TEXT_LIMIT = 2000  # maxLength of message/note fields in the Disputes schema
+
+LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Clearline · Seller</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;color:#14213d;background:#f6f7f9;margin:0}
+main{max-width:520px;margin:64px auto;padding:0 16px}code{background:#e3e6ec;padding:1px 6px;border-radius:6px}</style>
+</head><body><main><h1>Seller login isn't set up</h1>
+<p>Set <code>SELLER_PASSWORD</code> in <code>.env</code> (and <code>APP_SECRET</code>), then restart
+the app. Until then the seller pages and APIs stay locked.</p></main></body></html>"""
 
 
 STATE_CHANGED_ISSUE = "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"
@@ -237,6 +272,16 @@ def create_app(settings: Settings | None = None,
     store = TimelineStore(settings.database_path)
     ai = AIClient(settings, store, ai_http)
     assistant = Assistant(store, ai)
+    secret = settings.app_secret
+    if not secret:
+        secret = secrets.token_urlsafe(32)
+        log.warning("APP_SECRET is not set: using a random one for now. Buyer links (/o/...) "
+                    "and seller logins will stop working after a restart. Set APP_SECRET in .env.")
+    auth = SellerAuth(secret, settings.seller_password)
+    summaries = SummaryCache(store, ai)
+    buyer_limits = RateLimiter(limit=5, window=3600)  # buyer submissions per link per hour
+    item_names = {k: v["description"] for k, v in CATALOGUE.items()}
+    tracking_lock = asyncio.Lock()  # one "Mark shipped" at a time, so repeats are caught
     sync_lock = asyncio.Lock()
     sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
                   "error": None, "auto_sync_minutes": settings.auto_sync_minutes}
@@ -261,6 +306,61 @@ def create_app(settings: Settings | None = None,
     def fail(err: PayPalError) -> HTTPException:
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
                                                        "paypal_error": err.body})
+
+    # ---- Seller login (Day 4): everything not public needs a session --------
+
+    @app.middleware("http")
+    async def require_seller(request: Request, call_next):
+        """Deny by default. Public: checkout, buyer page + API, webhooks, login."""
+        if is_public(request.method, request.url.path):
+            return await call_next(request)
+        wants_page = request.method == "GET" and not request.url.path.startswith("/api/")
+        if not auth.enabled:
+            if wants_page:
+                return HTMLResponse(LOCKED_PAGE, status_code=503)
+            return JSONResponse({"detail": "Seller login isn't set up: set SELLER_PASSWORD in "
+                                           ".env and restart the app."}, status_code=503)
+        if not auth.valid(request.cookies.get(SESSION_COOKIE)):
+            if wants_page:
+                return RedirectResponse("/login", status_code=303)
+            return JSONResponse({"detail": "Log in as the seller first."}, status_code=401)
+        return await call_next(request)
+
+    def client_key(request: Request) -> str:
+        """Who is trying to log in. Behind ngrok every request comes from localhost, so use the
+        first X-Forwarded-For hop; the global limit below caps spoofed keys too."""
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        return forwarded or (request.client.host if request.client else "unknown")
+
+    @app.get("/login", include_in_schema=False)
+    async def login_page():
+        if not auth.enabled:
+            return HTMLResponse(LOCKED_PAGE, status_code=503)
+        return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/login")
+    async def login(body: LoginIn, request: Request, response: Response):
+        if not auth.enabled:
+            raise HTTPException(503, "Seller login isn't set up: set SELLER_PASSWORD in .env "
+                                     "and restart the app.")
+        key = client_key(request)
+        if auth.failures.blocked(key) or auth.all_failures.blocked("all"):
+            raise HTTPException(429, "Too many failed logins. Wait 15 minutes and try again.")
+        if not auth.check_password(body.password):
+            auth.failures.hit(key)
+            auth.all_failures.hit("all")
+            raise HTTPException(401, "Wrong password.")
+        https = (request.url.scheme == "https"
+                 or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
+        response.set_cookie(SESSION_COOKIE, auth.new_session(), max_age=SESSION_SECONDS,
+                            httponly=True, samesite="lax", secure=https, path="/")
+        return {"ok": True}
+
+    @app.post("/api/logout")
+    async def logout(request: Request, response: Response):
+        auth.end(request.cookies.get(SESSION_COOKIE))
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return {"ok": True}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.
     @app.get("/", include_in_schema=False)
@@ -306,23 +406,149 @@ def create_app(settings: Settings | None = None,
                   {"status": order.get("status"), "capture_id": capture_id,
                    "payer_email": payer.get("email_address"),
                    "payer_country": payer.get("address", {}).get("country_code")})
-        return {"status": order.get("status"), "captureId": capture_id}
+        return {"status": order.get("status"), "captureId": capture_id,
+                "buyerLink": buyer_link(order_id)}
 
     @app.post("/api/orders/{order_id}/tracking")
     async def add_tracking(order_id: str, body: TrackingIn):
-        captured = [e for e in store.timeline(order_id) if e["kind"] == "payment_captured"]
-        if not captured:
-            raise HTTPException(409, "Order has not been captured yet")
-        capture_id = captured[-1]["payload"]["capture_id"]
-        try:
-            await paypal.add_tracking(order_id, capture_id=capture_id,
-                                      tracking_number=body.tracking_number,
-                                      carrier=body.carrier)
-        except PayPalError as err:
-            raise fail(err)
-        store.add(order_id, "tracking_added",
-                  {"tracking_number": body.tracking_number, "carrier": body.carrier})
+        async with tracking_lock:  # a double click waits here, then sees the first one's row
+            events = store.timeline(order_id)
+            captured = [e for e in events if e["kind"] == "payment_captured"]
+            if not captured:
+                raise HTTPException(409, "Order has not been captured yet")
+            if any(e["kind"] == "tracking_added"
+                   and e["payload"].get("carrier") == body.carrier
+                   and e["payload"].get("tracking_number") == body.tracking_number
+                   for e in events):
+                return {"ok": True, "duplicate": True}  # same shipment again: nothing to do
+            capture_id = captured[-1]["payload"]["capture_id"]
+            try:
+                await paypal.add_tracking(order_id, capture_id=capture_id,
+                                          tracking_number=body.tracking_number,
+                                          carrier=body.carrier)
+            except PayPalError as err:
+                raise fail(err)
+            store.add(order_id, "tracking_added",
+                      {"tracking_number": body.tracking_number, "carrier": body.carrier})
         return {"ok": True}
+
+    # ---- Buyer clarity page (Day 4): public, by unguessable link ------------
+
+    def buyer_link(order_id: str) -> str:
+        return f"/o/{buyer_token(secret, order_id)}"
+
+    def order_from_token(token: str) -> str:
+        order_id = order_for_token(store, secret, token)
+        if not order_id:
+            raise HTTPException(404, "Not Found")  # unknown, forged and stale links look the same
+        return order_id
+
+    @app.get("/o/{token}", include_in_schema=False)
+    async def buyer_order_page(token: str):
+        order_from_token(token)
+        return FileResponse(STATIC / "order.html",
+                            headers={"Cache-Control": "no-cache", "Referrer-Policy": "no-referrer",
+                                     "X-Robots-Tag": "noindex"})
+
+    @app.get("/api/o/{token}")
+    async def buyer_order(token: str, background: BackgroundTasks):
+        """Everything the buyer page shows. Answers from stored facts only: never waits on the
+        AI. The AI summary is made lazily, in the background, the first time the buyer looks
+        at a given order state (so only orders whose buyers actually visit cost an AI call)."""
+        order_id = order_from_token(token)
+        page, facts = buyer_view(store, summaries, order_id,
+                                 seller_name=settings.seller_display_name, item_names=item_names)
+        if page["summary"]["source"] == "template" and summaries.needs_refresh(order_id, facts):
+            background.add_task(summaries.refresh, order_id, facts)
+        return page
+
+    @app.get("/api/o/{token}/status")
+    async def buyer_order_status(token: str):
+        """Minimal "is it paid?" for the checkout page's restore (no timeline needed)."""
+        order_id = order_from_token(token)
+        return {"paid": True, "orderRef": order_id[-6:], "buyerLink": buyer_link(order_id)}
+
+    @app.post("/api/o/{token}/requests")
+    async def buyer_request(token: str, body: BuyerRequestIn):
+        order_id = order_from_token(token)
+        if buyer_limits.blocked(token):
+            raise HTTPException(429, "You've sent several messages already. Please wait for the "
+                                     "seller's reply.")
+        if body.type == "refund" and not body.reason:
+            raise HTTPException(400, "Choose a reason for the refund.")
+        buyer_limits.hit(token)
+        request_id = uuid.uuid4().hex[:12]
+        store.add(order_id, "buyer_request",
+                  {"request_id": request_id, "type": body.type,
+                   "reason": body.reason if body.type == "refund" else None,
+                   "message": strip_pii(body.message.strip())})
+        return {"ok": True, "request_id": request_id}
+
+    # Seller side of buyer requests (login required)
+
+    @app.post("/api/orders/{order_id}/requests/{request_id}/reply")
+    async def reply_to_buyer(order_id: str, request_id: str, body: ReplyIn):
+        if not any(e["kind"] == "buyer_request" and e["payload"].get("request_id") == request_id
+                   for e in store.timeline(order_id)):
+            raise HTTPException(404, "No such buyer request")
+        store.add(order_id, "seller_reply", {"request_id": request_id,
+                                             "message": body.message.strip()})
+        return {"ok": True}
+
+    @app.post("/api/orders/{order_id}/refund")
+    async def refund_order(order_id: str, body: RefundIn):
+        """Seller-approved refund of the order's capture. Amount checks happen before any
+        PayPal call; PayPal's answer is recorded either way and nothing is retried."""
+        events = store.timeline(order_id)
+        captured_events = [e for e in events if e["kind"] == "payment_captured"]
+        if not captured_events or not captured_events[-1]["payload"].get("capture_id"):
+            raise HTTPException(409, "This order has no captured payment to refund.")
+        capture_id = captured_events[-1]["payload"]["capture_id"]
+        captured, refunded, currency = refund_totals(events)
+        remaining = captured - refunded
+        if remaining <= 0:
+            raise HTTPException(409, "This order has already been fully refunded.")
+        if body.mode == "full":
+            amount, money = remaining, None  # empty body = "captured minus previous refunds"
+        else:
+            try:
+                amount = Decimal(body.amount or "").quantize(Decimal("0.01"))
+            except InvalidOperation:
+                raise HTTPException(400, "Enter the refund amount, e.g. 40.00")
+            if not 0 < amount <= remaining:
+                raise HTTPException(400, f"The refund must be more than 0 and at most "
+                                         f"{remaining} {currency} (captured {captured}, already "
+                                         f"refunded {refunded}).")
+            money = {"currency_code": currency, "value": f"{amount:.2f}"}
+        base = {"request_id": body.request_id, "mode": body.mode, "capture_id": capture_id,
+                "amount": f"{amount:.2f}", "currency": currency}
+        try:
+            result = await paypal.refund_capture(capture_id, amount=money)
+        except (PayPalError, httpx.HTTPError) as err:
+            store.add(order_id, "refund_failed",
+                      {**base, "error": readable_error(err), **error_details(err)})
+            raise HTTPException(502, readable_error(err))
+        store.add(order_id, "refund_sent", {**base, "refund_id": result.get("id"),
+                                            "status": result.get("status")})
+        return {"ok": True, "status": result.get("status"), "amount": f"{amount:.2f}",
+                "currency": currency}
+
+    @app.get("/api/stats")
+    async def stats():
+        return {"questions_answered_before_dispute": answered_before_dispute(store)}
+
+    @app.get("/api/orders/{order_id}/buyer")
+    async def seller_buyer_view(order_id: str):
+        """The seller's view of an order's buyer page: link, requests, refunds, refundable."""
+        events = store.timeline(order_id)
+        if not any(e["kind"] == "payment_captured" for e in events):
+            raise HTTPException(404, "Order has not been captured yet")
+        page, _ = buyer_view(store, summaries, order_id,
+                             seller_name=settings.seller_display_name, item_names=item_names)
+        captured, refunded, currency = refund_totals(events)
+        return {"link": buyer_link(order_id), "requests": page["requests"],
+                "refunds": page["refunds"], "summary": page["summary"],
+                "refundable": f"{captured - refunded:.2f}", "currency": currency}
 
     # ---- Webhooks (Day 2) --------------------------------------------------
 

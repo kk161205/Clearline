@@ -11,3 +11,6 @@ def no_real_ai_keys(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "")
     # No background PayPal polling in tests unless a test turns it on explicitly.
     monkeypatch.setenv("AUTO_SYNC_MINUTES", "0")
+    # Never use the real seller password or app secret; tests pass their own.
+    monkeypatch.setenv("SELLER_PASSWORD", "")
+    monkeypatch.setenv("APP_SECRET", "")

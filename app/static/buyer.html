@@ -31,6 +31,8 @@
     <div id="paid" class="paid" hidden>
       <strong>Payment received ✓</strong>
       <p>Order <span id="paid-order" class="mono"></span> is confirmed. The seller has been notified.</p>
+      <p><a id="paid-help" href="#">Questions about this order?</a> Keep this link: it shows
+        shipping updates and lets you message the seller.</p>
       <a href="/">Buy another</a>
     </div>
     <div id="result"></div>
@@ -42,24 +44,26 @@
   const result = document.getElementById("result");
   const show = (text, cls = "") => { result.textContent = text; result.className = cls; };
 
-  // Replace the button with a confirmation and keep the order ID in the URL,
-  // so the paid state survives a refresh or coming back to the tab.
-  function showPaid(orderId) {
+  // Replace the button with a confirmation and keep the buyer-link token in the URL, so the
+  // paid state survives a refresh or coming back to the tab (without the seller's timeline).
+  function showPaid(orderRef, buyerLink) {
     document.querySelector("paypal-button")?.setAttribute("hidden", "");
-    document.getElementById("paid-order").textContent = orderId;
+    document.getElementById("paid-order").textContent = `…${orderRef}`;
+    document.getElementById("paid-help").href = buyerLink;
     document.getElementById("paid").hidden = false;
     show("");
-    history.replaceState(null, "", `/?order=${encodeURIComponent(orderId)}`);
+    const receipt = buyerLink.split("/").pop();
+    history.replaceState(null, "", `/?receipt=${encodeURIComponent(receipt)}`);
   }
 
   async function restorePaidState() {
-    const orderId = new URLSearchParams(location.search).get("order");
-    if (!orderId) return false;
-    const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/timeline`);
+    const receipt = new URLSearchParams(location.search).get("receipt");
+    if (!receipt) return false;
+    const res = await fetch(`/api/o/${encodeURIComponent(receipt)}/status`);
     if (!res.ok) return false;
-    const events = await res.json();
-    if (!events.some((e) => e.kind === "payment_captured")) return false;
-    showPaid(orderId);
+    const status = await res.json();
+    if (!status.paid) return false;
+    showPaid(status.orderRef, status.buyerLink);
     return true;
   }
 
@@ -96,7 +100,7 @@
             const res = await fetch(`/api/orders/${data.orderId}/capture`, { method: "POST" });
             const body = await res.json();
             if (res.ok && body.status === "COMPLETED") {
-              showPaid(data.orderId);
+              showPaid(data.orderId.slice(-6), body.buyerLink);
             } else {
               show(`Capture problem: ${JSON.stringify(body)}`, "bad");
             }

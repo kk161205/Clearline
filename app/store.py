@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS processed_webhooks (
     event_id TEXT PRIMARY KEY,
     received_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS buyer_summaries (
+    order_id TEXT PRIMARY KEY,
+    state_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    provider TEXT,
+    model TEXT,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ai_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     active_provider TEXT NOT NULL,
@@ -113,6 +121,27 @@ class TimelineStore:
             return None
         # max() keeps the first of equal keys, so reverse to prefer the newest row on ties.
         return max(reversed(states), key=lambda e: e["payload"].get("update_time") or "")
+
+    # ---- Buyer page summaries (Day 4) ----------------------------------------
+
+    def buyer_summary(self, order_id: str) -> dict | None:
+        """The cached AI summary for an order's buyer page, if any."""
+        with closing(self._conn()) as conn:
+            row = conn.execute("SELECT * FROM buyer_summaries WHERE order_id = ?",
+                               (order_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_buyer_summary(self, order_id: str, state_key: str, text: str, provider: str,
+                          model: str) -> None:
+        """Cache the AI summary for one order state (replaces the previous one)."""
+        with closing(self._conn()) as conn, conn:
+            conn.execute(
+                """INSERT INTO buyer_summaries (order_id, state_key, text, provider, model, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(order_id) DO UPDATE SET state_key = excluded.state_key,
+                       text = excluded.text, provider = excluded.provider,
+                       model = excluded.model, created_at = excluded.created_at""",
+                (order_id, state_key, text, provider, model, time.time()))
 
     # ---- AI provider state (Day 3) -----------------------------------------
 

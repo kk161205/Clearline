@@ -243,6 +243,71 @@ document-backed delivery-signature submission. Clearline's Fight flow therefore 
   `evidence-file`. The server checks the file type by its content, the size and the name; the
   timeline keeps only the file's name, type, size and SHA-256, never its contents.
 
+## Day 4: buyer clarity page
+
+Most "item not received" and "I don't recognise this" disputes start because the buyer can't
+quickly see what they paid for and where it is. Day 4 gives every buyer a private page that
+answers that instantly, plus one-tap ways to ask the seller before going to PayPal.
+
+### What the buyer sees
+
+After paying, the checkout page shows **"Questions about this order?"**, a private link
+`/o/<token>`. The token is an HMAC of the order ID with `APP_SECRET`, so it can't be guessed;
+unknown or forged links get a 404. No login is needed. The page shows:
+
+- seller name (`SELLER_DISPLAY_NAME`), item, amount, date, "Paid with PayPal", country, and
+  only the last 6 characters of the order ID; never the buyer's email, name or address
+- shipping status: carrier, tracking number and ship date; **never an invented delivery date**
+- a one-line summary. An AI writes it in the background the first time a buyer opens a given
+  order state, and it is cached until something changes (e.g. shipping or a refund). The page
+  never waits for it: until it's ready, or if the AI fails or adds a number that isn't in the
+  facts, a plain template sentence is shown. The page answers in milliseconds.
+- three help buttons: **I don't recognise this charge** (explains it, then "Still not right?
+  Contact the seller"), **My order hasn't arrived** (tracking + message), **I want a refund**
+  (reason + message). Messages are stored with emails, links and phone numbers removed, are
+  always shown escaped, and are limited to 5 per link per hour.
+- the seller's replies, and refunds ("Refund of 40.00 USD sent").
+
+### What the seller sees
+
+On `/seller`, each captured order has its buyer link (with **Copy link**) and a **Buyer
+requests** list with a reply box; replies appear on the buyer's page. Refund requests also get
+**Refund full amount** and **Refund partial…** buttons. They call PayPal's
+`POST /v2/payments/captures/{capture_id}/refund` only after you confirm: full = empty body
+(PayPal refunds what's left), partial = `{"amount": {"currency_code", "value"}}`. The amount
+is checked first (more than 0, at most the captured amount minus earlier refunds), and
+nothing is retried if PayPal refuses. At the top, **"Questions answered before a dispute: N"**
+counts orders whose buyer asked a question and never opened a dispute.
+
+### Seller login (set this up first)
+
+Everything except checkout, the buyer page and its API, and PayPal webhooks needs the seller
+login: `/seller`, orders, timelines, tracking, disputes, AI, sync, refunds and `/docs`. Add to
+`.env`, then restart uvicorn (it doesn't reload on `.env` changes):
+
+```
+APP_SECRET=<long random value>     # python -c "import secrets; print(secrets.token_urlsafe(32))"
+SELLER_PASSWORD=<your password>
+```
+
+- Without `SELLER_PASSWORD`, `/seller` shows "set SELLER_PASSWORD in .env" and seller APIs
+  return 503.
+- Without `APP_SECRET`, a random one is used and the app logs a warning: buyer links and
+  logins then stop working after each restart.
+- Log in at `/login`. The session cookie is HttpOnly, SameSite=Lax, Secure over https (ngrok),
+  and lasts 12 hours. **Log out** ends it. After 5 wrong passwords, logins from that client
+  pause for 15 minutes. Webhooks and the auto-sync keep working without anyone logged in.
+
+### Test it
+
+1. Set `APP_SECRET` and `SELLER_PASSWORD`, restart uvicorn, and log in at
+   http://localhost:8000/login.
+2. Pay an order on http://localhost:8000, then click **Questions about this order?** (or
+   **Copy link** on `/seller`).
+3. On the buyer page, click **I want a refund**, pick a reason and send.
+4. On `/seller`, reply to it, then click **Refund partial…** (e.g. 40.00) and confirm.
+5. Reload the buyer page: your reply and "Refund of 40.00 USD sent" appear.
+
 ## Layout
 
 | File | Purpose |
@@ -253,4 +318,9 @@ document-backed delivery-signature submission. Clearline's Fight flow therefore 
 | `app/assistant.py` | Facts, prompt, schema and guardrails for dispute recommendations |
 | `app/main.py` | FastAPI routes, server-side price catalogue, `/webhooks/paypal`, dispute actions and sync |
 | `app/static/buyer.html` | Checkout page using PayPal JS SDK v6 |
-| `app/static/seller.html` | Seller's orders, dispute alerts, AI recommendation card with Approve |
+| `app/static/seller.html` | Seller's orders, dispute alerts, AI recommendation card with Approve, buyer requests and refunds |
+| `app/static/order.html` | Buyer clarity page (`/o/<token>`) |
+| `app/static/login.html` | Seller login |
+| `app/buyer.py` | Buyer links, buyer page facts, cached AI summary, refund totals |
+| `app/auth.py` | Seller login, sessions, rate limits, the public-route list |
+| `app/evidence.py` | Checks for seller-provided dispute documents |

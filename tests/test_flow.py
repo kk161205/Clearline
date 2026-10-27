@@ -14,9 +14,12 @@ API = "https://api-m.sandbox.paypal.com"
 
 def make_client(tmp_path):
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
-                        database_path=str(tmp_path / "test.db"))
+                        database_path=str(tmp_path / "test.db"),
+                        app_secret="test-secret", seller_password="test-pass")
     http = httpx.AsyncClient(base_url=settings.api_base)
-    return TestClient(create_app(settings, http))
+    client = TestClient(create_app(settings, http))
+    client.post("/api/login", json={"password": "test-pass"})  # seller APIs need a session
+    return client
 
 
 @respx.mock
@@ -50,7 +53,9 @@ def test_order_capture_tracking_flow(tmp_path):
     # Tracking is refused before capture.
     assert client.post("/api/orders/ORDER1/tracking", json={"tracking_number": "X"}).status_code == 409
 
-    assert client.post("/api/orders/ORDER1/capture").json() == {"status": "COMPLETED", "captureId": "CAP1"}
+    captured = client.post("/api/orders/ORDER1/capture").json()
+    assert {k: captured[k] for k in ("status", "captureId")} == {"status": "COMPLETED", "captureId": "CAP1"}
+    assert captured["buyerLink"].startswith("/o/")  # Day 4: the buyer's private order page
 
     assert client.post("/api/orders/ORDER1/tracking",
                        json={"tracking_number": "1234567890", "carrier": "DHL"}).json() == {"ok": True}

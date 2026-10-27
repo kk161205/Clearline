@@ -29,9 +29,12 @@ def make_client(tmp_path, *, webhook_id="WH-1", allow_unverified=False):
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
                         database_path=str(tmp_path / "test.db"),
                         paypal_webhook_id=webhook_id,
-                        allow_unverified_webhooks=allow_unverified)
+                        allow_unverified_webhooks=allow_unverified,
+                        app_secret="test-secret", seller_password="test-pass")
     http = httpx.AsyncClient(base_url=settings.api_base)
-    return TestClient(create_app(settings, http))
+    client = TestClient(create_app(settings, http))
+    client.post("/api/login", json={"password": "test-pass"})  # seller APIs need a session
+    return client
 
 
 def mock_token():

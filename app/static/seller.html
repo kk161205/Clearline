@@ -45,6 +45,13 @@
     details.tech summary, details.earlier summary { display:inline; cursor:pointer; color:var(--muted); font-size:12px; }
     details.tech[open] { display:block; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
     details.earlier ul { margin:4px 0; padding-left:18px; }
+    .stats { background:#effaf3; border:1px solid #b7e1c8; color:var(--ok); border-radius:10px; padding:8px 12px; margin:0 0 12px; font-size:14px; }
+    .stats strong { font-size:18px; }
+    .buyer { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
+    .buyer h4 { margin:8px 0 4px; font-size:14px; }
+    .buyer .req { border-top:1px solid var(--line); padding:8px 0; }
+    .buyer .reply { background:#effaf3; border-radius:8px; padding:6px 8px; margin-top:4px; }
+    .buyer textarea { width:100%; min-height:60px; margin-top:6px; }
     .ok { color:var(--ok); } .bad { color:var(--bad); }
     #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
     #other .order { padding:10px 12px; font-size:13px; }
@@ -57,7 +64,9 @@
     <span id="sync-msg" class="muted"></span>
     <span id="sync-status" class="muted"></span>
     <button id="sync" class="secondary">Sync disputes</button>
+    <button id="logout" class="secondary">Log out</button>
   </header>
+  <div id="stats" class="stats" hidden></div>
   <div id="orders"><p class="muted">Loading…</p></div>
   <div id="other"></div>
 </main>
@@ -85,6 +94,10 @@
     dispute_action_skipped: "Step skipped",
     sandbox_status_changed: "Sandbox: status changed",
     sandbox_status_change_failed: "Sandbox: status change failed",
+    buyer_request: "Buyer asked",
+    seller_reply: "You replied",
+    refund_sent: "Refund sent",
+    refund_failed: "Refund failed",
   };
   const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message", "make-offer": "Offer", "accept-claim": "Refund" };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
@@ -108,6 +121,15 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
   let ENV = null; // "sandbox" or "live", from /api/config; sandbox-only tools need "sandbox"
+  const BUYER_TYPES = { unrecognised: "Doesn't recognise the charge", not_arrived: "Order hasn't arrived", refund: "Wants a refund" };
+
+  // Session expired or logged out elsewhere: any 401 from a seller API goes to the login page.
+  const rawFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    const res = await rawFetch(...args);
+    if (res.status === 401) location.href = "/login";
+    return res;
+  };
 
   // The server stores PayPal failures as a short sentence plus issue/debug_id. Rows from
   // before that hold PayPal's raw error text, so pull the same facts out of it.
@@ -156,6 +178,10 @@
     if (e.kind === "dispute_action_skipped") return `${p.action}: ${p.endpoint} · ${p.reason}`;
     if (e.kind === "sandbox_status_changed") return `${p.from_status} → asked seller for evidence`;
     if (e.kind === "sandbox_status_change_failed") return errorParts(p).text;
+    if (e.kind === "buyer_request") return [BUYER_TYPES[p.type] || p.type, p.message].filter(Boolean).join(" · ");
+    if (e.kind === "seller_reply") return p.message;
+    if (e.kind === "refund_sent") return `${p.amount} ${p.currency} (${p.mode})${p.status ? ` · ${p.status}` : ""}`;
+    if (e.kind === "refund_failed") return `${p.amount} ${p.currency} · ${errorParts(p).text}`;
     return "";
   }
 
@@ -285,7 +311,7 @@
 
   const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
   const isSide = (id) => id === "other" || id.startsWith("unmatched:");
-  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed"];
+  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed", "refund_failed"];
   const row = (e, extra = "") =>
     `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${
       PAYPAL_FAILURE_KINDS.includes(e.kind) ? techHtml(errorParts(e.payload).tech) : ""}${extra}</li>`;
@@ -305,6 +331,40 @@
     }).join("");
   }
 
+  // The buyer's side of an order: their private link, their requests (with a reply box) and,
+  // for refund requests, the refund buttons. Only the seller's click sends a refund.
+  function buyerSection(orderId, b) {
+    if (!b) return "";
+    const link = `${location.origin}${b.link}`;
+    const canRefund = Number(b.refundable) > 0;
+    const requests = b.requests.map((r) => `<div class="req">
+        <strong>${esc(BUYER_TYPES[r.type] || r.type)}</strong>${r.reason ? ` · ${esc(r.reason)}` : ""} <span class="muted">· ${fmt(r.at)}</span>
+        ${r.message ? `<div>${esc(r.message)}</div>` : '<div class="muted">(no message)</div>'}
+        ${r.replies.map((x) => `<div class="reply">You: ${esc(x.message)}</div>`).join("")}
+        <textarea data-reply-text placeholder="Reply to the buyer (shown on their order page)" maxlength="1000"></textarea>
+        <div class="row">
+          <button class="secondary" data-reply="${esc(r.id)}" data-order="${esc(orderId)}">Send reply</button>
+          ${r.type === "refund" && canRefund ? `
+            <button data-refund="full" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund full amount (${esc(b.refundable)} ${esc(b.currency)})</button>
+            <button class="secondary" data-refund="partial" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund partial…</button>` : ""}
+        </div><div class="msg"></div></div>`).join("");
+    const refunds = b.refunds.map((x) => `<div class="ok">Refund of ${esc(x.amount)} ${esc(x.currency)} sent${x.status && x.status !== "COMPLETED" ? ` (${esc(x.status)})` : ""} · ${fmt(x.at)}</div>`).join("");
+    return `<div class="buyer">
+        <div class="muted">Buyer page: <a href="${esc(link)}" target="_blank" rel="noopener">${esc(b.link.slice(0, 14))}…</a>
+          <button class="secondary" data-copy="${esc(link)}">Copy link</button></div>
+        ${refunds}
+        ${b.requests.length ? `<h4>Buyer requests</h4>${requests}` : ""}
+      </div>`;
+  }
+
+  async function loadStats() {
+    const res = await fetch("/api/stats");
+    if (!res.ok) return;
+    const s = await res.json(), el = document.getElementById("stats");
+    el.innerHTML = `Questions answered before a dispute: <strong>${esc(s.questions_answered_before_dispute)}</strong>`;
+    el.hidden = false;
+  }
+
   async function render() {
     const all = await (await fetch("/api/orders")).json();
     const orders = all.filter((o) => !isSide(o.order_id));
@@ -317,6 +377,7 @@
       const d = disputePanel(state);
       const captured = events.some((e) => e.kind === "payment_captured");
       const tracked = events.some((e) => e.kind === "tracking_added");
+      const buyer = captured ? await (await fetch(`/api/orders/${encodeURIComponent(o.order_id)}/buyer`)).json().catch(() => null) : null;
       const steps = timelineRows(events);
       const form = captured && !tracked ? `
         <form data-order="${esc(o.order_id)}">
@@ -324,18 +385,30 @@
           <select name="carrier"><option>DHL</option><option>FEDEX</option><option>UPS</option><option>USPS</option></select>
           <button>Mark shipped</button>
         </form><div class="msg"></div>` : "";
-      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}<ol>${steps}</ol>${form}</div>`;
+      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${esc(o.order_id)}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}${buyerSection(o.order_id, buyer)}<ol>${steps}</ol>${form}</div>`;
     }));
     root.innerHTML = blocks.join("");
     root.querySelectorAll("form").forEach((f) => f.addEventListener("submit", async (ev) => {
       ev.preventDefault();
+      const button = f.querySelector("button");
+      if (button.disabled) return; // already sending: a second click does nothing
       const msg = f.nextElementSibling;
       const data = Object.fromEntries(new FormData(f));
-      const res = await fetch(`/api/orders/${f.dataset.order}/tracking`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
-      });
-      if (res.ok) { render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
+      button.disabled = true; button.textContent = "Saving…"; busy++;
+      try {
+        const res = await fetch(`/api/orders/${f.dataset.order}/tracking`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+        });
+        if (res.ok) { await render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
+      } finally { busy--; button.disabled = false; button.textContent = "Mark shipped"; }
     }));
+    root.querySelectorAll(".buyer textarea").forEach((el) =>
+      el.addEventListener("input", () => { if (el.value) el.dataset.dirty = "1"; else delete el.dataset.dirty; }));
+    root.querySelectorAll("[data-reply]").forEach((b) => b.addEventListener("click", () => sendReply(b)));
+    root.querySelectorAll("[data-refund]").forEach((b) => b.addEventListener("click", () => refund(b)));
+    root.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () =>
+      navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "Copied ✓"; })));
+    loadStats();
     root.querySelectorAll(".ai textarea, .ai input, .ai select").forEach((el) =>
       el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
     root.querySelectorAll('[data-field="evidence_file"]').forEach((input) =>
@@ -367,8 +440,44 @@
     });
   }
 
+  function sendReply(button) {
+    const box = button.closest(".req").querySelector("[data-reply-text]");
+    const message = box.value.trim();
+    if (!message) { box.focus(); return; }
+    return withBusy(button, "Sending…", async () => {
+      const res = await fetch(`/api/orders/${encodeURIComponent(button.dataset.order)}/requests/${encodeURIComponent(button.dataset.reply)}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }),
+      });
+      if (!res.ok) throw new Error(`Reply failed: ${await errorText(res)}`);
+      delete box.dataset.dirty; box.value = "";
+      await render();
+    });
+  }
+
+  // Refunds move money: always ask first, and let the server check the amount again.
+  function refund(button) {
+    const { order, request, max, currency } = button.dataset;
+    let amount = max;
+    if (button.dataset.refund === "partial") {
+      amount = prompt(`Refund how much? (at most ${max} ${currency})`, "");
+      if (amount === null) return;
+      amount = amount.trim();
+      if (!(Number(amount) > 0 && Number(amount) <= Number(max))) { alert(`Enter an amount between 0.01 and ${max}.`); return; }
+    }
+    if (!confirm(`Refund ${amount} ${currency} to the buyer through PayPal? This can't be undone.`)) return;
+    return withBusy(button, "Refunding…", async () => {
+      const body = button.dataset.refund === "full" ? { mode: "full", request_id: request }
+        : { mode: "partial", amount, request_id: request };
+      const res = await fetch(`/api/orders/${encodeURIComponent(order)}/refund`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (!res.ok) { await render(); throw new Error(`Refund not sent: ${await errorText(res)}`); }
+      await render();
+    });
+  }
+
   async function withBusy(button, text, fn) {
-    const card = button.closest(".ai, .sandbox-tool"), msg = card.querySelector(".msg");
+    const card = button.closest(".ai, .sandbox-tool, .req"), msg = card.querySelector(".msg");
     const old = button.textContent;
     button.disabled = true; button.textContent = text; busy++;
     try { msg.textContent = (await fn()) || ""; msg.className = "msg"; }
@@ -446,6 +555,11 @@
     }));
     root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
   }
+
+  document.getElementById("logout").addEventListener("click", async () => {
+    await fetch("/api/logout", { method: "POST" }).catch(() => {});
+    location.href = "/login";
+  });
 
   document.getElementById("sync").addEventListener("click", async (ev) => {
     const button = ev.currentTarget, msg = document.getElementById("sync-msg");

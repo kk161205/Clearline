@@ -17,17 +17,24 @@ DISPUTE_ID = "PP-D-1"
 PAYER_EMAIL = "buyer@us.example.com"
 
 
+SELLER_PASSWORD = "test-pass"
+
+
 def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env="sandbox",
-                auto_sync_minutes=0):
+                auto_sync_minutes=0, login=True, seller_password=SELLER_PASSWORD):
     # Every AI setting is explicit so a real .env can't change the result.
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
                         database_path=str(tmp_path / "test.db"), paypal_webhook_id="WH-1",
                         gemini_api_key=gemini_key, gemini_model="gemini-test-lite",
                         groq_api_key=groq_key, groq_model="openai/gpt-oss-120b",
                         ai_timeout_seconds=5, paypal_env=paypal_env,
-                        auto_sync_minutes=auto_sync_minutes)
+                        auto_sync_minutes=auto_sync_minutes, app_secret="test-secret",
+                        seller_password=seller_password)
     http = httpx.AsyncClient(base_url=settings.api_base)
-    return TestClient(create_app(settings, http)), settings
+    client = TestClient(create_app(settings, http))
+    if login and seller_password:
+        assert client.post("/api/login", json={"password": seller_password}).status_code == 200
+    return client, settings
 
 
 def full_dispute(**overrides) -> dict:

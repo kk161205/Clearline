@@ -325,6 +325,8 @@ def dispute_summary(dispute: dict) -> dict:
                            "currency_code": amount.get("currency_code")},
         "seller_response_due_date": dispute.get("seller_response_due_date"),
         "update_time": dispute.get("update_time"),
+        # How a closed dispute ended, e.g. RESOLVED_SELLER_FAVOUR (PayPal's dispute_outcome).
+        "outcome": (dispute.get("dispute_outcome") or {}).get("outcome_code"),
         "allowed_actions": allowed_actions(dispute),
         "allowed_response_options": dispute.get("allowed_response_options") or {},
         "requested_evidence": [e.get("evidence_type") for e in dispute.get("evidences", [])

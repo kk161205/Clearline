@@ -299,6 +299,10 @@ def buyer_view(store: TimelineStore, cache: SummaryCache, order_id: str, *, sell
 
 def answered_before_dispute(store: TimelineStore) -> int:
     """Orders where the buyer asked us something and no dispute was ever opened."""
-    return sum(1 for o in store.orders()
-               if "buyer_request" in o["kinds"]
-               and not any(k in DISPUTE_KINDS for k in o["kinds"]))
+    return count_answered(o["kinds"] for o in store.orders())
+
+
+def count_answered(kinds_per_order) -> int:
+    """The counter itself, from each order's event kinds (shared with the dashboard)."""
+    return sum(1 for kinds in kinds_per_order
+               if "buyer_request" in kinds and not any(k in DISPUTE_KINDS for k in kinds))

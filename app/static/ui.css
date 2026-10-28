@@ -311,7 +311,9 @@ details.tech div { overflow-wrap: anywhere; }
   .shell-nav { position: fixed; left: 0; right: 0; bottom: 0; border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
   .shell-nav ul { justify-content: space-around; }
   .shell-nav li { flex: 1; }
-  .shell-nav a { flex-direction: column; gap: 2px; font-size: 11px; font-weight: 600; padding: 8px 2px 6px; justify-content: center; height: calc(var(--tabbar) - 1px); border-radius: 0; }
+  .shell-nav a { flex-direction: column; gap: 2px; font-size: 11px; font-weight: 600; padding: 8px 0 6px; justify-content: center; height: calc(var(--tabbar) - 1px); border-radius: 0;
+                 white-space: nowrap; letter-spacing: -.01em; }
+  @media (max-width: 379.98px) { .shell-nav a { font-size: 10px; } }
   .shell-nav a[aria-current="page"] { box-shadow: inset 0 3px 0 var(--settled); }
 }
 @media (min-width: 1024px) {

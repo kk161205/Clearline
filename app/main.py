@@ -26,6 +26,7 @@ from .auth import SESSION_COOKIE, SESSION_SECONDS, RateLimiter, SellerAuth, is_p
 from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer_token,
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
+from .dashboard import build as build_dashboard
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
                         PURPOSE_PROMPT_VERSION, PURPOSE_SCHEMA, REMINDER_PROMPT,
@@ -51,6 +52,14 @@ CATALOGUE = {
         "amount": "120.00",
         "currency": "USD",
     },
+    # Day 7: more printed products, so the demo dashboard has varied amounts. The checkout
+    # page still sells the brand kit.
+    "poster-set": {"description": "Set of three art prints, shipped from India",
+                   "amount": "60.00", "currency": "USD"},
+    "logo-refresh": {"description": "Logo refresh with printed style sheet, shipped from India",
+                     "amount": "85.00", "currency": "USD"},
+    "brand-guide": {"description": "Bound brand guidelines book, shipped from India",
+                    "amount": "240.00", "currency": "USD"},
 }
 
 
@@ -433,7 +442,9 @@ def create_app(settings: Settings | None = None,
         return FileResponse(STATIC / "seller.html", headers={"Cache-Control": "no-cache"})
 
     # The shared design system (Day 7) and its self-hosted font. Only these files are served.
-    static_files = {"ui.css": None, "ui.js": None,
+    static_files = {"ui.css": None, "ui.js": None, "history.js": None,
+                    "vendor/ag-grid-community-36.2.0.min.js": None,
+                    "vendor/ag-charts-community-14.2.0.min.js": None,
                     "fonts/instrument-sans-latin.woff2": "font/woff2",
                     "fonts/instrument-sans-latin-ext.woff2": "font/woff2"}
 
@@ -441,7 +452,8 @@ def create_app(settings: Settings | None = None,
     async def static_file(name: str):
         if name not in static_files:
             raise HTTPException(404, "Not Found")
-        cache = "public, max-age=604800" if name.startswith("fonts/") else "no-cache"
+        # Fonts and the versioned libraries never change under the same name.
+        cache = "public, max-age=604800" if name.startswith(("fonts/", "vendor/")) else "no-cache"
         return FileResponse(STATIC / name, media_type=static_files[name],
                             headers={"Cache-Control": cache})
 
@@ -1397,6 +1409,16 @@ def create_app(settings: Settings | None = None,
                 "sdk": f"mcp {package_version('mcp')}",
                 "merchant_enabled": bool(settings.merchant_api_key), "tools": tools,
                 "calls": store.agent_calls(20)}
+
+    # ---- Money in flight dashboard (Day 7): read-only, no PII ------------------
+
+    @app.get("/dashboard", include_in_schema=False)
+    async def dashboard_page():
+        return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/dashboard")
+    async def dashboard_data():
+        return build_dashboard(store.all_events(), item_names=item_names)
 
     @app.get("/api/orders")
     async def list_orders():

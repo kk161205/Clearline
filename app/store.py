@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS agent_calls (
 DISPUTE_KINDS = ("dispute_created", "dispute_updated", "dispute_resolved")
 
 
+def latest_state(states: list[dict]) -> dict | None:
+    """The dispute event with the newest PayPal update_time (webhooks arrive out of order, so
+    the last inserted row isn't necessarily the current state). Ties go to the newest row."""
+    if not states:
+        return None
+    # max() keeps the first of equal keys, so reverse to prefer the newest row on ties.
+    return max(reversed(states), key=lambda e: e["payload"].get("update_time") or "")
+
+
 class TimelineStore:
     def __init__(self, path: str):
         self.path = path
@@ -93,6 +102,16 @@ class TimelineStore:
         return [{"order_id": r["order_id"], "updated_at": r["updated_at"],
                  "kinds": r["kinds"].split(",")} for r in rows]
 
+    def all_events(self) -> dict[str, list[dict]]:
+        """Every order's timeline in one query (for the dashboard), oldest event first."""
+        with closing(self._conn()) as conn:
+            rows = conn.execute("SELECT order_id, kind, payload, created_at FROM events ORDER BY id").fetchall()
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r["order_id"], []).append(
+                {"kind": r["kind"], "payload": json.loads(r["payload"]), "created_at": r["created_at"]})
+        return out
+
     def find_order_by_capture(self, capture_id: str) -> str | None:
         """Order whose payment_captured event has this capture ID, if any."""
         with closing(self._conn()) as conn:
@@ -129,11 +148,7 @@ class TimelineStore:
     def latest_dispute_state(self, dispute_id: str) -> dict | None:
         """The stored dispute event with the newest PayPal update_time (webhooks arrive out of
         order, so the last inserted row isn't necessarily the current state)."""
-        states = [e for e in self.dispute_events(dispute_id) if e["kind"] in DISPUTE_KINDS]
-        if not states:
-            return None
-        # max() keeps the first of equal keys, so reverse to prefer the newest row on ties.
-        return max(reversed(states), key=lambda e: e["payload"].get("update_time") or "")
+        return latest_state([e for e in self.dispute_events(dispute_id) if e["kind"] in DISPUTE_KINDS])
 
     # ---- Buyer page summaries (Day 4) ----------------------------------------
 

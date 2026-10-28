@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Clearline · Money in flight</title>
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
+  <script src="/static/history.js"></script>
+  <!-- AG Grid Community 36.2.0 and AG Charts Community 14.2.0 (MIT), self-hosted copies of the
+       npm builds; the integrity hashes are the published files' (licences in vendor/). -->
+  <script src="/static/vendor/ag-grid-community-36.2.0.min.js"
+          integrity="sha384-icvtRKM0YJJgeDhXnWY8UlF1PVBFd4K8Pj61la+vG+EU+awBeoP0xGPZhCD2SQOV"></script>
+  <script src="/static/vendor/ag-charts-community-14.2.0.min.js"
+          integrity="sha384-o7hyTlvNx0/wSeuNLcVtRmKvzh3/7AtZKa9hvrb4aTqsU49zXNGX+r25F997LRWM"></script>
+  <style>
+    .lead { color: var(--muted); margin: 6px 0 0; max-width: 64ch; }
+    .updated { color: var(--muted); font-size: var(--t-xs); }
+
+    /* KPI tiles: a short stub of the line in the tile's money state, no shadows. */
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px; }
+    .kpi { display: flex; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; min-height: 104px; }
+    .kpi .k-label { color: var(--muted); font-size: var(--t-xs); font-weight: 600; }
+    .kpi .k-value { font-size: var(--t-xl); font-weight: 650; letter-spacing: -.01em; margin-top: 2px; }
+    .kpi .k-more { font-size: var(--t-xs); color: var(--muted); margin-top: 2px; }
+    .kpi .k-value .num + .num { display: block; font-size: var(--t-sm); font-weight: 600; color: var(--muted); }
+
+    /* Charts */
+    .charts { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+    @media (min-width: 900px) { .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px; min-width: 0; }
+    .chart-card h3 { font-size: var(--t-sm); margin-bottom: 2px; }
+    .chart-card .hint { margin: 0 0 8px; }
+    .chart { height: 260px; }
+    .no-lib { padding: 16px; }
+
+    /* Grid toolbar and grid */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 12px; }
+    .toolbar input[type="search"] { flex: 1 1 220px; min-width: 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { min-height: 36px; padding: 6px 12px; border-radius: 999px; background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); font-size: var(--t-xs); font-weight: 600; }
+    .chip:hover { filter: none; background: var(--surface-2); }
+    .chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+    .chip .n { font-variant-numeric: tabular-nums; opacity: .8; margin-left: 4px; }
+    .toolbar .count { font-size: var(--t-xs); color: var(--muted); margin-left: auto; }
+    .grid-wrap { height: 560px; }
+    @media (max-width: 639.98px) { .grid-wrap { height: 480px; } }
+    .grid-wrap .pill { vertical-align: middle; }
+    .grid-wrap .next { font-weight: 600; }
+    .grid-wrap .next.disputed { color: var(--disputed-ink); }
+    .grid-wrap .next.held { color: var(--held-ink); }
+    .grid-wrap .next.none { color: var(--muted); font-weight: 400; }
+    .item-row { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; grid-template-areas: "mark ref amount" "mark next pill";
+                gap: 2px 12px; align-items: center; height: 100%; padding: 10px 14px; cursor: pointer; }
+    .item-row .cl-mark { grid-area: mark; }
+    .item-row .ref { grid-area: ref; font-weight: 600; }
+    .item-row .amount { grid-area: amount; font-weight: 600; text-align: right; }
+    .item-row .next { grid-area: next; font-size: var(--t-xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item-row .pill { grid-area: pill; justify-self: end; }
+    .group-row { display: flex; align-items: center; gap: 10px; height: 100%; padding: 0 12px; background: var(--surface-2);
+                 border: 0; width: 100%; color: var(--ink); font-weight: 600; text-align: left; border-radius: 0; min-height: 0; }
+    .group-row:hover { filter: none; }
+    .group-row .chev { transition: transform .15s; color: var(--muted); }
+    .group-row[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+    .group-row .sum { margin-left: auto; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    /* Side panel: a drawer from the right; a full sheet on phones. */
+    dialog.drawer { margin: 0 0 0 auto; height: 100%; max-height: 100%; width: min(480px, 100vw); max-width: 100vw; border: 0; border-left: 1px solid var(--border);
+                    border-radius: 0; padding: 0; background: var(--surface); color: var(--ink); box-shadow: var(--shadow-pop); }
+    dialog.drawer::backdrop { background: var(--scrim); }
+    .drawer-head { position: sticky; top: 0; background: var(--surface); display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 12px; border-bottom: 1px solid var(--border); z-index: 1; }
+    .drawer-head h2 { font-size: var(--t-lg); }
+    .drawer-head .close { margin-left: auto; }
+    .drawer-body { padding: 16px 20px 32px; display: grid; gap: 20px; }
+    .drawer-body h3 { font-size: var(--t-sm); color: var(--muted); margin-bottom: 10px; }
+    .readonly { font-size: var(--t-xs); color: var(--muted); }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <nav class="shell-nav" aria-label="Seller">
+    <div class="shell-side-brand"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a></div>
+    <ul>
+      <li><a href="/seller#today"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></svg>Today</a></li>
+      <li><a href="/dashboard" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16"/><path d="M7 16v-5M12 16V6M17 16v-8"/></svg>Dashboard</a></li>
+      <li><a href="/seller#orders"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>Orders</a></li>
+      <li><a href="/seller#invoices"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5" stroke-linecap="round"/></svg>Invoices</a></li>
+      <li><a href="/agents"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9.5 13h.01M14.5 13h.01" stroke-linecap="round"/></svg>Agents</a></li>
+      <li><a href="/seller#settings"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</a></li>
+    </ul>
+  </nav>
+
+  <main class="shell-main">
+    <div class="shell-top"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a>
+      <button class="ghost small" data-theme-toggle aria-pressed="false">Theme</button></div>
+
+    <section class="section">
+      <div class="section-head"><h1>Money in flight</h1><span class="updated" id="updated" role="status"></span></div>
+      <p class="lead">Every order and invoice, and where its money is right now. Read-only: replies, refunds and
+        dispute answers stay on Orders.</p>
+    </section>
+
+    <section class="section" aria-label="Key numbers">
+      <div class="kpis" id="kpis">
+        <span class="skeleton row"></span><span class="skeleton row"></span><span class="skeleton row"></span><span class="skeleton row"></span>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="items-h">
+      <div class="section-head"><h2 id="items-h">Orders and invoices</h2></div>
+      <div class="toolbar">
+        <input type="search" id="search" placeholder="Search orders, items, countries, next steps" aria-label="Search" autocomplete="off" />
+        <div class="chips" id="chips" role="group" aria-label="Show"></div>
+        <label class="check"><input type="checkbox" id="group" /> Group by status</label>
+        <span class="count" id="count" role="status"></span>
+      </div>
+      <div id="grid" class="grid-wrap" aria-label="Orders and invoices"></div>
+    </section>
+
+    <section class="section" aria-labelledby="charts-h">
+      <div class="section-head"><h2 id="charts-h">Where the money is</h2><span class="updated" id="chart-currency"></span></div>
+      <div class="charts">
+        <div class="chart-card"><h3>Money by status</h3><p class="hint">Settled is net of refunds.</p><div class="chart" id="c-state" role="img"></div></div>
+        <div class="chart-card"><h3>Prevention funnel</h3><p class="hint">Buyer questions answered here, before they became disputes.</p><div class="chart" id="c-funnel" role="img"></div></div>
+        <div class="chart-card"><h3>Amounts per day, by status</h3><p class="hint">Last 30 days, by payment or invoice date.</p><div class="chart" id="c-days" role="img"></div></div>
+        <div class="chart-card"><h3>Disputes by reason</h3><p class="hint">Every dispute so far, open or closed.</p><div class="chart" id="c-reasons" role="img"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog class="drawer" id="drawer" aria-labelledby="drawer-title"></dialog>
+
+<script>
+  // ---- Data -> view (pure; the page harness tests these) --------------------------------------
+
+  const STATE_ORDER = ["disputed", "held", "unpaid", "settled"];
+  const STATE_LABEL = { settled: "Settled", held: "Waiting", disputed: "Disputed", unpaid: "Unpaid" };
+  const PILL = { settled: "settled", held: "held", disputed: "disputed", unpaid: "" }; // unpaid = nothing yet: grey
+  const sumText = (m) => Object.entries(m || {}).map(([c, v]) => `<span class="num">${esc(v)} ${esc(c)}</span>`).join("") || '<span class="num">0.00</span>';
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function kpiTiles(k) {
+    const d = k.disputes, out = d.outcomes || {};
+    const outcomes = Object.entries(out).map(([o, n]) => `${o} ${n}`).join(", ");
+    const tiles = [
+      ["settled", "Captured", sumText(k.captured), "Paid orders and invoices"],
+      ["none", "Refunded", sumText(k.refunded), "Sent back to buyers"],
+      ["disputed", "Open disputes", sumText(k.disputed_open), plural(k.disputes_open, "dispute open", "disputes open")],
+      ["none", "Invoiced, unpaid", sumText(k.invoiced_unpaid), plural(k.invoices_unpaid, "invoice", "invoices")],
+      ["held", "Overdue invoices", `<span class="num">${esc(k.invoices_overdue)}</span>`, Object.keys(k.overdue || {}).length ? `${Object.entries(k.overdue).map(([c, v]) => `${v} ${c}`).join(", ")} overdue` : "None overdue"],
+      ["settled", "Auto-resolved refunds", `<span class="num">${esc(k.auto_resolved.count)}</span>`, Object.keys(k.auto_resolved.amount).length ? `${Object.entries(k.auto_resolved.amount).map(([c, v]) => `${v} ${c}`).join(", ")} by your policy` : "None yet"],
+      ["settled", "Answered before a dispute", `<span class="num">${esc(k.answered_before_dispute)}</span>`, "Buyer questions that never became disputes"],
+      ["disputed", "Disputes responded to", `<span class="num">${esc(d.responded)} of ${esc(d.total)}</span>`, outcomes ? `Closed: ${outcomes}` : `${d.open} still open`],
+    ];
+    return tiles.map(([tone, label, value, more]) => `<div class="kpi"><span class="cl-mark" data-tone="${tone}" aria-hidden="true"></span>
+      <div><div class="k-label">${esc(label)}</div><div class="k-value">${value}</div><div class="k-more">${esc(more)}</div></div></div>`).join("");
+  }
+
+  function disputeText(d) {
+    if (!d) return "";
+    if (!d.open) return `${d.stage}, closed: ${d.outcome}`;
+    return d.due ? `${d.stage}, respond by ${UI.date(Date.parse(d.due) / 1000)}` : `${d.stage}, open`;
+  }
+
+  // One grid row per money item, with sortable numbers and the last event in plain words.
+  function toGridRows(rows) {
+    return rows.map((r) => {
+      const last = r.history.length ? stop(r.history[r.history.length - 1]).title : "";
+      return { ...r, amountNum: Number(r.amount), refundedNum: Number(r.refunded), dateObj: new Date(`${r.date}T00:00:00`),
+               disputeText: disputeText(r.dispute), last, country: r.country || "" };
+    });
+  }
+
+  // Next action's colour follows the row's money state.
+  const nextTone = (r) => (r.next === "Nothing to do" ? "none" : r.state === "disputed" ? "disputed" : "held");
+
+  function drawerHtml(r) {
+    const link = r.kind === "order" ? `/seller#order-${encodeURIComponent(r.ref.replace(/^…/, ""))}` : "/seller#invoices";
+    return `<div class="drawer-head"><div><div class="muted small">${r.kind === "invoice" ? "Invoice" : "Order"}</div>
+        <h2 id="drawer-title">${esc(r.ref)}</h2>
+        <div class="num" style="font-size:var(--t-lg);font-weight:650">${esc(r.amount)} ${esc(r.currency)}</div>
+        <span class="pill ${PILL[r.state]}">${esc(r.status)}</span></div>
+        <button class="ghost small close" data-close aria-label="Close">Close</button></div>
+      <div class="drawer-body">
+        <dl class="kv">
+          <dt>Next</dt><dd>${esc(r.next)}</dd>
+          <dt>Date</dt><dd>${esc(UI.isoDate(r.date))}</dd>
+          <dt>Item</dt><dd>${esc(r.item)}</dd>
+          ${r.country ? `<dt>Country</dt><dd>${esc(r.country)}</dd>` : ""}
+          ${Number(r.refunded) ? `<dt>Refunded</dt><dd class="num">${esc(r.refunded)} ${esc(r.currency)}</dd>` : ""}
+          ${r.dispute ? `<dt>Dispute</dt><dd>${esc(disputeText(r.dispute))}, ${esc(r.dispute.reason.toLowerCase())}</dd>` : ""}
+        </dl>
+        <div><h3>History</h3>${timelineRows(r.history, `dash-${r.ref}`)}</div>
+        <div class="actions"><a class="btn" href="${esc(link)}">Open on Orders</a></div>
+        <p class="readonly">The dashboard is read-only. Replies, refunds and dispute answers happen on Orders, where every money action asks you first.</p>
+      </div>`;
+  }
+
+  // ---- Grid --------------------------------------------------------------------------------------
+
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let data = null, grid = null, filterState = "all", grouped = false;
+  // Phones get a stacked list: every row is one full-width item (still AG Grid, so search,
+  // sorting, filters and grouping work the same).
+  let narrow = typeof window !== "undefined" && window.innerWidth < 640;
+  const collapsed = new Set();
+  const charts = {};
+
+  const columnDefs = [
+    { field: "ref", headerName: "Order", minWidth: 130, filter: "agTextColumnFilter", pinned: "left",
+      cellRenderer: (p) => `<span class="cl-mark" data-tone="${esc(p.data.state === "unpaid" ? "none" : p.data.state)}" style="display:inline-block;width:4px;height:18px;vertical-align:middle;margin-right:8px"></span>${esc(p.value)}` },
+    { field: "dateObj", headerName: "Date", filter: "agDateColumnFilter", sort: "desc", width: 110,
+      valueFormatter: (p) => (p.data ? UI.isoDate(p.data.date) : "") },
+    { field: "item", headerName: "Item", flex: 1, minWidth: 180, filter: "agTextColumnFilter", tooltipField: "item" },
+    { field: "amountNum", headerName: "Amount", type: "rightAligned", width: 130, filter: "agNumberColumnFilter",
+      cellClass: ["num", "ag-right-aligned-cell"], valueFormatter: (p) => (p.data ? `${p.data.amount} ${p.data.currency}` : "") },
+    { field: "status", headerName: "Status", width: 130, filter: "agTextColumnFilter",
+      cellRenderer: (p) => (p.data ? `<span class="pill ${PILL[p.data.state]}">${esc(p.value)}</span>` : "") },
+    { field: "next", headerName: "Next action", minWidth: 210, flex: 1, filter: "agTextColumnFilter", pinned: null,
+      cellRenderer: (p) => (p.data ? `<span class="next ${nextTone(p.data)}">${esc(p.value)}</span>` : "") },
+    { field: "disputeText", headerName: "Dispute", minWidth: 190, flex: 1, filter: "agTextColumnFilter" },
+    { field: "last", headerName: "Last event", minWidth: 190, flex: 1, filter: "agTextColumnFilter" },
+    { field: "country", headerName: "Country", width: 110, filter: "agTextColumnFilter" },
+    { field: "refundedNum", headerName: "Refunded", type: "rightAligned", width: 120, filter: "agNumberColumnFilter",
+      cellClass: ["num", "ag-right-aligned-cell"], valueFormatter: (p) => (p.data && Number(p.data.refunded) ? `${p.data.refunded}` : "") },
+  ];
+  const PHONE_HIDDEN = ["dateObj", "item", "country", "refundedNum", "status", "disputeText", "last", "next"];
+
+  function itemRenderer(p) {
+    const r = p.data, el = document.createElement("div");
+    el.className = "item-row";
+    el.innerHTML = `<span class="cl-mark" data-tone="${esc(r.state === "unpaid" ? "none" : r.state)}" aria-hidden="true"></span>
+      <span class="ref">${esc(r.ref)}</span><span class="amount num">${esc(r.amount)} ${esc(r.currency)}</span>
+      <span class="next ${nextTone(r)}">${esc(r.next)}</span><span class="pill ${PILL[r.state]}">${esc(r.status)}</span>`;
+    return el;
+  }
+
+  // Group by status (AG Grid Community has no row grouping: these are full-width header rows,
+  // kept at the top of their block by postSortRows; collapsing hides the block by filter).
+  function withGroups(rows) {
+    if (!grouped) return rows;
+    const out = [];
+    for (const s of STATE_ORDER) {
+      const mine = rows.filter((r) => r.state === s);
+      if (!mine.length) continue;
+      const totals = {};
+      mine.forEach((r) => { totals[r.currency] = (totals[r.currency] || 0) + Number(r.amount); });
+      out.push({ group: true, ref: `group-${s}`, state: s, count: mine.length,
+                 total: Object.entries(totals).map(([c, v]) => `${v.toFixed(2)} ${c}`).join(", ") });
+      out.push(...mine);
+    }
+    return out;
+  }
+
+  function groupRenderer(p) {
+    const d = p.data, open = !collapsed.has(d.state);
+    const b = document.createElement("button");
+    b.className = "group-row"; b.setAttribute("aria-expanded", String(open));
+    b.innerHTML = `${CHEV}<span class="pill ${PILL[d.state]}">${esc(STATE_LABEL[d.state])}</span><span>${esc(plural(d.count, "item", "items"))}</span><span class="sum">${esc(d.total)}</span>`;
+    b.addEventListener("click", () => { open ? collapsed.add(d.state) : collapsed.delete(d.state); grid.onFilterChanged(); grid.redrawRows(); });
+    return b;
+  }
+  const CHEV = '<svg class="chev" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
+  function gridTheme() {
+    return agGrid.themeQuartz.withParams({
+      backgroundColor: "var(--surface)", foregroundColor: "var(--ink)", textColor: "var(--ink)", subtleTextColor: "var(--muted)",
+      accentColor: "var(--settled)", borderColor: "var(--border)", chromeBackgroundColor: "var(--surface)",
+      headerBackgroundColor: "var(--surface-2)", headerTextColor: "var(--muted)", headerFontWeight: 600, headerFontSize: 13,
+      fontFamily: "Instrument Sans, ui-sans-serif, system-ui, sans-serif", fontSize: 14, dataFontSize: 14,
+      rowHoverColor: "var(--surface-2)", selectedRowBackgroundColor: "var(--settled-tint)", oddRowBackgroundColor: "var(--surface)",
+      menuBackgroundColor: "var(--surface)", wrapperBorderRadius: 14, rowHeight: 52, headerHeight: 44, spacing: 6,
+      browserColorScheme: "inherit", columnBorder: false, rowBorder: { color: "var(--border)" },
+      inputFocusBorder: { color: "var(--focus)", width: 2 }, focusShadow: "0 0 0 3px var(--focus)", cellHorizontalPadding: 14,
+    });
+  }
+
+  function makeGrid() {
+    grid = agGrid.createGrid(document.getElementById("grid"), {
+      theme: gridTheme(), columnDefs, rowData: [], animateRows: !reduced,
+      defaultColDef: { sortable: true, resizable: true, filter: true, suppressHeaderMenuButton: false },
+      getRowId: (p) => p.data.ref + (p.data.group ? "" : `-${p.data.kind}`),
+      isFullWidthRow: (p) => Boolean(p.rowNode.data && (p.rowNode.data.group || narrow)),
+      fullWidthCellRenderer: (p) => (p.data.group ? groupRenderer(p) : itemRenderer(p)),
+      getRowHeight: (p) => (p.data && p.data.group ? 44 : narrow ? 68 : 52),
+      isExternalFilterPresent: () => filterState !== "all" || (grouped && collapsed.size > 0),
+      doesExternalFilterPass: (node) => {
+        const d = node.data;
+        if (filterState !== "all" && d.state !== filterState) return false;
+        return d.group || !grouped || !collapsed.has(d.state);
+      },
+      postSortRows: (p) => {
+        if (!grouped) return;
+        const rank = (n) => STATE_ORDER.indexOf(n.data.state) * 2 + (n.data.group ? 0 : 1);
+        const sorted = p.nodes.map((n, i) => [n, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([n]) => n);
+        p.nodes.splice(0, p.nodes.length, ...sorted);
+      },
+      onRowClicked: (e) => { if (e.data && !e.data.group) openDrawer(e.data); },
+      onCellKeyDown: (e) => { if (e.event && e.event.key === "Enter" && e.data && !e.data.group) openDrawer(e.data); },
+      onModelUpdated: () => updateCount(),
+      overlayNoRowsTemplate: '<span class="muted">No orders or invoices match.</span>',
+      suppressCellFocus: false, enableCellTextSelection: true, tooltipShowDelay: 400,
+    });
+    fitColumns();
+  }
+
+  function fitColumns() {
+    if (!grid) return;
+    const was = narrow;
+    narrow = window.innerWidth < 640;
+    grid.setColumnsVisible(PHONE_HIDDEN, !narrow);
+    grid.setColumnsPinned(["ref"], narrow ? null : "left");
+    if (narrow) grid.sizeColumnsToFit();
+    if (was !== narrow) { grid.resetRowHeights(); grid.redrawRows(); }
+  }
+
+  function updateCount() {
+    if (!grid || !data) return;
+    let n = 0;
+    grid.forEachNodeAfterFilter((node) => { if (!node.data.group) n += 1; });
+    document.getElementById("count").textContent = `${n} of ${data.rows.length} shown`;
+  }
+
+  function chipsHtml(rows) {
+    const counts = { all: rows.length };
+    rows.forEach((r) => { counts[r.state] = (counts[r.state] || 0) + 1; });
+    return ["all", ...STATE_ORDER].map((s) => `<button class="chip" data-chip="${s}" aria-pressed="${filterState === s}">${s === "all" ? "All" : STATE_LABEL[s]}<span class="n">${counts[s] || 0}</span></button>`).join("");
+  }
+
+  // ---- Charts (AG Charts Community), coloured from the same tokens as everything else --------------
+
+  const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function chartBase() {
+    return {
+      background: { fill: token("--surface") },
+      animation: { enabled: !reduced },
+      theme: { baseTheme: document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches) ? "ag-default-dark" : "ag-default",
+               params: { fontFamily: "Instrument Sans, ui-sans-serif, system-ui, sans-serif", fontSize: 13,
+                         foregroundColor: token("--ink"), backgroundColor: token("--surface"), accentColor: token("--settled"),
+                         tooltipBackgroundColor: token("--surface"), tooltipTextColor: token("--ink") } },
+      padding: { top: 8, right: 64, bottom: 8, left: 8 }, // room for the value labels
+    };
+  }
+  const STATE_COLOR = () => ({ settled: token("--settled"), held: token("--held"), disputed: token("--disputed"), unpaid: token("--none") });
+  const CATEGORY_LABEL = { wrapping: "hyphenate", maxWidth: 96 }; // long reasons wrap, never clip
+  const money0 = (v) => Number(v).toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
+  function chartOptions(c) {
+    const col = STATE_COLOR(), cur = c.currency;
+    const label = (s) => ({ settled: "Settled", held: "Waiting", disputed: "Disputed", unpaid: "Unpaid" }[s]);
+    return {
+      state: { ...chartBase(), container: document.getElementById("c-state"), data: c.by_state,
+        series: [{ type: "bar", direction: "horizontal", xKey: "label", yKey: "amount", yName: `Amount (${cur})`,
+                   itemStyler: (p) => ({ fill: col[p.datum.state], stroke: col[p.datum.state] }), cornerRadius: 4,
+                   label: { enabled: true, formatter: (p) => `${money0(p.value)} ${cur}`, color: token("--ink"), placement: "outside-end" },
+                   tooltip: { renderer: (p) => ({ heading: p.datum.label, data: [{ label: "Amount", value: `${p.datum.amount.toFixed(2)} ${cur}` }] }) } }],
+        axes: { y: { type: "number", position: "bottom", label: { formatter: (p) => money0(p.value) } }, x: { type: "category", position: "left", label: CATEGORY_LABEL } },
+        legend: { enabled: false } },
+      funnel: { ...chartBase(), container: document.getElementById("c-funnel"), data: c.funnel,
+        series: [{ type: "bar", direction: "horizontal", xKey: "step", yKey: "count", yName: "Orders", cornerRadius: 4,
+                   itemStyler: (p) => { const f = [token("--none"), col.settled, col.disputed][c.funnel.findIndex((x) => x.step === p.datum.step)]; return { fill: f, stroke: f }; },
+                   label: { enabled: true, color: token("--ink"), placement: "outside-end" } }],
+        axes: { y: { type: "number", position: "bottom" }, x: { type: "category", position: "left", label: CATEGORY_LABEL } }, legend: { enabled: false } },
+      days: { ...chartBase(), container: document.getElementById("c-days"), data: c.per_day.map((d) => ({ ...d, label: UI.isoDate(d.day) })),
+        series: ["settled", "held", "disputed", "unpaid"].map((s) => ({ type: "bar", xKey: "label", yKey: s, yName: label(s), stacked: true, fill: col[s], stroke: col[s] })),
+        axes: { x: { type: "category", position: "bottom", label: { autoRotate: false }, interval: { step: 0 } }, y: { type: "number", position: "left", label: { formatter: (p) => money0(p.value) } } },
+        legend: { position: "bottom", item: { marker: { shape: "square" } } } },
+      reasons: { ...chartBase(), container: document.getElementById("c-reasons"), data: c.reasons.length ? c.reasons : [{ reason: "No disputes yet", count: 0 }],
+        series: [{ type: "bar", direction: "horizontal", xKey: "reason", yKey: "count", yName: "Disputes", fill: col.disputed, stroke: col.disputed, cornerRadius: 4,
+                   label: { enabled: true, color: token("--ink"), placement: "outside-end" } }],
+        axes: { y: { type: "number", position: "bottom", interval: { step: 1 } }, x: { type: "category", position: "left", label: CATEGORY_LABEL } }, legend: { enabled: false } },
+    };
+  }
+
+  // Plain-words description of each chart for screen readers (the canvas itself says nothing).
+  function chartSummaries(c) {
+    return {
+      "c-state": `Money by status in ${c.currency}: ${c.by_state.map((s) => `${s.label} ${s.amount.toFixed(2)}`).join(", ")}.`,
+      "c-funnel": `Prevention funnel: ${c.funnel.map((f) => `${f.step} ${f.count}`).join(", ")}.`,
+      "c-days": `Amounts per day for the last 30 days in ${c.currency}, by status.`,
+      "c-reasons": c.reasons.length ? `Disputes by reason: ${c.reasons.map((r) => `${r.reason} ${r.count}`).join(", ")}.` : "No disputes yet.",
+    };
+  }
+
+  function drawCharts() {
+    if (!data || typeof agCharts === "undefined") return;
+    const opts = chartOptions(data.charts);
+    for (const [k, o] of Object.entries(opts)) {
+      if (charts[k]) charts[k].update(o); else charts[k] = agCharts.AgCharts.create(o);
+    }
+    for (const [id, text] of Object.entries(chartSummaries(data.charts))) document.getElementById(id).setAttribute("aria-label", text);
+    const others = data.charts.other_currencies;
+    document.getElementById("chart-currency").textContent = `Amounts in ${data.charts.currency}${others.length ? `; ${others.join(", ")} items are in the table only` : ""}`;
+  }
+
+  // ---- Drawer ------------------------------------------------------------------------------------
+
+  let lastFocus = null;
+  function openDrawer(row) {
+    const d = document.getElementById("drawer");
+    lastFocus = document.activeElement;
+    d.innerHTML = drawerHtml(row);
+    d.querySelector("[data-close]").addEventListener("click", () => d.close());
+    d.showModal();
+  }
+
+  // ---- Load and refresh ----------------------------------------------------------------------------
+
+  const rawFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    const res = await rawFetch(...args);
+    if (res.status === 401) location.href = "/login";
+    return res;
+  };
+
+  function setRows() {
+    const rows = toGridRows(data.rows);
+    grid.setGridOption("rowData", withGroups(rows));
+    document.getElementById("chips").innerHTML = chipsHtml(rows);
+    updateCount();
+  }
+
+  async function load() {
+    const res = await fetch("/api/dashboard");
+    if (!res.ok) return;
+    data = await res.json();
+    document.getElementById("kpis").innerHTML = kpiTiles(data.kpis);
+    document.getElementById("updated").textContent = `Updated ${UI.dateTime(data.generated_at)}`;
+    if (grid) setRows();
+    drawCharts();
+  }
+
+  function start() {
+    if (typeof agGrid === "undefined" || typeof agCharts === "undefined") {
+      document.getElementById("grid").innerHTML = '<div class="empty no-lib"><strong>Couldn\'t load the table and charts</strong>Reload the page to try again.</div>';
+    } else {
+      makeGrid();
+    }
+    document.getElementById("search").addEventListener("input", (e) => grid && grid.setGridOption("quickFilterText", e.target.value));
+    document.getElementById("chips").addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-chip]");
+      if (!chip || !grid) return;
+      filterState = chip.dataset.chip;
+      document.querySelectorAll("[data-chip]").forEach((c) => c.setAttribute("aria-pressed", String(c === chip)));
+      grid.onFilterChanged();
+    });
+    document.getElementById("group").addEventListener("change", (e) => { grouped = e.target.checked; collapsed.clear(); if (data && grid) setRows(); });
+    document.getElementById("drawer").addEventListener("close", () => lastFocus && lastFocus.focus && lastFocus.focus());
+    document.getElementById("drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") e.target.close(); }); // backdrop
+    let t = 0;
+    window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(fitColumns, 150); });
+    // Charts draw on canvas, so they're recoloured when the theme changes.
+    new MutationObserver(drawCharts).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawCharts);
+    load().catch(() => {});
+    setInterval(() => { if (!document.getElementById("drawer").open) load().catch(() => {}); }, 30000);
+  }
+
+  if (typeof document !== "undefined" && document.readyState !== undefined) start();
+</script>
+</body>
+</html>

@@ -457,6 +457,66 @@ didn't fit on the timeline (the buyer isn't told which). Invoice payments are ne
    refund."* → refunded automatically; `/agents` shows the calls, `/seller` the badge.
 4. In `clearline-seller`: *"What needs my attention?"* → it lists items and links to `/seller`.
 
+## Day 7: Money in flight dashboard (AG Grid)
+
+`/dashboard` (seller login) shows every order and invoice and where its money is right now.
+It is read-only: replies, refunds and dispute answers stay on `/seller`.
+
+- **Key numbers:** captured, refunded, open disputed amount, invoiced but unpaid, overdue
+  invoices, auto-resolved refunds (count and amount), questions answered before a dispute, and
+  disputes responded to with their outcomes.
+- **One AG Grid** with a row per money item:
+  - masked id, date, item, amount, status, next action in plain words ("Respond by 30 Oct",
+    "Invoice overdue 3 days"), dispute, last event, buyer country and refunded
+  - quick search, status chips, column filters and sorting, and *Group by status*
+  - click a row (or press Enter) to open its clear line in a side panel, with *Open on Orders*
+  - on phones the grid becomes a stacked list
+- **Charts (AG Charts):** money by status, the prevention funnel (buyer questions, resolved
+  without a dispute, disputes), amounts per day by status, and disputes by reason.
+
+Data comes from `GET /api/dashboard`. It reads every timeline in one query and uses the same
+rules as `/seller` (latest dispute state, refund totals, the counter, invoice status), so the
+numbers match. It carries no personal data: masked ids, no emails, names or messages.
+
+### Libraries and licences
+
+AG Grid Community **36.2.0** and AG Charts Community **14.2.0** (both MIT) are self-hosted in
+`app/static/vendor/`. They are byte-for-byte the published npm builds, checked with their
+sha384 integrity hashes, and their licences are next to them. These are exactly the versions
+AG Studio 3.0 requires. No build step and no key are needed.
+
+Two features the spec names are Enterprise-only in AG Grid and AG Charts, so they're built
+from Community pieces:
+- *Group by status* uses full-width header rows (row grouping is Enterprise).
+- The prevention funnel is a bar chart (the funnel series is Enterprise).
+
+The hackathon's AG Grid prize asks for **AG Studio**, a commercial product with a free 45-day
+trial licence: <https://www.ag-grid.com/studio/license-pricing/?tab=trial>. Without a key it
+runs locally with a watermark and console warnings. With a key, it would load the same rows
+from `/api/dashboard`, and the key would go in `.env`.
+
+### Demo data
+
+Never demo on your real database. Make a separate one:
+
+```powershell
+.venv\Scripts\python -m app.seed_demo --orders 40         # writes clearline-demo.db
+$env:DATABASE_PATH = "clearline-demo.db"; .venv\Scripts\uvicorn app.main:create_app --factory --port 8000
+```
+
+`DATABASE_PATH` picks the file the app uses (default `clearline.db`). The seeder refuses to
+write to `clearline.db`, or to any existing file it didn't create. The records are clearly
+fake and sandbox-style: `@example.com` buyers, "Demo" messages, and no PayPal calls. Remove
+the variable (or open a new terminal) to go back to your real data.
+
+### Demo script
+
+1. `/dashboard`: the key numbers. *Answered before a dispute* is the prevention story.
+2. Click *Disputed*, then a row: the clear line turns crimson at "Claim opened". *Open on Orders*
+   lands on that order, expanded, with the AI suggestion and the confirm-guarded actions.
+3. Tick *Group by status*, search "overdue", and sort by amount.
+4. Switch the theme: the grid and charts follow it.
+
 ## Layout
 
 | File | Purpose |
@@ -480,3 +540,8 @@ didn't fit on the timeline (the buyer isn't told which). Invoice payments are ne
 | `app/static/ui.css` | Design system: colour tokens (light and dark), type scale, components and "the clear line" (each order's history as one line coloured by money state) |
 | `app/static/ui.js` | Plain words for PayPal codes, the clear line, toasts, the in-app confirm used by every money action, copy and the theme toggle |
 | `app/static/fonts/` | Instrument Sans, self-hosted (SIL Open Font License, `OFL.txt`) |
+| `app/dashboard.py` | `/api/dashboard`: money in flight in one pass (KPIs, grid rows, chart series), no PII |
+| `app/seed_demo.py` | `python -m app.seed_demo`: fake demo data in a separate database file |
+| `app/static/dashboard.html` | `/dashboard`: KPI tiles, AG Grid, AG Charts and the side panel |
+| `app/static/history.js` | The clear line for one order's events, shared by `/seller` and `/dashboard` |
+| `app/static/vendor/` | AG Grid Community 36.2.0 and AG Charts Community 14.2.0 (MIT), pinned |

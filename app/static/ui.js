@@ -80,6 +80,8 @@
       CANCELLED: "Cancelled", AUTO_CANCELLED: "Cancelled", REFUNDED: "Refunded", PARTIALLY_REFUNDED: "Partly refunded",
       MARKED_AS_REFUNDED: "Refunded", REFUNDED_EXTERNAL: "Refunded",
     },
+    outcome: { RESOLVED_SELLER_FAVOUR: "you won", RESOLVED_BUYER_FAVOUR: "buyer won", RESOLVED_WITH_PAYOUT: "PayPal covered it",
+               CANCELED_BY_BUYER: "buyer cancelled", ACCEPTED: "you accepted", DENIED: "denied", NONE: "no outcome" },
     offer: { REFUND: "Refund", REFUND_WITH_RETURN: "Refund after return", REFUND_WITH_REPLACEMENT: "Replacement", REPLACEMENT_WITHOUT_REFUND: "Replacement" },
   };
   // Last resort for a code we haven't mapped: "CHECKOUT.ORDER.APPROVED" -> "Checkout order approved".

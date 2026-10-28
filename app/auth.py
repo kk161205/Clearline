@@ -30,6 +30,11 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/login"),
     ("POST", r"/api/logout"),
     ("GET", r"/favicon\.ico"),
+    # MCP server for AI agents (Day 6). Not a seller session: buyer tools are scoped by the
+    # order link, merchant tools need MERCHANT_API_KEY as a Bearer token (checked in agents.py).
+    ("POST", r"/mcp"),
+    ("GET", r"/mcp"),
+    ("DELETE", r"/mcp"),
 ]
 _PUBLIC = [(m, re.compile(rf"^{p}$")) for m, p in PUBLIC_ROUTES]
 

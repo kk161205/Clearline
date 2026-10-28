@@ -6,6 +6,7 @@ import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from importlib.metadata import version as package_version
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -14,13 +15,16 @@ from typing import Literal
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
+from starlette.routing import Route
 
+from .agents import BUYER_TOOLS, AgentDeps, McpGuard, build_mcp
 from .ai import AIClient, AIError
 from .assistant import Assistant, strip_pii
 from .auth import SESSION_COOKIE, SESSION_SECONDS, RateLimiter, SellerAuth, is_public
-from .buyer import (SummaryCache, answered_before_dispute, buyer_token, buyer_view,
-                    order_for_token, refund_totals)
+from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer_token,
+                    buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
@@ -31,6 +35,7 @@ from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         reminder_facts, reminder_problems, state_signature, text_currency)
 from .evidence import (DOCUMENT_TYPES, MAX_BASE64_CHARS, EvidenceFile, EvidenceFileError,
                        document_evidence_types, parse_upload)
+from .policy import POLICY_KEY, TRIGGER, NotInPolicy, Policy, day_start, decide, spent_today
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
 from .scheduler import run_every
@@ -333,6 +338,7 @@ def create_app(settings: Settings | None = None,
     auth = SellerAuth(secret, settings.seller_password)
     summaries = SummaryCache(store, ai)
     buyer_limits = RateLimiter(limit=5, window=3600)  # buyer submissions per link per hour
+    policy_lock = asyncio.Lock()  # one auto-resolve decision at a time, so caps hold
     item_names = {k: v["description"] for k, v in CATALOGUE.items()}
     tracking_lock = asyncio.Lock()  # one "Mark shipped" at a time, so repeats are caught
     sync_lock = asyncio.Lock()
@@ -347,7 +353,8 @@ def create_app(settings: Settings | None = None,
             task = asyncio.create_task(run_every(settings.auto_sync_minutes * 60, auto_sync))
         app.state.auto_sync_task = task
         try:
-            yield
+            async with mcp_server.session_manager.run():  # the MCP endpoint needs this running
+                yield
         finally:
             if task:
                 task.cancel()
@@ -524,18 +531,82 @@ def create_app(settings: Settings | None = None,
     @app.post("/api/o/{token}/requests")
     async def buyer_request(token: str, body: BuyerRequestIn):
         order_id = order_from_token(token)
+        result = await submit_request(order_id, token=token, type=body.type, reason=body.reason,
+                                      message=body.message, amount=None, via="page")
+        return {"ok": True, **result}
+
+    async def submit_request(order_id: str, *, token: str, type: str, reason: str | None,
+                             message: str, amount: Decimal | None, via: str) -> dict:
+        """Store one buyer request (from the buyer page or a buyer's AI agent) and, for a
+        refund request, apply the seller's auto-resolve policy. The message is untrusted text:
+        stored PII-stripped, shown escaped, never acted on."""
         if buyer_limits.blocked(token):
             raise HTTPException(429, "You've sent several messages already. Please wait for the "
                                      "seller's reply.")
-        if body.type == "refund" and not body.reason:
+        if type == "refund" and not reason:
             raise HTTPException(400, "Choose a reason for the refund.")
         buyer_limits.hit(token)
         request_id = uuid.uuid4().hex[:12]
-        store.add(order_id, "buyer_request",
-                  {"request_id": request_id, "type": body.type,
-                   "reason": body.reason if body.type == "refund" else None,
-                   "message": strip_pii(body.message.strip())})
-        return {"ok": True, "request_id": request_id}
+        text = strip_pii(message.strip())
+        payload = {"request_id": request_id, "type": type,
+                   "reason": reason if type == "refund" else None, "message": text, "via": via}
+        if amount is not None:
+            payload["amount"] = f"{amount:.2f}"
+        store.add(order_id, "buyer_request", payload)
+        result = {"request_id": request_id, "status": "sent_to_seller", "message": text}
+        if type == "refund":
+            if refund := await auto_resolve(order_id, request_id, reason, amount):
+                result.update(status="refunded", refund=refund)
+        return result
+
+    # ---- Auto-resolve policy (Day 6): off by default, set by the seller -------------
+
+    def load_policy() -> Policy:
+        saved = store.get_setting(POLICY_KEY)
+        return Policy.model_validate(saved) if saved else Policy()
+
+    def auto_spent_today() -> Decimal:
+        return spent_today(store.events_since("refund_sent", day_start(time.time())))
+
+    async def auto_resolve(order_id: str, request_id: str, reason: str | None,
+                           requested: Decimal | None) -> dict | None:
+        """Refund right away if the request fits the seller's policy; None = the seller decides.
+        Every check runs before the PayPal call, under a lock so two requests can't both fit
+        the daily cap; a PayPal failure is recorded and the request stays with the seller."""
+        policy = load_policy()
+        if not policy.enabled:
+            return None
+        async with policy_lock:
+            try:
+                amount, rule = decide(policy, store.timeline(order_id), reason=reason,
+                                      requested=requested, spent=auto_spent_today())
+            except NotInPolicy as why:
+                store.add(order_id, "auto_policy_skipped", {"request_id": request_id,
+                                                            "reason": str(why)})
+                return None
+            try:
+                sent = await send_refund(order_id, mode="full" if requested is None else "partial",
+                                         amount=amount, request_id=request_id, trigger=TRIGGER,
+                                         rule=rule, explicit=True)
+            except HTTPException:
+                return None  # refund_failed is on the timeline; the seller takes it from here
+        store.add(order_id, "seller_reply",
+                  {"request_id": request_id, "auto": True,
+                   "message": f"Your refund of {sent['amount']} {sent['currency']} has been sent "
+                              f"through PayPal. It can take a few days to show on your statement."})
+        return {k: sent[k] for k in ("amount", "currency", "status")}
+
+    @app.get("/api/policy")
+    async def get_policy():
+        return {**load_policy().model_dump(mode="json"), "spent_today": f"{auto_spent_today():.2f}",
+                "reasons": REFUND_REASONS}
+
+    @app.put("/api/policy")
+    async def set_policy(body: Policy):
+        saved = body.model_dump(mode="json")
+        store.set_setting(POLICY_KEY, saved)
+        store.add("other", "auto_policy_updated", saved)
+        return await get_policy()
 
     # Seller side of buyer requests (login required)
 
@@ -550,8 +621,24 @@ def create_app(settings: Settings | None = None,
 
     @app.post("/api/orders/{order_id}/refund")
     async def refund_order(order_id: str, body: RefundIn):
-        """Seller-approved refund of the order's capture. Amount checks happen before any
-        PayPal call; PayPal's answer is recorded either way and nothing is retried."""
+        """Seller-approved refund of the order's capture."""
+        amount = None
+        if body.mode == "partial":
+            try:
+                amount = Decimal(body.amount or "").quantize(Decimal("0.01"))
+            except InvalidOperation:
+                raise HTTPException(400, "Enter the refund amount, e.g. 40.00")
+        sent = await send_refund(order_id, mode=body.mode, amount=amount,
+                                 request_id=body.request_id, trigger="seller")
+        return {"ok": True, **{k: sent[k] for k in ("status", "amount", "currency")}}
+
+    async def send_refund(order_id: str, *, mode: str, amount: Decimal | None,
+                          request_id: str | None, trigger: str, rule: str | None = None,
+                          explicit: bool = False) -> dict:
+        """Refund the order's capture (the seller's click, or the auto-resolve policy). Amount
+        checks happen before any PayPal call; PayPal's answer is recorded either way and
+        nothing is retried. `explicit` always names the amount, even for a full refund, so
+        PayPal can never refund more than was checked here."""
         events = store.timeline(order_id)
         captured_events = [e for e in events if e["kind"] == "payment_captured"]
         if not captured_events or not captured_events[-1]["payload"].get("capture_id"):
@@ -561,20 +648,19 @@ def create_app(settings: Settings | None = None,
         remaining = captured - refunded
         if remaining <= 0:
             raise HTTPException(409, "This order has already been fully refunded.")
-        if body.mode == "full":
+        if mode == "full" and not explicit:
             amount, money = remaining, None  # empty body = "captured minus previous refunds"
         else:
-            try:
-                amount = Decimal(body.amount or "").quantize(Decimal("0.01"))
-            except InvalidOperation:
-                raise HTTPException(400, "Enter the refund amount, e.g. 40.00")
+            amount = remaining if mode == "full" and amount is None else amount
             if not 0 < amount <= remaining:
                 raise HTTPException(400, f"The refund must be more than 0 and at most "
                                          f"{remaining} {currency} (captured {captured}, already "
                                          f"refunded {refunded}).")
             money = {"currency_code": currency, "value": f"{amount:.2f}"}
-        base = {"request_id": body.request_id, "mode": body.mode, "capture_id": capture_id,
-                "amount": f"{amount:.2f}", "currency": currency}
+        base = {"request_id": request_id, "mode": mode, "capture_id": capture_id,
+                "amount": f"{amount:.2f}", "currency": currency, "trigger": trigger}
+        if rule:
+            base["rule"] = rule
         try:
             result = await paypal.refund_capture(capture_id, amount=money)
         except (PayPalError, httpx.HTTPError) as err:
@@ -583,12 +669,15 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(502, readable_error(err))
         store.add(order_id, "refund_sent", {**base, "refund_id": result.get("id"),
                                             "status": result.get("status")})
-        return {"ok": True, "status": result.get("status"), "amount": f"{amount:.2f}",
-                "currency": currency}
+        return {"status": result.get("status"), "amount": f"{amount:.2f}", "currency": currency}
 
     @app.get("/api/stats")
     async def stats():
-        return {"questions_answered_before_dispute": answered_before_dispute(store)}
+        """Auto-resolved requests are buyer requests too, so they're in the first number."""
+        auto = {e["order_id"] for e in store.events_since("refund_sent", 0)
+                if e["payload"].get("trigger") == TRIGGER}
+        return {"questions_answered_before_dispute": answered_before_dispute(store),
+                "auto_resolved": len(auto)}
 
     # ---- Invoices (Day 5): AI drafts, the seller creates, sends and reminds ----
 
@@ -863,6 +952,12 @@ def create_app(settings: Settings | None = None,
         page, _ = buyer_view(store, summaries, order_id,
                              seller_name=settings.seller_display_name, item_names=item_names)
         captured, refunded, currency = refund_totals(events)
+        auto = {e["payload"].get("request_id"): {k: e["payload"].get(k) for k in (
+                    "amount", "currency", "rule")}
+                for e in events if e["kind"] == "refund_sent"
+                and e["payload"].get("trigger") == TRIGGER}
+        for r in page["requests"]:
+            r["auto_refund"] = auto.get(r["id"])
         return {"link": buyer_link(order_id), "requests": page["requests"],
                 "refunds": page["refunds"], "summary": page["summary"],
                 "refundable": f"{captured - refunded:.2f}", "currency": currency}
@@ -1258,6 +1353,36 @@ def create_app(settings: Settings | None = None,
         # The normal rules decide whether an AI recommendation runs for the new state.
         background.add_task(assistant.auto_recommend, dispute_id)
         return {"status": fresh.get("status")}
+
+    # ---- MCP server for AI agents (Day 6) ---------------------------------------------
+
+    mcp_server = build_mcp(AgentDeps(settings=settings, store=store, secret=secret,
+                                     summaries=summaries, assistant=assistant,
+                                     item_names=item_names, submit_request=submit_request))
+    app.state.mcp = mcp_server
+    # Stateless + JSON replies: one POST in, one JSON reply out, for 2026-07-28 and older
+    # clients alike. The SDK's localhost-only Host check is off because the app is reached
+    # through ngrok; McpGuard does the Origin check the spec requires instead.
+    mcp_http = mcp_server.streamable_http_app(
+        streamable_http_path="/mcp", stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+    app.router.routes.append(Route("/mcp", McpGuard(mcp_http, settings.merchant_api_key)))
+
+    @app.get("/agents", include_in_schema=False)
+    async def agents_page():
+        return FileResponse(STATIC / "agents.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/agents")
+    async def agents_info():
+        """For the /agents page: the tools agents can use and the last 20 calls (no PII)."""
+        tools = [{"name": t.name, "title": t.title,
+                  "role": "buyer" if t.name in BUYER_TOOLS else "merchant",
+                  "description": (t.description or "").strip().split("\n\n")[0]}
+                 for t in await mcp_server.list_tools()]
+        return {"mcp_path": "/mcp", "transport": "Streamable HTTP (stateless, JSON replies)",
+                "sdk": f"mcp {package_version('mcp')}",
+                "merchant_enabled": bool(settings.merchant_api_key), "tools": tools,
+                "calls": store.agent_calls(20)}
 
     @app.get("/api/orders")
     async def list_orders():

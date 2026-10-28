@@ -67,6 +67,13 @@
     .export h4 { margin:0 0 4px; font-size:14px; }
     .export label { display:block; margin-top:6px; }
     .ok { color:var(--ok); } .bad { color:var(--bad); }
+    .policy { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:12px; font-size:14px; }
+    .policy summary { cursor:pointer; font-weight:600; }
+    .policy .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:6px 12px; margin-top:8px; }
+    .policy label { display:block; }
+    .policy input[type=number] { width:120px; }
+    .badge.auto { background:#e0f2fe; color:#075985; }
+    .badge.agent { background:#f4ebff; color:#5925dc; }
     #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
     #other .order { padding:10px 12px; font-size:13px; }
   </style>
@@ -78,9 +85,16 @@
     <span id="sync-msg" class="muted"></span>
     <span id="sync-status" class="muted"></span>
     <button id="sync" class="secondary">Sync disputes</button>
+    <a href="/agents" class="muted">AI agents</a>
     <button id="logout" class="secondary">Log out</button>
   </header>
   <div id="stats" class="stats" hidden></div>
+  <details class="policy" id="policy"><summary>Auto-resolve policy <span id="policy-state" class="muted"></span></summary>
+    <p class="muted">Refund small, clear-cut requests (from the buyer page or a buyer's AI agent) right away,
+      without waiting for you. Every rule must fit; anything else comes to you as now. Off by default.</p>
+    <div id="policy-form"></div>
+    <div class="row"><button id="policy-save">Save policy</button></div><div class="msg"></div>
+  </details>
   <section class="invoices">
     <h2>Invoices</h2>
     <details id="new-invoice"><summary>New invoice</summary>
@@ -137,7 +151,23 @@
     seller_reply: "You replied",
     refund_sent: "Refund sent",
     refund_failed: "Refund failed",
+    auto_policy_skipped: "Auto-resolve: not applied",
+    auto_policy_updated: "Auto-resolve policy saved",
+    invoice_paid: "Paid",
+    invoice_send_sent: "Invoice sent",
+    invoice_reminder_sent: "Reminder sent",
+    invoice_action_failed: "Invoice action failed",
   };
+  // PayPal invoice statuses in the seller's words (Overdue depends on today, so it's not here).
+  const INVOICE_STATUS = {
+    DRAFT: "Draft", SENT: "Sent", UNPAID: "Sent", SCHEDULED: "Scheduled", SHARED: "Sent", PAYMENT_PENDING: "Payment pending",
+    PARTIALLY_PAID: "Partly paid", PAID: "Paid", MARKED_AS_PAID: "Paid", PAID_EXTERNAL: "Paid",
+    CANCELLED: "Cancelled", AUTO_CANCELLED: "Cancelled", REFUNDED: "Refunded", PARTIALLY_REFUNDED: "Partly refunded",
+    MARKED_AS_REFUNDED: "Refunded", REFUNDED_EXTERNAL: "Refunded",
+  };
+  const label = (e) => e.kind === "invoice_status"
+    ? `Invoice status: ${INVOICE_STATUS[e.payload.status] || humanize(e.payload.status)}`
+    : LABELS[e.kind] || e.kind;
   const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message", "make-offer": "Offer", "accept-claim": "Refund" };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
   const DECISIONS = { FIGHT: "Fight", REFUND: "Refund", OFFER: "Offer" };
@@ -160,7 +190,7 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
   let ENV = null; // "sandbox" or "live", from /api/config; sandbox-only tools need "sandbox"
-  const BUYER_TYPES = { unrecognised: "Doesn't recognise the charge", not_arrived: "Order hasn't arrived", refund: "Wants a refund" };
+  const BUYER_TYPES = { unrecognised: "Doesn't recognise the charge", not_arrived: "Order hasn't arrived", refund: "Wants a refund", message: "Sent a message" };
 
   // Session expired or logged out elsewhere: any 401 from a seller API goes to the login page.
   const rawFetch = globalThis.fetch;
@@ -217,9 +247,15 @@
     if (e.kind === "dispute_action_skipped") return `${p.action}: ${p.endpoint} · ${p.reason}`;
     if (e.kind === "sandbox_status_changed") return `${p.from_status} → asked seller for evidence`;
     if (e.kind === "sandbox_status_change_failed") return errorParts(p).text;
-    if (e.kind === "buyer_request") return [BUYER_TYPES[p.type] || p.type, p.message].filter(Boolean).join(" · ");
-    if (e.kind === "seller_reply") return p.message;
-    if (e.kind === "refund_sent") return `${p.amount} ${p.currency} (${p.mode})${p.status ? ` · ${p.status}` : ""}`;
+    if (e.kind === "buyer_request") return [BUYER_TYPES[p.type] || p.type, p.amount && `asks ${p.amount}`, p.message, p.via === "agent" && "via AI agent"].filter(Boolean).join(" · ");
+    if (e.kind === "seller_reply") return p.auto ? `Automatic: ${p.message}` : p.message;
+    if (e.kind === "refund_sent") return `${p.amount} ${p.currency} (${p.mode})${p.status ? ` · ${p.status}` : ""}${p.trigger === "auto-policy" ? ` · auto-resolved: ${p.rule}` : ""}`;
+    if (e.kind === "auto_policy_skipped") return `${p.reason}, so it's waiting for you`;
+    if (e.kind === "auto_policy_updated") return p.enabled ? `on · up to ${p.max_refund_per_order} per order, ${p.daily_cap} per day (${p.currency})` : "off";
+    if (e.kind === "invoice_status") return [p.number, p.amount && `${p.amount} ${p.currency}`, p.due_date && `due ${p.due_date}`].filter(Boolean).join(" · ");
+    if (e.kind === "invoice_paid") return [p.number, p.amount && `${p.amount} ${p.currency}`].filter(Boolean).join(" · ");
+    if (e.kind === "invoice_reminder_sent") return p.subject;
+    if (e.kind === "invoice_action_failed") return `${p.action} · ${errorParts(p).text}`;
     if (e.kind === "refund_failed") return `${p.amount} ${p.currency} · ${errorParts(p).text}`;
     return "";
   }
@@ -350,9 +386,9 @@
 
   const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
   const isSide = (id) => id === "other" || id.startsWith("unmatched:");
-  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed", "refund_failed"];
+  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed", "refund_failed", "invoice_action_failed"];
   const row = (e, extra = "") =>
-    `<li>${esc(LABELS[e.kind] || e.kind)} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${
+    `<li>${esc(label(e))} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${
       PAYPAL_FAILURE_KINDS.includes(e.kind) ? techHtml(errorParts(e.payload).tech) : ""}${extra}</li>`;
 
   // Timeline rows, keeping only the latest AI recommendation per dispute in place; earlier
@@ -377,9 +413,11 @@
     const link = `${location.origin}${b.link}`;
     const canRefund = Number(b.refundable) > 0;
     const requests = b.requests.map((r) => `<div class="req">
-        <strong>${esc(BUYER_TYPES[r.type] || r.type)}</strong>${r.reason ? ` · ${esc(r.reason)}` : ""} <span class="muted">· ${fmt(r.at)}</span>
+        <strong>${esc(BUYER_TYPES[r.type] || r.type)}</strong>${r.reason ? ` · ${esc(r.reason)}` : ""}${r.amount ? ` · asks ${esc(r.amount)} ${esc(b.currency)}` : ""} <span class="muted">· ${fmt(r.at)}</span>
+        ${r.via === "agent" ? '<span class="badge agent">via AI agent</span>' : ""}
+        ${r.auto_refund ? `<span class="badge auto">Auto-resolved: refunded ${esc(r.auto_refund.amount)} ${esc(r.auto_refund.currency)}</span><div class="muted">Rule: ${esc(r.auto_refund.rule)}</div>` : ""}
         ${r.message ? `<div>${esc(r.message)}</div>` : '<div class="muted">(no message)</div>'}
-        ${r.replies.map((x) => `<div class="reply">You: ${esc(x.message)}</div>`).join("")}
+        ${r.replies.map((x) => `<div class="reply">${x.auto ? "Automatic reply" : "You"}: ${esc(x.message)}</div>`).join("")}
         <textarea data-reply-text placeholder="Reply to the buyer (shown on their order page)" maxlength="1000"></textarea>
         <div class="row">
           <button class="secondary" data-reply="${esc(r.id)}" data-order="${esc(orderId)}">Send reply</button>
@@ -400,7 +438,8 @@
     const res = await fetch("/api/stats");
     if (!res.ok) return;
     const s = await res.json(), el = document.getElementById("stats");
-    el.innerHTML = `Questions answered before a dispute: <strong>${esc(s.questions_answered_before_dispute)}</strong>`;
+    el.innerHTML = `Questions answered before a dispute: <strong>${esc(s.questions_answered_before_dispute)}</strong>${
+      s.auto_resolved ? ` <span class="muted">(${esc(s.auto_resolved)} auto-resolved by your policy)</span>` : ""}`;
     el.hidden = false;
   }
 
@@ -566,7 +605,7 @@
   }
 
   async function withBusy(button, text, fn) {
-    const card = button.closest(".ai, .sandbox-tool, .req, .export, .invoice-panel, [data-reminder]") || document.querySelector(".invoice-panel");
+    const card = button.closest(".ai, .sandbox-tool, .req, .export, .invoice-panel, [data-reminder], .policy") || document.querySelector(".invoice-panel");
     const msg = card.querySelector(".msg");
     const old = button.textContent;
     button.disabled = true; button.textContent = text; busy++;
@@ -766,6 +805,44 @@
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ downloaded: checkbox.checked }),
     });
   }
+
+  // ---- Auto-resolve policy: the seller's own rules for refunds that need no click -----------
+
+  function policyForm(p) {
+    const reasons = Object.entries(p.reasons).map(([k, v]) =>
+      `<label><input type="checkbox" data-pol-reason="${esc(k)}"${p.allowed_reasons.includes(k) ? " checked" : ""} /> ${esc(v)}</label>`).join("");
+    return `<div class="grid">
+        <label><input type="checkbox" data-pol="enabled"${p.enabled ? " checked" : ""} /> <strong>Auto-resolve on</strong></label>
+        <label>Currency <select data-pol="currency">${CURRENCIES.map((c) => `<option${c === p.currency ? " selected" : ""}>${c}</option>`).join("")}</select></label>
+        <label>Max refund per order <input type="number" min="0" step="0.01" data-pol="max_refund_per_order" value="${esc(p.max_refund_per_order)}" /></label>
+        <label>Daily total cap <input type="number" min="0" step="0.01" data-pol="daily_cap" value="${esc(p.daily_cap)}" />
+          <span class="muted">used today: ${esc(p.spent_today)}</span></label>
+        <label><input type="checkbox" data-pol="require_no_dispute"${p.require_no_dispute ? " checked" : ""} /> Only if the order has no dispute</label>
+        <label><input type="checkbox" data-pol="only_if_not_shipped"${p.only_if_not_shipped ? " checked" : ""} /> Only if not yet shipped</label>
+      </div><div><strong>Allowed reasons</strong></div><div class="grid">${reasons}</div>`;
+  }
+  async function loadPolicy() {
+    const res = await fetch("/api/policy");
+    if (!res.ok) return;
+    const p = await res.json();
+    $("policy-form").innerHTML = policyForm(p);
+    $("policy-state").textContent = p.enabled ? `on · up to ${p.max_refund_per_order} ${p.currency} per order, ${p.daily_cap} per day` : "off";
+  }
+  $("policy-save").addEventListener("click", (ev) => {
+    const form = $("policy-form"), val = (k) => form.querySelector(`[data-pol="${k}"]`);
+    const body = { enabled: val("enabled").checked, currency: val("currency").value,
+                   max_refund_per_order: val("max_refund_per_order").value || "0", daily_cap: val("daily_cap").value || "0",
+                   require_no_dispute: val("require_no_dispute").checked, only_if_not_shipped: val("only_if_not_shipped").checked,
+                   allowed_reasons: [...form.querySelectorAll("[data-pol-reason]:checked")].map((c) => c.dataset.polReason) };
+    if (body.enabled && !confirm(`Refund matching requests automatically, up to ${body.max_refund_per_order} ${body.currency} per order and ${body.daily_cap} per day, without asking you?`)) return;
+    return withBusy(ev.currentTarget, "Saving…", async () => {
+      const res = await fetch("/api/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`Not saved: ${await errorText(res)}`);
+      await loadPolicy();
+      return "Saved.";
+    });
+  });
+  loadPolicy();
 
   document.getElementById("logout").addEventListener("click", async () => {
     await fetch("/api/logout", { method: "POST" }).catch(() => {});

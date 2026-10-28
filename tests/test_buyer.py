@@ -293,7 +293,8 @@ def test_questions_answered_before_dispute_counter(tmp_path):
     DisputeOnPayPal()
     client, settings = make_client(tmp_path, gemini_key=None, groq_key=None)
     store = TimelineStore(settings.database_path)
-    assert client.get("/api/stats").json() == {"questions_answered_before_dispute": 0}
+    assert client.get("/api/stats").json() == {"questions_answered_before_dispute": 0,
+                                               "auto_resolved": 0}
 
     shipped_order(client)  # ORDER1: the buyer asks, then disputes anyway -> not counted
     link = link_of(client)

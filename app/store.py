@@ -37,6 +37,19 @@ CREATE TABLE IF NOT EXISTS ai_state (
     switched_at REAL,
     reason TEXT
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    role TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    order_ref TEXT
+);
 """
 
 DISPUTE_KINDS = ("dispute_created", "dispute_updated", "dispute_resolved")
@@ -163,3 +176,43 @@ class TimelineStore:
                        switched_at = excluded.switched_at, reason = excluded.reason""",
                 (provider, time.time(), reason),
             )
+
+    # ---- Seller settings and AI-agent activity (Day 6) ----------------------
+
+    def get_setting(self, key: str) -> dict | None:
+        with closing(self._conn()) as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["value"]) if row else None
+
+    def set_setting(self, key: str, value: dict) -> None:
+        with closing(self._conn()) as conn, conn:
+            conn.execute(
+                """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                       updated_at = excluded.updated_at""",
+                (key, json.dumps(value), time.time()))
+
+    def events_since(self, kind: str, since: float) -> list[dict]:
+        """Every event of one kind (any order) created at or after `since`."""
+        with closing(self._conn()) as conn:
+            rows = conn.execute(
+                """SELECT order_id, payload, created_at FROM events
+                   WHERE kind = ? AND created_at >= ? ORDER BY id""", (kind, since)).fetchall()
+        return [{"order_id": r["order_id"], "payload": json.loads(r["payload"]),
+                 "created_at": r["created_at"]} for r in rows]
+
+    def log_agent_call(self, role: str, tool: str, outcome: str, order_ref: str | None,
+                       keep: int = 500) -> None:
+        """One MCP tool call: tool name, role, a short outcome and the last 6 characters of
+        the order ID. Never arguments, messages, links or tokens."""
+        with closing(self._conn()) as conn, conn:
+            conn.execute("INSERT INTO agent_calls (at, role, tool, outcome, order_ref) "
+                         "VALUES (?, ?, ?, ?, ?)", (time.time(), role, tool, outcome, order_ref))
+            conn.execute("DELETE FROM agent_calls WHERE id <= "
+                         "(SELECT MAX(id) FROM agent_calls) - ?", (keep,))
+
+    def agent_calls(self, limit: int = 20) -> list[dict]:
+        with closing(self._conn()) as conn:
+            rows = conn.execute("SELECT at, role, tool, outcome, order_ref FROM agent_calls "
+                                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]

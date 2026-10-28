@@ -16,6 +16,7 @@ SELLER_ROUTES = [
     ("POST", f"/api/disputes/{DISPUTE_ID}/act"), ("GET", f"/api/disputes/{DISPUTE_ID}/recommendation"),
     ("POST", f"/api/disputes/{DISPUTE_ID}/sandbox/require-seller-evidence"),
     ("GET", "/api/ai/status"), ("POST", "/api/ai/reset"), ("GET", "/docs"), ("GET", "/openapi.json"),
+    ("GET", "/agents"), ("GET", "/api/agents"), ("GET", "/api/policy"), ("PUT", "/api/policy"),
 ]
 
 
@@ -30,11 +31,12 @@ def test_seller_routes_need_login(tmp_path, method, path):
 
 
 def test_public_routes_are_exactly_the_agreed_ones():
-    assert len(PUBLIC_ROUTES) == 13  # adding a public route should be a deliberate change
+    assert len(PUBLIC_ROUTES) == 16  # adding a public route should be a deliberate change
     for method, path in [("GET", "/"), ("GET", "/api/config"), ("POST", "/api/orders"),
                          ("POST", "/api/orders/X/capture"), ("GET", "/o/abc"), ("GET", "/api/o/abc"),
                          ("GET", "/api/o/abc/status"), ("POST", "/api/o/abc/requests"),
-                         ("POST", "/webhooks/paypal"), ("GET", "/login"), ("HEAD", "/")]:
+                         ("POST", "/webhooks/paypal"), ("GET", "/login"), ("HEAD", "/"),
+                         ("POST", "/mcp")]:  # MCP: scoped by order link / merchant key
         assert is_public(method, path), (method, path)
     for method, path in SELLER_ROUTES + [("GET", "/api/orders/X"), ("POST", "/api/o/abc"),
                                          ("GET", "/o/abc/extra"), ("DELETE", "/api/orders")]:

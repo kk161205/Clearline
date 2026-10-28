@@ -37,6 +37,9 @@ SUMMARY_SCHEMA = {
 REQUEST_TYPES = {"unrecognised": "I don't recognise this charge",
                  "not_arrived": "My order hasn't arrived",
                  "refund": "I want a refund"}
+# Labels for every stored request type; "message" only comes from buyer agents (Day 6), so
+# it isn't a button on the buyer page.
+REQUEST_LABELS = {**REQUEST_TYPES, "message": "Message to the seller"}
 REFUND_REASONS = {"not_received": "Item not received", "damaged": "Item arrived damaged",
                   "not_as_described": "Not as described", "changed_mind": "Changed my mind",
                   "other": "Other"}
@@ -253,11 +256,14 @@ def buyer_view(store: TimelineStore, cache: SummaryCache, order_id: str, *, sell
     for e in events:
         if e["kind"] == "seller_reply":
             replies.setdefault(e["payload"]["request_id"], []).append(
-                {"message": e["payload"]["message"], "at": e["created_at"]})
+                {"message": e["payload"]["message"], "at": e["created_at"],
+                 "auto": bool(e["payload"].get("auto"))})
     requests = [{"id": e["payload"]["request_id"], "type": e["payload"]["type"],
-                 "type_label": REQUEST_TYPES.get(e["payload"]["type"], e["payload"]["type"]),
+                 "type_label": REQUEST_LABELS.get(e["payload"]["type"], e["payload"]["type"]),
                  "reason": REFUND_REASONS.get(e["payload"].get("reason") or "", None),
                  "message": e["payload"].get("message") or "", "at": e["created_at"],
+                 "via": e["payload"].get("via") or "page",
+                 "amount": e["payload"].get("amount"),
                  "replies": replies.get(e["payload"]["request_id"], [])}
                 for e in events if e["kind"] == "buyer_request"]
     refunds = [{"amount": e["payload"]["amount"], "currency": e["payload"]["currency"],

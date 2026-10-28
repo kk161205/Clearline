@@ -14,3 +14,4 @@ def no_real_ai_keys(monkeypatch):
     # Never use the real seller password or app secret; tests pass their own.
     monkeypatch.setenv("SELLER_PASSWORD", "")
     monkeypatch.setenv("APP_SECRET", "")
+    monkeypatch.setenv("MERCHANT_API_KEY", "")

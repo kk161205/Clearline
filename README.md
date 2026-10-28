@@ -375,6 +375,88 @@ received from abroad gets an **Export paperwork** box:
 3. Within a few minutes (webhook or auto-sync) it shows **Paid** and appears in your orders
    with a buyer link and the Export paperwork box.
 
+## Day 6: AI agents (MCP server)
+
+Clearline is also an [MCP](https://modelcontextprotocol.io) server, so a buyer's or seller's AI
+assistant can use it directly. It runs inside the app (no extra process) at:
+
+```
+https://<your-domain>/mcp        e.g. https://copper-chastise-waggle.ngrok-free.dev/mcp
+```
+
+Transport: **Streamable HTTP**, stateless with JSON replies (official MCP Python SDK `mcp==2.3.0`,
+spec 2026-07-28; older 2025-x clients work too). `/agents` (seller login) shows the URL, the
+tools and the last 20 agent calls (tool, time, result, order ref; no personal data).
+
+| Tool | For | Credential | What it does |
+|---|---|---|---|
+| `get_order_status` | buyer | order link | Item, amount, date, seller, shipping, latest seller reply, refunds |
+| `message_seller` | buyer | order link | Message the seller (PII-stripped, max 1000 chars, rate-limited) |
+| `request_refund` | buyer | order link | Ask for a refund (reason, message, optional amount); auto-resolve policy applies |
+| `get_request_status` | buyer | order link | The buyer's requests, statuses and seller replies |
+| `list_attention_items` | merchant | Bearer key | Disputes waiting for you (due dates), unanswered buyer requests, overdue invoices |
+| `get_dispute_brief` | merchant | Bearer key | Facts, latest AI recommendation, what PayPal allows now |
+| `money_in_flight` | merchant | Bearer key | Captured, refunded, disputed, invoiced-unpaid totals per currency |
+
+- **Buyer tools** take the buyer's private link (`https://…/o/<token>`) as `order_link`. It
+  scopes the call to that one order; forged or unknown links get "Unknown order link".
+- **Merchant tools** need `Authorization: Bearer <MERCHANT_API_KEY>` (new `.env` setting, then
+  restart). Without the key set they don't exist. They are **read-only**: refunds and dispute
+  answers stay your click in `/seller`, and the tools return that link.
+- Buyer-written text is treated as data, never instructions: PII-stripped, length- and
+  rate-limited, shown escaped, and marked `buyer_text` for merchant agents.
+
+### Connect an agent
+
+Generate a key and add it to `.env` as `MERCHANT_API_KEY=` (only for merchant tools):
+`.venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+- **Claude Code** (buyer tools / merchant tools):
+  ```powershell
+  claude mcp add --transport http clearline-buyer https://<your-domain>/mcp
+  claude mcp add --transport http clearline-seller https://<your-domain>/mcp --header "Authorization: Bearer <MERCHANT_API_KEY>"
+  ```
+- **Claude Desktop**: Settings → Connectors → *Add custom connector* → URL
+  `https://<your-domain>/mcp` (buyer tools; custom connectors don't send custom headers). For the
+  merchant tools, add to `claude_desktop_config.json`:
+  ```json
+  {"mcpServers": {"clearline-seller": {"command": "npx", "args": ["-y", "mcp-remote",
+    "https://<your-domain>/mcp", "--header", "Authorization: Bearer <MERCHANT_API_KEY>"]}}}
+  ```
+- **MCP Inspector**: `npx @modelcontextprotocol/inspector`, Transport *Streamable HTTP*, URL
+  `https://<your-domain>/mcp`, connection *Via Proxy*; for merchant tools add the header
+  `Authorization: Bearer <MERCHANT_API_KEY>`. Then *List Tools* and call one.
+
+### Example prompts
+
+- Buyer agent: *"Here's my order link https://<your-domain>/o/… — where is my order, and has
+  the seller replied?"* · *"It never arrived. Ask for a refund (reason: not received) and tell
+  me what happens."*
+- Merchant agent: *"What needs my attention in Clearline today? Sort by due date."* ·
+  *"Brief me on dispute PP-D-… and what PayPal lets me do."* · *"How much money is in flight?"*
+
+### Auto-resolve policy (off by default)
+
+On `/seller`, **Auto-resolve policy**: on/off, max refund per order (default 0), allowed
+reasons, only if the order has no dispute, a daily total cap, and only if not yet shipped.
+
+A refund request (buyer page or buyer agent) that fits **every** rule is refunded at once
+through the normal refund path (PayPal-Request-Id, full error recording, no retry). The refund
+always names the amount, so PayPal can't refund more than was checked: captured minus refunded,
+the per-order max (counting earlier refunds) and today's cap (UTC day), all checked before the
+call. It's recorded as `refund_sent` with trigger `auto-policy` and the rule that matched, an
+automatic reply tells the buyer, and `/seller` shows an **Auto-resolved** badge (counted in
+"Questions answered before a dispute"). Anything else goes to you as before, with the rule that
+didn't fit on the timeline (the buyer isn't told which). Invoice payments are never auto-refunded.
+
+### Demo
+
+1. Set the policy on (e.g. max 150, cap 300, reasons "Item not received"), save.
+2. Pay an order, copy its buyer link (don't mark it shipped).
+3. In Claude Code (`clearline-buyer`): *"My order link is … It never arrived; please ask for a
+   refund."* → refunded automatically; `/agents` shows the calls, `/seller` the badge.
+4. In `clearline-seller`: *"What needs my attention?"* → it lists items and links to `/seller`.
+
 ## Layout
 
 | File | Purpose |
@@ -392,3 +474,6 @@ received from abroad gets an **Export paperwork** box:
 | `app/auth.py` | Seller login, sessions, rate limits, the public-route list |
 | `app/evidence.py` | Checks for seller-provided dispute documents |
 | `app/invoicing.py` | Invoice drafts, statuses, reminder drafts, verified purpose codes |
+| `app/agents.py` | MCP server (`/mcp`): buyer and merchant tools, call log, Origin/Bearer guard |
+| `app/policy.py` | Auto-resolve policy rules for refunds without a seller click |
+| `app/static/agents.html` | `/agents`: MCP URL, tools and the last 20 agent calls |

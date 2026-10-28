@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clearline · AI agents</title>
+  <style>
+    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width:760px; margin:40px auto; padding:0 16px; }
+    header { display:flex; align-items:center; gap:12px; margin:0 0 16px; }
+    h1 { font-size:22px; margin:0; flex:1; }
+    h2 { font-size:16px; margin:0 0 8px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:12px; }
+    .muted { color:var(--muted); font-size:13px; }
+    code { background:#e3e6ec; padding:2px 6px; border-radius:6px; font-size:14px; word-break:break-all; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:6px 4px; border-top:1px solid var(--line); vertical-align:top; }
+    .role { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; }
+    .role.buyer { background:#f4ebff; color:#5925dc; }
+    .role.merchant { background:#e0f2fe; color:#075985; }
+    .refused { color:var(--bad); } .error { color:var(--bad); font-weight:600; }
+    button { font:inherit; padding:4px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; }
+    .table-wrap { overflow-x:auto; }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>AI agents</h1><a href="/seller" class="muted">← Your orders</a></header>
+
+  <section class="card">
+    <h2>Connect an agent</h2>
+    <p>MCP server URL: <code id="url"></code> <button id="copy">Copy</button></p>
+    <p class="muted" id="transport"></p>
+    <p class="muted">Buyer agents use the buyer's private order link (…/o/…) and only see that one order.
+      Merchant agents send <code>Authorization: Bearer &lt;MERCHANT_API_KEY&gt;</code> and can only read:
+      refunds and dispute answers stay your click in Clearline.</p>
+    <p id="merchant"></p>
+  </section>
+
+  <section class="card">
+    <h2>Tools</h2>
+    <div class="table-wrap"><table><thead><tr><th>Tool</th><th>For</th><th>What it does</th></tr></thead><tbody id="tools"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Last 20 agent calls <span class="muted">(refreshes every 5 s · no personal data is kept)</span></h2>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Tool</th><th>Agent</th><th>Result</th><th>Order</th></tr></thead><tbody id="calls"></tbody></table></div>
+  </section>
+</main>
+<script>
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const fmt = (t) => new Date(t * 1000).toLocaleTimeString();
+  const $ = (id) => document.getElementById(id);
+  const url = `${location.origin}/mcp`;
+  $("url").textContent = url;
+  $("copy").addEventListener("click", () => navigator.clipboard?.writeText(url).then(() => { $("copy").textContent = "Copied ✓"; }));
+
+  function outcomeClass(outcome) {
+    return outcome.startsWith("refused") ? "refused" : outcome === "error" ? "error" : "";
+  }
+
+  async function load() {
+    const res = await fetch("/api/agents");
+    if (res.status === 401) { location.href = "/login"; return; }
+    if (!res.ok) return;
+    const d = await res.json();
+    $("transport").textContent = `${d.transport} · ${d.sdk}`;
+    $("merchant").innerHTML = d.merchant_enabled
+      ? '<span style="color:var(--ok)">Merchant tools are on.</span>'
+      : '<span class="muted">Merchant tools are off: set MERCHANT_API_KEY in .env and restart the app to turn them on.</span>';
+    $("tools").innerHTML = d.tools.map((t) => `<tr><td><code>${esc(t.name)}</code></td>
+      <td><span class="role ${esc(t.role)}">${esc(t.role)}</span></td><td>${esc(t.description)}</td></tr>`).join("");
+    $("calls").innerHTML = d.calls.length ? d.calls.map((c) => `<tr><td>${esc(fmt(c.at))}</td><td><code>${esc(c.tool)}</code></td>
+      <td><span class="role ${esc(c.role)}">${esc(c.role)}</span></td><td class="${outcomeClass(c.outcome)}">${esc(c.outcome)}</td>
+      <td>${c.order_ref ? `…${esc(c.order_ref)}` : ""}</td></tr>`).join("")
+      : '<tr><td colspan="5" class="muted">No agent calls yet.</td></tr>';
+  }
+  load();
+  setInterval(() => load().catch(() => {}), 5000);
+</script>
+</body>
+</html>

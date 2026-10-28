@@ -107,6 +107,22 @@ def test_claim_stage_fight_needs_a_file_before_approve():
     assert "disabled" not in re.search(r"<button data-approve[^>]*>", card).group(0)
 
 
+def test_invoice_timeline_rows_have_plain_labels():
+    rows = [{"kind": kind, "created_at": 1, "payload": payload} for kind, payload in [
+        ("invoice_status", {"status": "SENT", "number": "0042", "amount": "50.00", "currency": "USD"}),
+        ("invoice_send_sent", {"invoice_id": "INV2-1"}),
+        ("invoice_reminder_sent", {"subject": "Friendly reminder"}),
+        ("invoice_status", {"status": "MARKED_AS_PAID", "number": "0042"}),
+        ("invoice_paid", {"number": "0042", "amount": "50.00", "currency": "USD"}),
+        ("invoice_action_failed", {"action": "send", "error": "PayPal said no"}),
+    ]]
+    [out] = render({"env": "sandbox", "events": rows})
+    labels = re.findall(r"<li>([^<]+?) <span", out["timeline"])
+    assert labels == ["Invoice status: Sent", "Invoice sent", "Reminder sent",
+                      "Invoice status: Paid", "Paid", "Invoice action failed"]
+    assert "invoice_" not in out["timeline"].split("<span")[0]
+
+
 def test_pages_are_served_with_no_cache(tmp_path):
     client, _ = make_client(tmp_path)
     for path in ("/", "/seller"):

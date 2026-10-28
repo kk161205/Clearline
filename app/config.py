@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     seller_display_name: str = "Demo Design Studio"
     # Day 5: the seller's country (ISO code). "IN" shows the India export paperwork checklist.
     seller_country: str = "IN"
+    # Day 6: Bearer key for the read-only merchant tools on the MCP server (/mcp). Empty =
+    # merchant tools are disabled (buyer tools still work with the buyer's own order link).
+    merchant_api_key: str | None = None
 
     @property
     def api_base(self) -> str:

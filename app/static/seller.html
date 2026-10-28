@@ -2,195 +2,227 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Clearline · Seller</title>
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
   <style>
-    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; --warn:#b54708; }
-    * { box-sizing: border-box; }
-    body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
-    main { max-width:760px; margin:40px auto; padding:0 16px; }
-    header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 16px; }
-    h1 { font-size:22px; margin:0; flex:1; }
-    .order { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px; }
-    .id { font-family:ui-monospace, monospace; font-size:13px; }
-    ol { margin:8px 0; padding-left:20px; font-size:14px; }
-    .muted { color:var(--muted); font-size:13px; }
-    form { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
-    input, select, button, textarea { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:8px; }
-    button { background:var(--ink); color:#fff; border:0; cursor:pointer; }
-    button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); }
-    button:disabled { opacity:.6; cursor:wait; }
-    .msg { font-size:13px; margin-top:6px; }
-    .badge { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; margin-left:8px; vertical-align:middle; }
-    .badge.bad { background:var(--bad); color:#fff; }
-    .badge.neutral { background:var(--line); color:var(--muted); }
-    .badge.fight { background:var(--ink); color:#fff; }
-    .badge.refund { background:var(--warn); color:#fff; }
-    .badge.offer { background:var(--ok); color:#fff; }
-    .dispute { border:1px solid #f3c4bf; background:#fef3f2; border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
-    .dispute.resolved { border-color:var(--line); background:var(--bg); }
-    .due { font-weight:600; color:var(--bad); }
-    .order.disputed { border-color:#f3c4bf; }
-    .ai { border:1px solid var(--line); background:#fbfcfe; border-radius:10px; padding:12px; margin-top:8px; font-size:14px; }
-    .ai h3 { font-size:14px; margin:0 0 6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-    .ai ul { margin:4px 0 8px; padding-left:20px; }
-    .ai label { display:block; font-size:13px; font-weight:600; margin-top:8px; }
-    .ai textarea { width:100%; min-height:84px; resize:vertical; }
-    .ai .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
-    .ai.compact { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 12px; color:var(--muted); }
-    .ai.compact .msg { flex-basis:100%; margin:0; }
-    button.sandbox { background:#fffaeb; color:#93370d; border:1px dashed #f79009; font-size:13px; }
-    .sandbox-tool { margin-top:8px; }
-    details.tech, details.earlier { display:inline; margin-left:6px; }
-    details.tech summary, details.earlier summary { display:inline; cursor:pointer; color:var(--muted); font-size:12px; }
-    details.tech[open] { display:block; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
-    details.earlier ul { margin:4px 0; padding-left:18px; }
-    .stats { background:#effaf3; border:1px solid #b7e1c8; color:var(--ok); border-radius:10px; padding:8px 12px; margin:0 0 12px; font-size:14px; }
-    .stats strong { font-size:18px; }
-    .buyer { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
-    .buyer h4 { margin:8px 0 4px; font-size:14px; }
-    .buyer .req { border-top:1px solid var(--line); padding:8px 0; }
-    .buyer .reply { background:#effaf3; border-radius:8px; padding:6px 8px; margin-top:4px; }
-    .buyer textarea { width:100%; min-height:60px; margin-top:6px; }
-    .invoices { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:12px; }
-    .invoices h2 { font-size:16px; margin:0 0 8px; }
-    .invoices summary { cursor:pointer; font-weight:600; margin-bottom:8px; }
-    .invoice-panel textarea { width:100%; min-height:56px; }
-    .invoice-panel label { display:block; font-size:13px; font-weight:600; margin-top:8px; }
-    .invoice-panel .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:4px 12px; }
-    .invoice-panel .grid input, .invoice-panel .grid select { width:100%; }
-    .item-row { display:grid; grid-template-columns:1fr 70px 110px auto; gap:6px; margin-top:4px; }
-    .invoices table { width:100%; border-collapse:collapse; font-size:14px; margin-top:8px; }
-    .invoices th, .invoices td { text-align:left; padding:6px 4px; border-top:1px solid var(--line); vertical-align:top; }
-    .invoices td textarea, .invoices td input { width:100%; }
-    .export { border:1px dashed var(--line); border-radius:10px; padding:10px 12px; margin-top:8px; font-size:14px; }
-    .export h4 { margin:0 0 4px; font-size:14px; }
-    .export label { display:block; margin-top:6px; }
-    .ok { color:var(--ok); } .bad { color:var(--bad); }
-    .policy { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:12px; font-size:14px; }
-    .policy summary { cursor:pointer; font-weight:600; }
-    .policy .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:6px 12px; margin-top:8px; }
-    .policy label { display:block; }
-    .policy input[type=number] { width:120px; }
-    .badge.auto { background:#e0f2fe; color:#075985; }
-    .badge.agent { background:#f4ebff; color:#5925dc; }
-    #other h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); }
-    #other .order { padding:10px 12px; font-size:13px; }
+    .sub { font-size: var(--t-md); margin: 20px 0 10px; }
+    .stat { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: var(--t-sm); }
+    .stat strong { color: var(--settled-ink); font-size: var(--t-xl); font-variant-numeric: tabular-nums; }
+
+    /* Needs your attention: one row per thing, each with its one next action. */
+    .attention { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+    .attention li { display: flex; gap: 14px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .attention li:last-child { border-bottom: 0; }
+    .attention .what { flex: 1; min-width: 0; }
+    .attention .what strong { display: block; }
+    .attention .when { font-size: var(--t-xs); color: var(--muted); }
+    .attention .when.urgent { color: var(--disputed-ink); font-weight: 600; }
+    .attention .amount { font-weight: 600; }
+    .attention button { flex: none; }
+    @media (max-width: 639.98px) {
+      .attention li { flex-wrap: wrap; }
+      .attention .what { flex-basis: calc(100% - 32px); }
+      .attention .amount { margin-left: 18px; }
+      .attention button { margin-left: auto; }
+    }
+
+    /* Orders: compact rows that expand. */
+    .orders { display: grid; gap: 8px; }
+    .order { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+    .order[data-tone="disputed"] { border-color: color-mix(in srgb, var(--disputed) 45%, var(--border)); }
+    .order-head {
+      width: 100%; display: flex; align-items: center; gap: 14px; padding: 12px 16px; min-height: 64px;
+      background: none; color: var(--ink); border: 0; border-radius: var(--r-lg); text-align: left; font-weight: 400;
+    }
+    .order-head:hover { filter: none; background: var(--surface-2); }
+    .order-head[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    .order-head .title { flex: 1; min-width: 0; }
+    .order-head .title strong { display: block; font-size: var(--t-sm); }
+    .order-head .title span { color: var(--muted); font-size: var(--t-xs); }
+    .order-head .amount { font-weight: 600; min-width: 92px; text-align: right; }
+    .order-head .chev { transition: transform .15s; flex: none; color: var(--muted); }
+    .order-head[aria-expanded="true"] .chev { transform: rotate(180deg); }
+    @media (max-width: 639.98px) { /* two lines: title and chevron, then status and amount */
+      .order-head { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; grid-template-areas: "mark title chev" "mark pill amount"; gap: 6px 14px; }
+      .order-head .cl-mark { grid-area: mark; }
+      .order-head .title { grid-area: title; }
+      .order-head .chev { grid-area: chev; }
+      .order-head .pill { grid-area: pill; justify-self: start; }
+      .order-head .amount { grid-area: amount; min-width: 0; }
+    }
+    .order-body { border-top: 1px solid var(--border); padding: 20px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+    @media (min-width: 900px) {
+      .order-body { grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr); padding: 24px; align-items: start; }
+    }
+    .order-body > * { min-width: 0; }
+    .order-body h3 { font-size: var(--t-sm); color: var(--muted); font-weight: 600; margin-bottom: 12px; }
+    .work { display: grid; gap: 16px; align-content: start; }
+
+    .dispute .kv { margin-top: 8px; }
+    .due { color: var(--disputed-ink); font-weight: 600; }
+
+    /* The AI card is advice, not data: dashed edge, sunken surface, labelled as a suggestion. */
+    .ai { background: var(--surface-2); border: 1px dashed var(--border-strong); border-radius: var(--r-lg); padding: 16px; }
+    .ai-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+    .ai-head .tag { font-size: var(--t-xs); font-weight: 600; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+    .ai-head h4 { font-size: var(--t-md); }
+    .ai .meter { font-size: var(--t-xs); color: var(--muted); margin-left: auto; }
+    .ai ul { margin: 6px 0 4px; padding-left: 20px; }
+    .ai li + li { margin-top: 4px; }
+    .ai .based { color: var(--muted); font-size: var(--t-xs); }
+    .ai textarea { background: var(--surface); min-height: 84px; }
+    .ai .fine { margin-top: 10px; font-size: var(--t-xs); color: var(--muted); }
+    .ai.compact { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 16px; color: var(--muted); }
+    .ai.compact .msg { flex-basis: 100%; margin: 0; }
+    .ai details.about { margin-top: 8px; font-size: var(--t-xs); color: var(--muted); }
+    .ai details.about summary { cursor: pointer; min-height: 24px; }
+    .ai .sent { margin-top: 12px; }
+    .ai .sent ul { padding-left: 18px; font-size: var(--t-sm); }
+    .msg { font-size: var(--t-xs); margin-top: 6px; }
+    .msg:empty { display: none; }
+    .msg.bad { color: var(--disputed-ink); font-weight: 600; }
+    button.sandbox { background: var(--held-tint); color: var(--held-ink); border: 1px dashed var(--held); }
+
+    .buyer { display: grid; gap: 12px; }
+    .linkrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--t-sm); }
+    .req { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px; background: var(--surface); }
+    .req .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .req .said { margin-top: 6px; }
+    .req .reply { margin-top: 8px; padding: 8px 12px; border-radius: var(--r); background: var(--surface-2); font-size: var(--t-sm); }
+    .req .reply .by { font-size: var(--t-xs); color: var(--muted); }
+    .req textarea { margin-top: 10px; min-height: 64px; }
+    .refunded { color: var(--settled-ink); font-weight: 600; font-size: var(--t-sm); }
+
+    .export { border: 1px solid var(--border); border-radius: var(--r-lg); font-size: var(--t-sm); }
+    .export > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; min-height: var(--tap); padding: 10px 14px; }
+    .export > summary::-webkit-details-marker { display: none; }
+    .export > summary .ex-title { font-weight: 600; }
+    .export > summary .ex-line { flex: 1; font-size: var(--t-xs); }
+    .export > summary .chev { transition: transform .15s; color: var(--muted); }
+    .export[open] > summary .chev { transform: rotate(180deg); }
+    .export .ex-body { padding: 0 14px 14px; display: grid; gap: 8px; }
+    .export .actions { margin-top: 0; }
+    .export select { flex: 1 1 100%; min-width: 0; width: 100%; }
+    .ship { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+    .ship .field { margin: 0; flex: 1 1 180px; }
+
+    /* Invoices, policy and settings. */
+    .list-panel { padding: 4px 16px; margin-bottom: 12px; }
+    .list-panel .empty { border: 0; }
+    .invoice-panel textarea { min-height: 64px; }
+    .invoice-panel .grid, .policy .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 0 16px; }
+    .invoice-panel .grid input, .invoice-panel .grid select, .policy .grid input:not([type="checkbox"]), .policy .grid select { width: 100%; }
+    .item-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 120px auto; gap: 8px; margin-top: 8px; }
+    @media (max-width: 639.98px) {
+      .item-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+      .item-row [data-item="name"] { grid-column: 1 / -1; }
+    }
+    .item-row input { width: 100%; }
+    .invoices td textarea, .invoices td input { width: 100%; }
+    .invoices td.wide { padding: 4px 12px 16px; }
+    .policy fieldset { border: 0; border-top: 1px solid var(--border); margin: 16px 0 0; padding: 12px 0 0; min-width: 0; }
+    .policy legend { font-weight: 600; padding: 0 8px 0 0; }
+    .policy .switch { margin-top: 8px; }
+    .policy .grid { align-items: start; }
+    .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 12px; padding: 16px 20px; }
+    #other h2 { font-size: var(--t-sm); color: var(--muted); margin: 24px 0 8px; }
   </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Your orders</h1>
-    <span id="sync-msg" class="muted"></span>
-    <span id="sync-status" class="muted"></span>
-    <button id="sync" class="secondary">Sync disputes</button>
-    <a href="/agents" class="muted">AI agents</a>
-    <button id="logout" class="secondary">Log out</button>
-  </header>
-  <div id="stats" class="stats" hidden></div>
-  <details class="policy" id="policy"><summary>Auto-resolve policy <span id="policy-state" class="muted"></span></summary>
-    <p class="muted">Refund small, clear-cut requests (from the buyer page or a buyer's AI agent) right away,
-      without waiting for you. Every rule must fit; anything else comes to you as now. Off by default.</p>
-    <div id="policy-form"></div>
-    <div class="row"><button id="policy-save">Save policy</button></div><div class="msg"></div>
-  </details>
-  <section class="invoices">
-    <h2>Invoices</h2>
-    <details id="new-invoice"><summary>New invoice</summary>
-      <div class="invoice-panel">
-        <label for="invoice-text">Describe it in your own words</label>
-        <textarea id="invoice-text" maxlength="1000" placeholder="Bill Acme Corp 1200 USD for logo design, due in 14 days"></textarea>
-        <div class="row"><button class="secondary" id="invoice-extract">Draft with AI</button>
-          <span class="muted">The AI only fills the form below; review everything before creating.</span></div>
-        <div class="grid">
-          <label>Client name <input id="inv-client" maxlength="300" /></label>
-          <label>Client email <input id="inv-email" type="email" maxlength="254" placeholder="typed by you, never by the AI" /></label>
-          <label>Currency <select id="inv-currency"></select></label>
-          <label>Due date <input id="inv-due" type="date" /></label>
+<div class="shell">
+  <nav class="shell-nav" aria-label="Seller">
+    <div class="shell-side-brand"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a></div>
+    <ul>
+      <li><a href="#today" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></svg>Today</a></li>
+      <li><a href="#orders"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>Orders</a></li>
+      <li><a href="#invoices"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5" stroke-linecap="round"/></svg>Invoices</a></li>
+      <li><a href="/agents"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9.5 13h.01M14.5 13h.01" stroke-linecap="round"/></svg>Agents</a></li>
+      <li><a href="#settings"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</a></li>
+    </ul>
+  </nav>
+
+  <main class="shell-main">
+    <div class="shell-top"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a>
+      <button class="ghost small" data-theme-toggle aria-pressed="false">Theme</button></div>
+
+    <section class="section" id="today" aria-labelledby="today-h">
+      <div class="section-head"><h1 id="today-h">Today</h1><div id="stats" class="stat" hidden></div></div>
+      <h2 class="sub">Needs your attention</h2>
+      <div id="attention"><span class="skeleton row"></span><span class="skeleton row"></span></div>
+    </section>
+
+    <section class="section" id="orders" aria-labelledby="orders-h">
+      <div class="section-head"><h2 id="orders-h">Orders</h2>
+        <span id="sync-status" class="muted small"></span>
+        <button id="sync" class="secondary small">Sync disputes</button></div>
+      <div id="sync-msg" class="muted small" role="status"></div>
+      <div id="order-list" class="orders"><span class="skeleton row"></span><span class="skeleton row"></span><span class="skeleton row"></span></div>
+      <div id="other"></div>
+    </section>
+
+    <section class="section invoices" id="invoices" aria-labelledby="invoices-h">
+      <div class="section-head"><h2 id="invoices-h">Invoices</h2></div>
+      <div class="panel list-panel" id="invoice-list"><span class="skeleton row"></span></div>
+      <details id="new-invoice" class="panel disclose"><summary><span class="d-title">New invoice</span>
+          <span class="d-line">Describe it in a sentence and the AI fills in the form</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
+        <div class="invoice-panel d-body">
+          <label class="field" for="invoice-text">Describe it in your own words
+          <textarea id="invoice-text" maxlength="1000" placeholder="Bill Acme Corp 1200 USD for logo design, due in 14 days"></textarea></label>
+          <div class="actions"><button class="secondary" id="invoice-extract">Draft with AI</button>
+            <span class="hint">The AI only fills the form below; review everything before creating.</span></div>
+          <div class="grid">
+            <label class="field">Client name <input id="inv-client" maxlength="300" /></label>
+            <label class="field">Client email <input id="inv-email" type="email" maxlength="254" placeholder="typed by you, never by the AI" /></label>
+            <label class="field">Currency <select id="inv-currency"></select></label>
+            <label class="field">Due date <input id="inv-due" type="date" /></label>
+          </div>
+          <div class="field">Line items</div>
+          <div id="inv-items"></div>
+          <div class="actions"><button class="secondary small" id="inv-add-item">Add line</button></div>
+          <label class="field">Note to the client (optional) <textarea id="inv-note" maxlength="1000"></textarea></label>
+          <div class="actions"><button id="invoice-create">Create draft</button>
+            <span class="hint">Creates a PayPal draft only. Sending is a separate click in the list.</span></div>
+          <div class="msg"></div>
         </div>
-        <label>Line items</label>
-        <div id="inv-items"></div>
-        <button class="secondary" id="inv-add-item">Add line</button>
-        <label>Note to the client (optional) <textarea id="inv-note" maxlength="1000"></textarea></label>
-        <div class="row"><button id="invoice-create">Create draft</button>
-          <span class="muted">Creates a PayPal draft only. Sending is a separate click in the list.</span></div>
-        <div class="msg"></div>
-      </div>
-    </details>
-    <div id="invoice-list"></div>
-  </section>
-  <div id="orders"><p class="muted">Loading…</p></div>
-  <div id="other"></div>
-</main>
+      </details>
+    </section>
+
+    <section class="section" id="settings" aria-labelledby="settings-h">
+      <div class="section-head"><h2 id="settings-h">Settings</h2></div>
+      <details class="policy panel disclose" id="policy"><summary><span class="d-title">Auto-resolve policy</span>
+          <span id="policy-state" class="pill"></span><span class="d-line">Refund small, clear-cut requests without waiting for you</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
+        <div class="d-body">
+          <p class="muted">Requests from the buyer page or a buyer's AI agent are refunded right away when every rule
+            below fits. Anything else comes to you as usual. Off by default.</p>
+          <div id="policy-form"></div>
+          <div class="actions"><button id="policy-save">Save policy</button></div><div class="msg"></div>
+        </div>
+      </details>
+      <div class="panel setting"><div><strong>Appearance</strong><div class="muted small">Follows your device until you choose.</div></div>
+        <button class="secondary" data-theme-toggle aria-pressed="false">Theme</button></div>
+      <div class="panel setting"><div><strong>Seller session</strong><div class="muted small">You stay logged in for 12 hours on this device.</div></div>
+        <button id="logout" class="secondary">Log out</button></div>
+    </section>
+  </main>
+</div>
 
 <script>
-  const LABELS = {
-    order_created: "Order created",
-    payment_captured: "Payment captured",
-    capture_failed: "Capture failed",
-    tracking_added: "Tracking added",
-    dispute_created: "Dispute opened",
-    dispute_updated: "Dispute updated",
-    dispute_resolved: "Dispute resolved",
-    webhook_payment_capture_completed: "PayPal: capture completed",
-    webhook_payment_capture_pending: "PayPal: capture pending",
-    webhook_payment_capture_refunded: "PayPal: refunded",
-    webhook_payment_capture_reversed: "PayPal: reversed",
-    webhook_other: "PayPal event",
-    webhook_processing_failed: "Processing failed",
-    ai_recommendation: "AI recommendation",
-    ai_failed: "AI unavailable",
-    ai_provider_switched: "AI provider switched",
-    dispute_action_sent: "Sent to PayPal",
-    dispute_action_failed: "PayPal rejected action",
-    dispute_action_skipped: "Step skipped",
-    sandbox_status_changed: "Sandbox: status changed",
-    sandbox_status_change_failed: "Sandbox: status change failed",
-    buyer_request: "Buyer asked",
-    seller_reply: "You replied",
-    refund_sent: "Refund sent",
-    refund_failed: "Refund failed",
-    auto_policy_skipped: "Auto-resolve: not applied",
-    auto_policy_updated: "Auto-resolve policy saved",
-    invoice_paid: "Paid",
-    invoice_send_sent: "Invoice sent",
-    invoice_reminder_sent: "Reminder sent",
-    invoice_action_failed: "Invoice action failed",
-  };
-  // PayPal invoice statuses in the seller's words (Overdue depends on today, so it's not here).
-  const INVOICE_STATUS = {
-    DRAFT: "Draft", SENT: "Sent", UNPAID: "Sent", SCHEDULED: "Scheduled", SHARED: "Sent", PAYMENT_PENDING: "Payment pending",
-    PARTIALLY_PAID: "Partly paid", PAID: "Paid", MARKED_AS_PAID: "Paid", PAID_EXTERNAL: "Paid",
-    CANCELLED: "Cancelled", AUTO_CANCELLED: "Cancelled", REFUNDED: "Refunded", PARTIALLY_REFUNDED: "Partly refunded",
-    MARKED_AS_REFUNDED: "Refunded", REFUNDED_EXTERNAL: "Refunded",
-  };
-  const label = (e) => e.kind === "invoice_status"
-    ? `Invoice status: ${INVOICE_STATUS[e.payload.status] || humanize(e.payload.status)}`
-    : LABELS[e.kind] || e.kind;
-  const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message", "make-offer": "Offer", "accept-claim": "Refund" };
+  const esc = UI.esc;
+  const fmt = (t) => UI.dateTime(t);
+  const money = (a) => (a && a.value ? UI.money(a.value, a.currency_code) : "");
+  const reasonWords = (code) => UI.word("reason", code) || "Unknown reason";
+  const CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const STEP_NAMES = { "provide-evidence": "Evidence", "send-message": "Message to the buyer", "make-offer": "Offer", "accept-claim": "Refund" };
   const DISPUTE_KINDS = ["dispute_created", "dispute_updated", "dispute_resolved"];
-  const DECISIONS = { FIGHT: "Fight", REFUND: "Refund", OFFER: "Offer" };
-  // PayPal dispute reason codes in plain words.
-  const REASONS = {
-    MERCHANDISE_OR_SERVICE_NOT_RECEIVED: "Item not received",
-    MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED: "Item not as described",
-    UNAUTHORISED: "Unauthorised payment",
-    CREDIT_NOT_PROCESSED: "Refund not processed",
-    DUPLICATE_TRANSACTION: "Charged twice",
-    INCORRECT_AMOUNT: "Wrong amount charged",
-    PAYMENT_BY_OTHER_MEANS: "Paid by other means",
-    CANCELED_RECURRING_BILLING: "Cancelled subscription still billed",
-    PROBLEM_WITH_REMITTANCE: "Problem with remittance",
-    OTHER: "Other",
-  };
-  const humanize = (code) => REASONS[code] || String(code || "Unknown").toLowerCase().replace(/_/g, " ");
-  const money = (a) => (a && a.value ? `${a.value} ${a.currency_code || ""}`.trim() : "");
-  const fmt = (t) => new Date(t * 1000).toLocaleString();
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const DECISIONS = UI.WORDS.decision;
+  const BUYER_TYPES = { unrecognised: "Doesn't recognise the charge", not_arrived: "Order hasn't arrived", refund: "Wants a refund", message: "Sent a message" };
   let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
   let ENV = null; // "sandbox" or "live", from /api/config; sandbox-only tools need "sandbox"
-  const BUYER_TYPES = { unrecognised: "Doesn't recognise the charge", not_arrived: "Order hasn't arrived", refund: "Wants a refund", message: "Sent a message" };
+  const openOrders = new Set(); // expanded rows survive the 10-second refresh
+  const openExports = new Set(); // and so does an opened export paperwork panel
 
   // Session expired or logged out elsewhere: any 401 from a seller API goes to the login page.
   const rawFetch = globalThis.fetch;
@@ -214,8 +246,8 @@
     const status = p.paypal_status || (raw.match(/PayPal API error (\d+)/) || [])[1];
     // Rows stored before an issue had its own sentence still show the plain-words version.
     const text = LEGACY_ISSUES[issue] || (legacy ? "PayPal rejected this step" : raw);
-    // Full PayPal error (stored since "Store PayPal's full error details"): a header line,
-    // then one line per details[] entry. Older rows only have status/issue/debug_id.
+    // PayPal's full error, for support: a header line, then one line per details[] entry.
+    // It stays collapsed under "details" (the only place a raw PayPal code is shown).
     const e = p.paypal_error;
     const tech = e
       ? [[e.http_status && `HTTP ${e.http_status}`, e.name, e.message, e.debug_id && `debug_id ${e.debug_id}`].filter(Boolean).join(" · "),
@@ -231,42 +263,154 @@
     return esc(text) + techHtml(tech);
   }
 
-  function describe(e) {
-    const p = e.payload;
-    if (e.kind === "order_created") return `${p.amount} ${p.currency}`;
-    if (e.kind === "payment_captured") return `from ${p.payer_email || "buyer"} (${p.payer_country || "?"})`;
-    if (e.kind === "tracking_added") return `${p.carrier} ${p.tracking_number}`;
-    if (DISPUTE_KINDS.includes(e.kind)) return [humanize(p.reason), money(p.dispute_amount), p.status].filter(Boolean).join(" · ");
-    if (e.kind.startsWith("webhook_payment_capture")) return [p.status, money(p.amount), p.pending_reason].filter(Boolean).join(" · ");
-    if (e.kind === "webhook_other") return p.event_type;
-    if (e.kind === "ai_recommendation") return `${DECISIONS[p.recommendation?.decision] || "?"} · ${p.provider} ${p.model}${p.trigger ? ` · ${p.trigger}` : ""}`;
-    if (e.kind === "ai_failed") return p.error;
-    if (e.kind === "ai_provider_switched") return `${p.from} → ${p.to}: ${p.reason}`;
-    if (e.kind === "dispute_action_sent") return `${p.action}: ${p.endpoint}`;
-    if (e.kind === "dispute_action_failed") return `${p.action}: ${p.endpoint} · ${errorParts(p).text}`;
-    if (e.kind === "dispute_action_skipped") return `${p.action}: ${p.endpoint} · ${p.reason}`;
-    if (e.kind === "sandbox_status_changed") return `${p.from_status} → asked seller for evidence`;
-    if (e.kind === "sandbox_status_change_failed") return errorParts(p).text;
-    if (e.kind === "buyer_request") return [BUYER_TYPES[p.type] || p.type, p.amount && `asks ${p.amount}`, p.message, p.via === "agent" && "via AI agent"].filter(Boolean).join(" · ");
-    if (e.kind === "seller_reply") return p.auto ? `Automatic: ${p.message}` : p.message;
-    if (e.kind === "refund_sent") return `${p.amount} ${p.currency} (${p.mode})${p.status ? ` · ${p.status}` : ""}${p.trigger === "auto-policy" ? ` · auto-resolved: ${p.rule}` : ""}`;
-    if (e.kind === "auto_policy_skipped") return `${p.reason}, so it's waiting for you`;
-    if (e.kind === "auto_policy_updated") return p.enabled ? `on · up to ${p.max_refund_per_order} per order, ${p.daily_cap} per day (${p.currency})` : "off";
-    if (e.kind === "invoice_status") return [p.number, p.amount && `${p.amount} ${p.currency}`, p.due_date && `due ${p.due_date}`].filter(Boolean).join(" · ");
-    if (e.kind === "invoice_paid") return [p.number, p.amount && `${p.amount} ${p.currency}`].filter(Boolean).join(" · ");
-    if (e.kind === "invoice_reminder_sent") return p.subject;
-    if (e.kind === "invoice_action_failed") return `${p.action} · ${errorParts(p).text}`;
-    if (e.kind === "refund_failed") return `${p.amount} ${p.currency} · ${errorParts(p).text}`;
-    return "";
+  // ---- The clear line: one stop per event, in plain words ------------------------------------
+
+  const detail = (text) => (text ? `<div class="cl-detail">${esc(text)}</div>` : "");
+  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed", "refund_failed", "invoice_action_failed"];
+  const INVOICE_TONE = { Paid: "settled", Sent: "held", "Payment pending": "held", "Partly paid": "held", Scheduled: "held" };
+  const disputeName = (p) => (p.dispute_life_cycle_stage ? UI.word("stage", p.dispute_life_cycle_stage) : "Dispute");
+
+  // {title, detail (HTML), tone, minor} for one timeline event.
+  function stop(e) {
+    const p = e.payload, k = e.kind;
+    switch (k) {
+      case "order_created": return { title: "Order created", tone: "none", detail: detail(UI.money(p.amount, p.currency)) };
+      case "payment_captured": return { title: "Payment received", tone: "settled",
+        detail: detail([p.payer_email && `From ${p.payer_email}`, p.payer_country && `Country: ${p.payer_country}`].filter(Boolean).join(", ")) };
+      case "capture_failed": return { title: "Payment didn't go through", tone: "disputed" };
+      case "tracking_added": return { title: `Shipped with ${UI.word("carrier", p.carrier)}`, tone: "settled",
+        detail: `<div class="cl-detail">Tracking <span class="num">${esc(p.tracking_number)}</span></div>` };
+      case "dispute_created": return { title: `${disputeName(p)} opened: ${reasonWords(p.reason)}`, tone: "disputed",
+        detail: detail([money(p.dispute_amount), UI.word("status", p.status)].filter(Boolean).join(", ")) };
+      case "dispute_updated": return { title: `${disputeName(p)} update: ${UI.word("status", p.status) || "changed"}`, tone: "disputed",
+        detail: detail(money(p.dispute_amount)) };
+      case "dispute_resolved": return { title: "Dispute closed", tone: "settled", detail: detail(reasonWords(p.reason)) };
+      case "webhook_payment_capture_completed": return { title: "PayPal confirmed the payment", tone: "settled", minor: true, detail: detail(money(p.amount)) };
+      case "webhook_payment_capture_pending": return { title: "PayPal is holding the payment", tone: "held",
+        detail: detail(p.pending_reason ? `Waiting on: ${UI.word("pending", p.pending_reason)}` : "") };
+      case "webhook_payment_capture_refunded": return { title: "PayPal confirmed a refund", tone: "settled", minor: true, detail: detail(money(p.amount)) };
+      case "webhook_payment_capture_reversed": return { title: "Payment reversed", tone: "disputed", detail: detail(money(p.amount)) };
+      case "webhook_other": return { title: UI.sentence(p.event_type) || "PayPal update", minor: true };
+      case "webhook_processing_failed": return { title: "Couldn't process a PayPal update", tone: "disputed", minor: true, detail: detail(p.error) };
+      case "ai_recommendation": {
+        const r = p.recommendation || {};
+        return { title: `AI suggested: ${DECISIONS[r.decision] || "no decision"}`, minor: true }; // confidence: on the card
+      }
+      case "ai_failed": return { title: "AI couldn't make a suggestion", minor: true, detail: detail(p.error) };
+      case "ai_provider_switched": return { title: `AI switched to ${UI.sentence(p.to)}`, minor: true, detail: detail(p.reason) };
+      case "dispute_action_sent": return { title: `Sent to PayPal: ${STEP_NAMES[p.endpoint] || UI.sentence(p.endpoint)}`, tone: "settled" };
+      case "dispute_action_failed": return { title: `PayPal didn't accept: ${STEP_NAMES[p.endpoint] || UI.sentence(p.endpoint)}`, tone: "disputed", detail: detail(errorParts(p).text) };
+      case "dispute_action_skipped": return { title: `Skipped: ${STEP_NAMES[p.endpoint] || UI.sentence(p.endpoint)}`, minor: true, detail: detail(p.reason) };
+      case "sandbox_status_changed": return { title: "Sandbox: PayPal now asks for your evidence", minor: true };
+      case "sandbox_status_change_failed": return { title: "Sandbox tool failed", tone: "disputed", minor: true, detail: detail(errorParts(p).text) };
+      case "buyer_request": return { title: `Buyer: ${BUYER_TYPES[p.type] || "Sent a request"}`, tone: "held",
+        detail: detail([p.amount && `Asks for ${p.amount}`, p.message].filter(Boolean).join(". ")) + (p.via === "agent" ? '<span class="pill plain">via AI agent</span>' : "") };
+      case "seller_reply": return { title: p.auto ? "Automatic reply" : "You replied", tone: "none", detail: detail(p.message) };
+      case "refund_sent": return { title: `Refunded ${UI.money(p.amount, p.currency)}`, tone: "settled",
+        detail: detail([p.mode === "full" ? "Full refund" : "Partial refund", p.status && p.status !== "COMPLETED" && `PayPal: ${UI.word("payment", p.status)}`,
+                        p.trigger === "auto-policy" && `Automatic, by your policy: ${p.rule}`].filter(Boolean).join(". ")) };
+      case "refund_failed": return { title: "Refund didn't go through", tone: "disputed", detail: detail(`${UI.money(p.amount, p.currency)}: ${errorParts(p).text}`) };
+      case "auto_policy_skipped": return { title: "Auto-resolve didn't apply", minor: true, detail: detail(`${p.reason}, so it's waiting for you`) };
+      case "auto_policy_updated": return { title: p.enabled ? "Auto-resolve turned on" : "Auto-resolve turned off", minor: true,
+        detail: detail(p.enabled ? `Up to ${p.max_refund_per_order} ${p.currency} per order, ${p.daily_cap} per day` : "") };
+      case "invoice_status": {
+        const s = UI.word("invoice", p.status);
+        return { title: `Invoice status: ${s}`, tone: INVOICE_TONE[s] || "none",
+                 detail: detail([p.amount && UI.money(p.amount, p.currency), p.due_date && `Due ${UI.isoDate(p.due_date)}`].filter(Boolean).join(", ")) };
+      }
+      case "invoice_send_sent": return { title: "Invoice sent", tone: "held" };
+      case "invoice_reminder_sent": return { title: "Reminder sent", tone: "held", detail: detail(p.subject) };
+      case "invoice_paid": return { title: "Paid", tone: "settled", detail: detail(p.amount && UI.money(p.amount, p.currency)) };
+      case "invoice_action_failed": return { title: "Invoice action failed", tone: "disputed", detail: detail(errorParts(p).text) };
+      default: return { title: UI.sentence(k), minor: true };
+    }
   }
 
-  function respondBy(due) {
-    if (!due) return "";
+  // The order's money state, which colours its whole line.
+  function orderTone(events, state) {
+    const kinds = new Set(events.map((e) => e.kind));
+    if (state && state.kind !== "dispute_resolved" && state.payload.status !== "RESOLVED") return "disputed";
+    if (kinds.has("webhook_payment_capture_reversed")) return "disputed";
+    const paid = kinds.has("payment_captured") || kinds.has("invoice_paid");
+    const lastPending = events.filter((e) => e.kind === "webhook_payment_capture_pending").pop();
+    const lastDone = events.filter((e) => e.kind === "webhook_payment_capture_completed").pop();
+    if (lastPending && (!lastDone || lastDone.created_at < lastPending.created_at)) return "held";
+    if (openRequests(events).length) return "held";
+    if (paid) return "settled";
+    if (kinds.has("invoice_status")) return "held";
+    return "none";
+  }
+
+  // Buyer requests with no reply and no automatic refund yet.
+  function openRequests(events) {
+    const answered = new Set(events.filter((e) => e.kind === "seller_reply").map((e) => e.payload.request_id));
+    return events.filter((e) => e.kind === "buyer_request" && !answered.has(e.payload.request_id));
+  }
+
+  // The money state from each event on, so the line changes colour at the event that changed
+  // it: crimson from a claim opening until it closes, amber from a hold or an unanswered buyer
+  // question until it clears, teal once paid, grey before.
+  function segments(events) {
+    let paid = false, dispute = false, reversed = false, pending = false, invoiceDue = false;
+    const asked = new Set();
+    return events.map((e) => {
+      const p = e.payload;
+      if (e.kind === "payment_captured" || e.kind === "invoice_paid") paid = true;
+      if (e.kind === "webhook_payment_capture_pending") pending = true;
+      if (e.kind === "webhook_payment_capture_completed") pending = false;
+      if (e.kind === "webhook_payment_capture_reversed") reversed = true;
+      if (e.kind === "dispute_created" || e.kind === "dispute_updated") dispute = p.status !== "RESOLVED";
+      if (e.kind === "dispute_resolved") dispute = false;
+      if (e.kind === "buyer_request") asked.add(p.request_id);
+      if (e.kind === "seller_reply") asked.delete(p.request_id);
+      if (e.kind === "invoice_status") invoiceDue = !["Paid", "Cancelled", "Draft", "Refunded"].includes(UI.word("invoice", p.status));
+      return dispute || reversed ? "disputed" : pending || asked.size || (invoiceDue && !paid) ? "held" : paid ? "settled" : "none";
+    });
+  }
+
+  // Stops, keeping only the latest AI recommendation per dispute in place; earlier ones fold
+  // into "(+N earlier)" on that stop. Ahead: what hasn't happened yet (grey, dashed).
+  function timelineRows(events, id = "timeline") {
+    const seg = segments(events);
+    const recs = {};
+    events.filter((e) => e.kind === "ai_recommendation").forEach((e) => (recs[e.payload.dispute_id] ||= []).push(e));
+    const stops = [];
+    events.forEach((e, i) => {
+      let extra = "";
+      if (e.kind === "ai_recommendation") {
+        const list = recs[e.payload.dispute_id];
+        if (e !== list[list.length - 1]) return;
+        const earlier = list.slice(0, -1);
+        if (earlier.length) extra = `<details class="tech"><summary>${earlier.length} earlier</summary>${earlier.map((x) =>
+          `<div>${esc(stop(x).title)}, ${esc(fmt(x.created_at))}</div>`).join("")}</details>`;
+      }
+      const s = stop(e);
+      if (PAYPAL_FAILURE_KINDS.includes(e.kind)) extra += techHtml(errorParts(e.payload).tech);
+      stops.push({ ...s, seg: seg[i], key: `${e.kind}-${e.created_at}-${i}`, when: fmt(e.created_at), detail: (s.detail || "") + extra });
+    });
+    const state = currentDispute(events);
+    const kinds = new Set(events.map((e) => e.kind));
+    if (state && !disputePanel(state).resolved && state.payload.seller_response_due_date) {
+      const due = new Date(state.payload.seller_response_due_date);
+      if (!isNaN(due)) stops.push({ key: "ahead-due", ahead: true, title: `Respond by ${UI.date(due / 1000)}` });
+    } else if (kinds.has("payment_captured") && !kinds.has("tracking_added") && !kinds.has("invoice_paid") && !kinds.has("refund_sent")) {
+      stops.push({ key: "ahead-ship", ahead: true, title: "Not shipped yet" });
+    }
+    return UI.line(id, stops);
+  }
+
+  // ---- Disputes ------------------------------------------------------------------------------
+
+  function daysLeft(due) {
     const date = new Date(due);
-    if (isNaN(date)) return "";
-    const days = Math.ceil((date - Date.now()) / 86400000);
-    const left = days > 1 ? `${days} days left` : days === 1 ? "1 day left" : days === 0 ? "due today" : "overdue";
-    return `<div class="due">Respond by ${esc(date.toLocaleDateString())} (${left})</div>`;
+    if (!due || isNaN(date)) return null;
+    return { date, days: Math.ceil((date - Date.now()) / 86400000) };
+  }
+  const leftText = (days) => (days > 1 ? `${days} days left` : days === 1 ? "1 day left" : days === 0 ? "Due today" : "Overdue");
+  function respondBy(due) {
+    const d = daysLeft(due);
+    if (!d) return "";
+    return `<dt>Respond by</dt><dd class="due">${esc(UI.date(d.date / 1000))}, ${esc(leftText(d.days).toLowerCase())}</dd>`;
   }
 
   // Current dispute state = the event with the newest PayPal update_time, not the last row
@@ -282,20 +426,25 @@
   // still allow a Refund, which shows the full card). Never rendered in live mode.
   function sandboxTool(state) {
     if (ENV !== "sandbox" || state?.payload.status !== "UNDER_REVIEW") return "";
-    return `<div class="sandbox-tool"><button class="sandbox" data-sandbox="${esc(state.payload.dispute_id)}" title="Test tool: only exists in the PayPal Sandbox">Sandbox: simulate PayPal asking the seller for evidence</button><div class="msg"></div></div>`;
+    return `<div class="sandbox-tool actions"><button class="sandbox small" data-sandbox="${esc(state.payload.dispute_id)}" title="Test tool: only exists in the PayPal Sandbox">Sandbox: simulate PayPal asking for your evidence</button><div class="msg"></div></div>`;
   }
 
   function disputePanel(state) {
     if (!state) return { badge: "", panel: "", disputed: false, resolved: false };
     const p = state.payload;
     const resolved = state.kind === "dispute_resolved" || p.status === "RESOLVED";
-    const badge = resolved ? '<span class="badge neutral">Dispute resolved</span>'
-                           : '<span class="badge bad">Disputed</span>';
+    const badge = resolved ? '<span class="pill">Dispute closed</span>'
+      : `<span class="pill disputed">${esc(UI.word("status", p.status) || "Disputed")}</span>`;
     const panel = `<div class="dispute${resolved ? " resolved" : ""}">
-        <strong>${esc(humanize(p.reason))}</strong> · ${esc(money(p.dispute_amount))}
-        <div class="muted">Status: ${esc(p.status || "?")}${p.dispute_life_cycle_stage ? ` · Stage: ${esc(p.dispute_life_cycle_stage)}` : ""} · Case ${esc(p.dispute_id)}</div>
-        ${resolved ? "" : respondBy(p.seller_response_due_date)}
-        ${p.enrichment_error ? '<div class="muted">Could not load full dispute details from PayPal.</div>' : ""}
+        <h3>${resolved ? "Dispute (closed)" : esc(disputeName(p))}</h3>
+        <dl class="kv">
+          <dt>Reason</dt><dd>${esc(reasonWords(p.reason))}</dd>
+          <dt>Amount</dt><dd class="num">${esc(money(p.dispute_amount))}</dd>
+          <dt>Status</dt><dd>${esc(UI.word("status", p.status) || "Unknown")}</dd>
+          ${resolved ? "" : respondBy(p.seller_response_due_date)}
+          <dt>PayPal case</dt><dd class="mono">${esc(p.dispute_id)}</dd>
+        </dl>
+        ${p.enrichment_error ? '<div class="muted small">Could not load full dispute details from PayPal.</div>' : ""}
         ${sandboxTool(state)}
       </div>`;
     return { badge, panel, disputed: !resolved, resolved };
@@ -305,7 +454,7 @@
   // (same rules it checks before each step). Older rows lack it: let the server decide.
   const actionAllowed = (decision, p) => !p.allowed_decisions || p.allowed_decisions.includes(decision);
 
-  // One line per Approve click: "Evidence sent ✓ · Message skipped (dispute is waiting for the buyer)".
+  // One line per Approve click: "Fight: Evidence sent, Message skipped (dispute is waiting for the buyer)".
   function actionRuns(actions) {
     const runs = [];
     for (const e of actions) {
@@ -315,22 +464,31 @@
       run.steps.push(e);
     }
     const step = (e) => {
-      const name = esc(STEP_NAMES[e.payload.endpoint] || e.payload.endpoint);
-      if (e.kind === "dispute_action_sent") return `<span class="ok">${name} sent ✓</span>`;
+      const name = esc(STEP_NAMES[e.payload.endpoint] || UI.sentence(e.payload.endpoint));
+      if (e.kind === "dispute_action_sent") return `<span class="ok">${name} sent</span>`;
       if (e.kind === "dispute_action_skipped") return `<span class="muted">${name} skipped (${esc(e.payload.reason)})</span>${techHtml(errorParts(e.payload).tech)}`;
       return `<span class="bad">${name} failed (${errorHtml(e.payload)})</span>`;
     };
-    return runs.map((r) => `<li>${esc(DECISIONS[r.action] || r.action)}: ${r.steps.map(step).join(" · ")} <span class="muted">${fmt(r.at)}</span></li>`).join("");
+    return runs.map((r) => `<li>${esc(DECISIONS[r.action] || UI.sentence(r.action))}: ${r.steps.map(step).join(", ")} <span class="muted small">${fmt(r.at)}</span></li>`).join("");
   }
 
   // Why the seller can't act right now (null = some decision is allowed).
   function noActionReason(p, resolved) {
-    if (resolved) return "Dispute resolved";
+    if (resolved) return "Dispute closed";
     if (p.status === "WAITING_FOR_BUYER_RESPONSE") return "Waiting for the buyer, nothing to send right now";
     if (p.allowed_decisions && !p.allowed_decisions.length)
       return p.status === "UNDER_REVIEW" ? "PayPal is reviewing this case" : "PayPal allows no seller action right now";
     return null;
   }
+
+  // What Approve does, in the button's own words.
+  function approveLabel(decision, r, p, docs) {
+    if (decision === "REFUND") return `Refund ${money(p.dispute_amount)}`;
+    if (decision === "OFFER") return `Offer ${UI.money(r.offer?.amount, p.dispute_amount?.currency_code)}`;
+    return docs.length ? "Send document and note" : "Send evidence";
+  }
+
+  const AI_TAG = '<span class="tag"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2 5.5L19.5 10 14 12l-2 6-2-6-5.5-2L10 8.5z"/></svg>AI suggestion, you decide</span>';
 
   function aiCard(events, state, resolved) {
     if (!state) return "";
@@ -338,99 +496,87 @@
     const mine = events.filter((e) => e.payload.dispute_id === id);
     const ai = mine.filter((e) => e.kind === "ai_recommendation" || e.kind === "ai_failed").pop();
     const actions = mine.filter((e) => ["dispute_action_sent", "dispute_action_failed", "dispute_action_skipped"].includes(e.kind));
-    const results = actions.length ? `<label>Sent to PayPal</label><ul>${actionRuns(actions)}</ul>` : "";
-    const regen = resolved ? "" : `<button class="secondary" data-regen="${esc(id)}">Regenerate</button>`;
+    const results = actions.length ? `<div class="sent"><h4>Sent to PayPal</h4><ul>${actionRuns(actions)}</ul></div>` : "";
+    const regen = resolved ? "" : `<button class="secondary" data-regen="${esc(id)}">Ask AI again</button>`;
 
     // Nothing to approve: one line instead of editable drafts.
     const blocked = noActionReason(state.payload, resolved);
     if (blocked) {
       const r = ai?.kind === "ai_recommendation" ? ai.payload.recommendation : null;
-      const last = r ? `Last AI suggestion: ${DECISIONS[r.decision]}, ${Math.round(r.confidence * 100)}%` : "No AI suggestion";
-      return `<div class="ai compact"><span>${esc(last)} · ${esc(blocked)}</span></div>`;
+      const last = r ? `Last AI suggestion: ${DECISIONS[r.decision]}, ${Math.round(r.confidence * 100)}% confident.` : "No AI suggestion.";
+      return `<div class="ai compact"><span>${esc(last)} ${esc(blocked)}.</span></div>`;
     }
 
-    if (!ai) return `<div class="ai"><h3>AI recommendation</h3><div class="muted">None yet.</div>${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
-    if (ai.kind === "ai_failed") return `<div class="ai"><h3>AI recommendation</h3>
-        <div class="bad">AI unavailable, try Regenerate.</div><div class="muted">${errorHtml(ai.payload)}</div>
-        ${results}<div class="row">${regen}</div><div class="msg"></div></div>`;
+    if (!ai) return `<div class="ai"><div class="ai-head">${AI_TAG}</div><div class="muted">No suggestion yet.</div>${results}<div class="actions">${regen}</div><div class="msg"></div></div>`;
+    if (ai.kind === "ai_failed") return `<div class="ai"><div class="ai-head">${AI_TAG}</div>
+        <div class="bad">The AI couldn't make a suggestion. Ask again in a moment.</div><div class="muted small">${errorHtml(ai.payload)}</div>
+        ${results}<div class="actions">${regen}</div><div class="msg"></div></div>`;
 
     const p = ai.payload, r = p.recommendation;
-    const label = p.provider === "groq" ? `AI: Groq ${p.model} (fallback)` : `AI: Gemini ${p.model}`;
-    const reasons = r.reasons.map((x) => `<li>${esc(x.text)} <span class="muted">(${x.fact_keys.map(esc).join(", ") || "no facts cited"})</span></li>`).join("");
-    const missing = r.missing_evidence.length ? `<label>Missing evidence</label><ul>${r.missing_evidence.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : "";
-    const offer = r.offer ? `<label>Offer</label><div class="row">
-        <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" />
-        <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /> ${esc(state.payload.dispute_amount?.currency_code || "")}</div>` : "";
+    const model = p.provider === "groq" ? `Groq ${p.model} (fallback)` : `Gemini ${p.model}`;
+    const facts = (keys) => (keys.length ? `Based on: ${keys.map((k) => k.replace(/[._]+/g, " ")).join(", ")}` : "No facts cited");
+    const reasons = r.reasons.map((x) => `<li>${esc(x.text)} <span class="based">${esc(facts(x.fact_keys))}</span></li>`).join("");
+    const missing = r.missing_evidence.length ? `<h4>Missing evidence</h4><ul>${r.missing_evidence.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : "";
+    const cur = state.payload.dispute_amount?.currency_code || "";
+    const offer = r.offer ? `<div class="actions">
+        <label class="field">Offer type <input data-field="offer_type" value="${esc(r.offer.type)}" size="22" /></label>
+        <label class="field">Amount (${esc(cur)}) <input data-field="offer_amount" type="number" step="0.01" min="0.01" value="${esc(r.offer.amount)}" /></label></div>` : "";
     // Claim stage: PayPal needs a document the seller provides; Approve waits for the file.
     const docs = r.decision === "FIGHT" ? (state.payload.document_evidence || []) : [];
-    const picker = docs.length ? `<label>Evidence document (PayPal needs one for this claim)</label>
-        <div class="row"><select data-field="evidence_type">${docs.map((d) =>
-          `<option value="${esc(d.type)}"${d.type === "PROOF_OF_DELIVERY_SIGNATURE" ? " selected" : ""}>${esc(d.label)}</option>`).join("")}</select>
-        <input type="file" data-field="evidence_file" accept=".pdf,.jpg,.jpeg,.png,.gif,application/pdf,image/jpeg,image/png,image/gif" /></div>
-        <div class="muted">One PDF, JPG, PNG or GIF, at most 5 MB. Clearline only uploads files you provide; it never generates proof.</div>` : "";
+    const picker = docs.length ? `<label class="field">Evidence document (PayPal needs one for this claim)
+        <select data-field="evidence_type">${docs.map((d) =>
+          `<option value="${esc(d.type)}"${d.type === "PROOF_OF_DELIVERY_SIGNATURE" ? " selected" : ""}>${esc(d.label)}</option>`).join("")}</select></label>
+        <input type="file" data-field="evidence_file" accept=".pdf,.jpg,.jpeg,.png,.gif,application/pdf,image/jpeg,image/png,image/gif" aria-label="Evidence file" />
+        <div class="hint">One PDF, JPG, PNG or GIF, at most 5 MB. Clearline only uploads files you provide; it never generates proof.</div>` : "";
     const approve = actionAllowed(r.decision, state.payload)
-        ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}"${docs.length ? ' data-needs-file="1" disabled title="Attach a document first"' : ""}>Approve &amp; send</button>`
+        ? `<button data-approve="${esc(id)}" data-decision="${esc(r.decision)}"${docs.length ? ' data-needs-file="1" disabled title="Attach a document first"' : ""} class="${r.decision === "FIGHT" ? "" : "money"}">${esc(approveLabel(r.decision, r, state.payload, docs))}</button>`
         : `<span class="muted">PayPal doesn't currently allow “${esc(DECISIONS[r.decision])}” on this dispute.</span>`;
     return `<div class="ai" data-dispute="${esc(id)}">
-        <h3>AI recommendation <span class="badge ${esc(r.decision.toLowerCase())}">${esc(DECISIONS[r.decision])}</span>
-          <span class="muted">confidence ${Math.round(r.confidence * 100)}% · ${esc(label)} · ${(p.latency_ms / 1000).toFixed(1)} s</span></h3>
+        <div class="ai-head">${AI_TAG}<span class="meter">${Math.round(r.confidence * 100)}% confident</span></div>
+        <h4>${esc({ FIGHT: "Fight it with your evidence", REFUND: "Refund the buyer", OFFER: "Offer the buyer a partial refund" }[r.decision] || DECISIONS[r.decision])}</h4>
         <ul>${reasons}</ul>${missing}${offer}
-        <label>Message to buyer</label><textarea data-field="message_to_buyer">${esc(r.message_to_buyer)}</textarea>
-        <label>Note to PayPal</label><textarea data-field="note_to_paypal">${esc(r.note_to_paypal)}</textarea>
+        <label class="field">Message to the buyer <textarea data-field="message_to_buyer">${esc(r.message_to_buyer)}</textarea></label>
+        <label class="field">Note to PayPal <textarea data-field="note_to_paypal">${esc(r.note_to_paypal)}</textarea></label>
         ${picker}
         ${results}
-        <div class="row">${approve}${regen}</div><div class="msg"></div>
-        <div class="muted">Nothing is sent to PayPal until you click Approve.</div>
+        <div class="actions">${approve}${regen}</div><div class="msg"></div>
+        <div class="fine">Nothing is sent to PayPal until you click ${esc(approveLabel(r.decision, r, state.payload, docs))}.</div>
+        <details class="about"><summary>About this suggestion</summary><dl class="kv">
+          <dt>Model</dt><dd>${esc(model)}</dd><dt>Took</dt><dd class="num">${(p.latency_ms / 1000).toFixed(1)} s</dd></dl></details>
       </div>`;
   }
 
-  const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
-  const isSide = (id) => id === "other" || id.startsWith("unmatched:");
-  const PAYPAL_FAILURE_KINDS = ["dispute_action_failed", "dispute_action_skipped", "sandbox_status_change_failed", "refund_failed", "invoice_action_failed"];
-  const row = (e, extra = "") =>
-    `<li>${esc(label(e))} <span class="muted">${esc(describe(e))} · ${fmt(e.created_at)}</span>${
-      PAYPAL_FAILURE_KINDS.includes(e.kind) ? techHtml(errorParts(e.payload).tech) : ""}${extra}</li>`;
+  // ---- The buyer's side ------------------------------------------------------------------------
 
-  // Timeline rows, keeping only the latest AI recommendation per dispute in place; earlier
-  // ones fold into "(+N earlier)" on that row.
-  function timelineRows(events) {
-    const recs = {};
-    events.filter((e) => e.kind === "ai_recommendation")
-      .forEach((e) => (recs[e.payload.dispute_id] ||= []).push(e));
-    return events.map((e) => {
-      if (e.kind !== "ai_recommendation") return row(e);
-      const list = recs[e.payload.dispute_id];
-      if (e !== list[list.length - 1]) return "";
-      const earlier = list.slice(0, -1);
-      return row(e, earlier.length ? `<details class="earlier"><summary>(+${earlier.length} earlier)</summary><ul>${earlier.map((x) => row(x)).join("")}</ul></details>` : "");
-    }).join("");
-  }
-
-  // The buyer's side of an order: their private link, their requests (with a reply box) and,
-  // for refund requests, the refund buttons. Only the seller's click sends a refund.
+  // Their private link, their requests (with a reply box) and, for refund requests, the
+  // refund buttons. Only the seller's click (and the confirm dialog) sends a refund.
   function buyerSection(orderId, b) {
     if (!b) return "";
     const link = `${location.origin}${b.link}`;
     const canRefund = Number(b.refundable) > 0;
     const requests = b.requests.map((r) => `<div class="req">
-        <strong>${esc(BUYER_TYPES[r.type] || r.type)}</strong>${r.reason ? ` · ${esc(r.reason)}` : ""}${r.amount ? ` · asks ${esc(r.amount)} ${esc(b.currency)}` : ""} <span class="muted">· ${fmt(r.at)}</span>
-        ${r.via === "agent" ? '<span class="badge agent">via AI agent</span>' : ""}
-        ${r.auto_refund ? `<span class="badge auto">Auto-resolved: refunded ${esc(r.auto_refund.amount)} ${esc(r.auto_refund.currency)}</span><div class="muted">Rule: ${esc(r.auto_refund.rule)}</div>` : ""}
-        ${r.message ? `<div>${esc(r.message)}</div>` : '<div class="muted">(no message)</div>'}
-        ${r.replies.map((x) => `<div class="reply">${x.auto ? "Automatic reply" : "You"}: ${esc(x.message)}</div>`).join("")}
-        <textarea data-reply-text placeholder="Reply to the buyer (shown on their order page)" maxlength="1000"></textarea>
-        <div class="row">
+        <div class="head"><strong>${esc(BUYER_TYPES[r.type] || r.type)}</strong>
+          ${r.via === "agent" ? '<span class="pill plain">via AI agent</span>' : ""}
+          ${r.auto_refund ? `<span class="pill settled">Auto-resolved: refunded ${esc(r.auto_refund.amount)} ${esc(r.auto_refund.currency)}</span>` : ""}
+          <span class="muted small">${fmt(r.at)}</span></div>
+        ${r.reason || r.amount ? `<dl class="kv small">${r.reason ? `<dt>Reason</dt><dd>${esc(r.reason)}</dd>` : ""}${r.amount ? `<dt>Asks for</dt><dd class="num">${esc(r.amount)} ${esc(b.currency)}</dd>` : ""}</dl>` : ""}
+        ${r.auto_refund ? `<div class="muted small">Rule: ${esc(r.auto_refund.rule)}</div>` : ""}
+        ${r.message ? `<div class="said">${esc(r.message)}</div>` : '<div class="muted said">No message.</div>'}
+        ${r.replies.map((x) => `<div class="reply"><div class="by">${x.auto ? "Automatic reply" : "You"}</div>${esc(x.message)}</div>`).join("")}
+        <textarea data-reply-text placeholder="Reply to the buyer (shown on their order page)" maxlength="1000" aria-label="Reply to the buyer"></textarea>
+        <div class="actions">
           <button class="secondary" data-reply="${esc(r.id)}" data-order="${esc(orderId)}">Send reply</button>
           ${canRefund ? `
-            <button data-refund="full" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund full amount (${esc(b.refundable)} ${esc(b.currency)})</button>
-            <button class="secondary" data-refund="partial" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}">Refund partial…</button>` : ""}
+            <button data-refund="full" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}" class="money">Refund ${esc(b.refundable)} ${esc(b.currency)}</button>
+            <button data-refund="partial" data-request="${esc(r.id)}" data-order="${esc(orderId)}" data-max="${esc(b.refundable)}" data-currency="${esc(b.currency)}" class="secondary">Refund part of it</button>` : ""}
         </div><div class="msg"></div></div>`).join("");
-    const refunds = b.refunds.map((x) => `<div class="ok">Refund of ${esc(x.amount)} ${esc(x.currency)} sent${x.status && x.status !== "COMPLETED" ? ` (${esc(x.status)})` : ""} · ${fmt(x.at)}</div>`).join("");
+    const refunds = b.refunds.map((x) => `<div class="refunded">Refund of ${esc(x.amount)} ${esc(x.currency)} sent${x.status && x.status !== "COMPLETED" ? ` (${esc(UI.word("payment", x.status))})` : ""}, ${fmt(x.at)}</div>`).join("");
     return `<div class="buyer">
-        <div class="muted">Buyer page: <a href="${esc(link)}" target="_blank" rel="noopener">${esc(b.link.slice(0, 14))}…</a>
-          <button class="secondary" data-copy="${esc(link)}">Copy link</button></div>
+        <div class="linkrow"><span class="muted">Buyer page</span>
+          <a href="${esc(link)}" target="_blank" rel="noopener" class="mono">${esc(b.link.slice(0, 14))}…</a>
+          <button class="ghost small" data-copy="${esc(link)}">Copy link</button></div>
         ${refunds}
-        ${b.requests.length ? `<h4>Buyer requests</h4>${requests}` : ""}
+        ${b.requests.length ? `<h3>Buyer requests</h3>${requests}` : ""}
       </div>`;
   }
 
@@ -438,8 +584,8 @@
     const res = await fetch("/api/stats");
     if (!res.ok) return;
     const s = await res.json(), el = document.getElementById("stats");
-    el.innerHTML = `Questions answered before a dispute: <strong>${esc(s.questions_answered_before_dispute)}</strong>${
-      s.auto_resolved ? ` <span class="muted">(${esc(s.auto_resolved)} auto-resolved by your policy)</span>` : ""}`;
+    el.innerHTML = `<strong>${esc(s.questions_answered_before_dispute)}</strong> questions answered before a dispute${
+      s.auto_resolved ? `, ${esc(s.auto_resolved)} by your policy` : ""}`;
     el.hidden = false;
   }
 
@@ -449,71 +595,202 @@
     if (!x) return "";
     const s = x.suggestion;
     const options = Object.entries(x.purpose_codes).map(([code, label]) =>
-      `<option value="${esc(code)}"${code === x.purpose_code ? " selected" : ""}>${esc(code)} · ${esc(label)}</option>`).join("");
-    return `<div class="export" data-export="${esc(orderId)}">
-        <h4>Export paperwork <span class="muted">(${esc(x.disclaimer)})</span></h4>
-        <div class="muted">Payment from ${esc(x.payment.country || "abroad")}: ${esc(x.payment.amount)} ${esc(x.payment.currency)} · ${esc(x.payment.description)}</div>
-        <label>Purpose code ${x.purpose_code ? `<span class="ok">✓ ${esc(x.purpose_code)}</span>` : '<span class="bad">not chosen</span>'}</label>
-        <div class="row"><select data-purpose><option value="">Choose the code that fits this payment…</option>${options}</select>
+      `<option value="${esc(code)}"${code === x.purpose_code ? " selected" : ""}>${esc(label)} (${esc(code)})</option>`).join("");
+    const line = [x.purpose_code ? `Purpose code ${x.purpose_code}` : "Purpose code not chosen",
+                  x.fira_downloaded ? "FIRA downloaded" : "FIRA not downloaded yet"].join(", ");
+    return `<details class="export" data-export="${esc(orderId)}"${openExports.has(orderId) ? " open" : ""}>
+        <summary><span class="ex-title">Export paperwork</span><span class="ex-line ${x.purpose_code && x.fira_downloaded ? "ok" : "muted"}">${esc(line)}</span>${CHEV}</summary>
+        <div class="ex-body">
+        <div class="muted small">${esc(x.disclaimer)}</div>
+        <dl class="kv"><dt>Payment</dt><dd><span class="num">${esc(x.payment.amount)} ${esc(x.payment.currency)}</span> from ${esc(x.payment.country || "abroad")}</dd>
+          <dt>For</dt><dd>${esc(x.payment.description)}</dd>
+          <dt>Purpose code</dt><dd>${x.purpose_code ? `<span class="ok">${esc(x.purpose_code)}</span>` : '<span class="bad">Not chosen</span>'}</dd></dl>
+        <div class="actions"><select data-purpose aria-label="Purpose code"><option value="">Choose the code that fits this payment</option>${options}</select>
           <button class="secondary" data-purpose-save="${esc(orderId)}">Save</button>
           <button class="secondary" data-purpose-suggest="${esc(orderId)}">Ask AI to suggest</button></div>
-        ${s ? `<div class="muted">AI suggests <strong>${esc(s.code)}</strong>: ${esc(s.reason)} (not applied; pick it above if it fits)</div>` : ""}
-        <div class="muted">PayPal applies the purpose code set on your account (Settings → Purpose code) to your payments; check it matches.</div>
-        <label><input type="checkbox" data-fira="${esc(orderId)}"${x.fira_downloaded ? " checked" : ""} /> FIRA downloaded
-          <span class="muted">(PayPal monthly digital FIRA: Reports → Statements → FIRA, by the 15th of next month)</span></label>
-        <div class="muted">Sources: ${x.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.label)}</a>`).join(" · ")}</div>
-        <div class="msg"></div></div>`;
+        ${s ? `<div class="muted small">AI suggests <strong>${esc(s.code)}</strong>: ${esc(s.reason)} (not applied; pick it above if it fits)</div>` : ""}
+        <div class="muted small">PayPal applies the purpose code set on your account (Settings, then Purpose code) to your payments; check it matches.</div>
+        <label class="check"><input type="checkbox" data-fira="${esc(orderId)}"${x.fira_downloaded ? " checked" : ""} /> FIRA downloaded</label>
+        <div class="muted small">PayPal's monthly digital FIRA is under Reports, Statements, FIRA, by the 15th of next month.</div>
+        <div class="muted small">Sources: ${x.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.label)}</a>`).join(", ")}</div>
+        <div class="msg"></div></div></details>`;
   }
 
-  const INVOICE_STATUS_CLASS = { Paid: "ok", Overdue: "bad", Cancelled: "muted", Draft: "muted" };
+  // ---- Invoices ------------------------------------------------------------------------------
 
-  async function renderInvoices() {
-    const res = await fetch("/api/invoices");
-    if (!res.ok) return;
-    const rows = await res.json(), list = document.getElementById("invoice-list");
-    list.innerHTML = rows.length ? `<table><thead><tr><th>Number</th><th>Client</th><th>Amount</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>${
+  const INVOICE_STATUS_CLASS = { Paid: "settled", Overdue: "disputed", Sent: "held", Cancelled: "", Draft: "" };
+  let invoiceRows = [];
+
+  function renderInvoiceList(rows) {
+    const list = document.getElementById("invoice-list");
+    list.innerHTML = rows.length ? `<table class="tbl wide"><thead><tr><th>Number</th><th>Client</th><th class="num">Amount</th><th>Due</th><th>Status</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${
       rows.map((r) => `<tr data-invoice="${esc(r.invoice_id)}">
-        <td>${esc(r.number || "—")}</td><td>${esc(r.client || "—")}</td><td>${esc(r.amount)} ${esc(r.currency)}</td>
-        <td>${esc(r.due_date || "—")}</td>
-        <td class="${INVOICE_STATUS_CLASS[r.display_status] || ""}">${esc(r.display_status)}${r.days_overdue ? ` (${esc(r.days_overdue)} days)` : ""}</td>
-        <td>${r.display_status === "Draft" ? `<button data-invoice-send="${esc(r.invoice_id)}">Send invoice</button>` : ""}
-            ${r.display_status === "Overdue" ? `<button class="secondary" data-invoice-remind="${esc(r.invoice_id)}">Send reminder</button>` : ""}</td></tr>
-        <tr class="reminder-row" hidden><td colspan="6" data-reminder="${esc(r.invoice_id)}"></td></tr>`).join("")}</tbody></table>`
-      : '<p class="muted">No invoices yet.</p>';
+        <td data-label="Number">${esc(r.number || "None")}</td><td data-label="Client">${esc(r.client || "None")}</td>
+        <td data-label="Amount" class="num">${esc(r.amount)} ${esc(r.currency)}</td>
+        <td data-label="Due">${esc(r.due_date ? UI.isoDate(r.due_date) : "No due date")}</td>
+        <td data-label="Status"><span class="pill ${INVOICE_STATUS_CLASS[r.display_status] || ""}">${esc(r.display_status)}${r.days_overdue ? `, ${esc(r.days_overdue)} days` : ""}</span></td>
+        <td data-label="">${r.display_status === "Draft" ? `<button class="small" data-invoice-send="${esc(r.invoice_id)}">Send invoice</button>` : ""}
+            ${r.display_status === "Overdue" ? `<button class="secondary small" data-invoice-remind="${esc(r.invoice_id)}">Draft reminder</button>` : ""}</td></tr>
+        <tr class="reminder-row" hidden><td colspan="6" class="wide" data-reminder="${esc(r.invoice_id)}"></td></tr>`).join("")}</tbody></table>`
+      : '<div class="empty"><strong>No invoices yet</strong>Describe one above and the AI drafts it for you.</div>';
     list.querySelectorAll("[data-invoice-send]").forEach((b) => b.addEventListener("click", () => sendInvoice(b)));
     list.querySelectorAll("[data-invoice-remind]").forEach((b) => b.addEventListener("click", () => draftReminder(b)));
   }
 
+  async function renderInvoices() {
+    const res = await fetch("/api/invoices");
+    if (!res.ok) return;
+    invoiceRows = await res.json();
+    renderInvoiceList(invoiceRows);
+  }
+
+  // ---- Today: what needs the seller, each with its one next action ---------------------------
+
+  function attentionItems(orders, invoices) {
+    const items = [];
+    for (const o of orders) {
+      const state = currentDispute(o.events);
+      if (state && !disputePanel(state).resolved && !noActionReason(state.payload, false)) {
+        const p = state.payload, d = daysLeft(p.seller_response_due_date);
+        items.push({ rank: 0, sort: d ? d.days : 99, tone: "disputed", title: `Respond to the ${disputeName(p).toLowerCase()}: ${reasonWords(p.reason)}`,
+          sub: `Order …${o.order_id.slice(-6)}`, when: d ? leftText(d.days) : "", urgent: d && d.days <= 3,
+          amount: money(p.dispute_amount), action: "Review and respond", target: o.order_id, focus: ".ai" });
+      }
+      for (const r of openRequests(o.events)) {
+        items.push({ rank: 1, sort: r.created_at, tone: "held", title: `Buyer: ${BUYER_TYPES[r.payload.type] || "Sent a request"}`,
+          sub: r.payload.message ? `“${r.payload.message.slice(0, 80)}”` : `Order …${o.order_id.slice(-6)}`,
+          when: `Asked ${UI.date(r.created_at)}`, action: "Reply", target: o.order_id, focus: "[data-reply-text]" });
+      }
+      const kinds = new Set(o.events.map((e) => e.kind));
+      if (kinds.has("payment_captured") && !kinds.has("tracking_added") && !kinds.has("refund_sent") && !state) {
+        const paid = o.events.find((e) => e.kind === "payment_captured");
+        items.push({ rank: 3, sort: paid.created_at, tone: "settled", title: "Paid, waiting to ship", sub: `Order …${o.order_id.slice(-6)}`,
+          when: `Paid ${UI.date(paid.created_at)}`, amount: o.amount, action: "Add tracking", target: o.order_id, focus: "[name=tracking_number]" });
+      }
+    }
+    for (const r of invoices.filter((x) => x.display_status === "Overdue")) {
+      items.push({ rank: 2, sort: -(r.days_overdue || 0), tone: "held", title: `Invoice ${r.number || ""} is overdue`.replace("  ", " "),
+        sub: r.client || "", when: `${r.days_overdue} days overdue, due ${UI.isoDate(r.due_date)}`, urgent: true, amount: UI.money(r.amount, r.currency),
+        action: "Draft reminder", invoice: r.invoice_id });
+    }
+    return items.sort((a, b) => a.rank - b.rank || a.sort - b.sort);
+  }
+
+  function attentionHtml(items) {
+    if (!items.length) return '<div class="empty"><strong>Nothing needs you right now</strong>New disputes, buyer questions and overdue invoices show up here.</div>';
+    return `<ul class="attention">${items.map((it, i) => `<li>
+        <span class="cl-mark" data-tone="${esc(it.tone)}" aria-hidden="true"></span>
+        <div class="what"><strong>${esc(it.title)}</strong><span class="muted small">${esc(it.sub)}</span>
+          ${it.when ? `<div class="when${it.urgent ? " urgent" : ""}">${esc(it.when)}</div>` : ""}</div>
+        ${it.amount ? `<span class="amount num">${esc(it.amount)}</span>` : ""}
+        <button class="${i === 0 ? "" : "secondary"} small" data-attend="${i}">${esc(it.action)}</button></li>`).join("")}</ul>`;
+  }
+
+  function attend(it) {
+    if (it.invoice) {
+      const b = document.querySelector(`[data-invoice-remind="${CSS.escape(it.invoice)}"]`);
+      b?.scrollIntoView({ block: "center" });
+      if (b) draftReminder(b);
+      return;
+    }
+    openOrders.add(it.target);
+    const row = document.querySelector(`.order[data-order-id="${CSS.escape(it.target)}"]`);
+    if (!row) return;
+    setOpen(row, true);
+    row.scrollIntoView({ block: "start" });
+    const el = row.querySelector(it.focus);
+    el?.focus({ preventScroll: true });
+  }
+
+  function setOpen(row, open) {
+    const head = row.querySelector(".order-head"), body = row.querySelector(".order-body");
+    head.setAttribute("aria-expanded", String(open));
+    body.hidden = !open;
+    if (open) openOrders.add(row.dataset.orderId); else openOrders.delete(row.dataset.orderId);
+  }
+
+  // ---- Orders --------------------------------------------------------------------------------
+
+  const getTimeline = async (id) => (await fetch(`/api/orders/${encodeURIComponent(id)}/timeline`)).json();
+  const isSide = (id) => id === "other" || id.startsWith("unmatched:");
+  const CARRIERS = ["DHL", "FEDEX", "UPS", "USPS"];
+
+  // The row's pill: the one thing to know about this order.
+  function rowStatus(events, state, d) {
+    const kinds = new Set(events.map((e) => e.kind));
+    if (d.disputed) return d.badge;
+    if (openRequests(events).length) return '<span class="pill held">Buyer is waiting</span>';
+    if (orderTone(events, state) === "held") return '<span class="pill held">Payment on hold</span>';
+    if (kinds.has("refund_sent")) return '<span class="pill settled">Refunded</span>';
+    if (kinds.has("invoice_paid")) return '<span class="pill settled">Paid</span>';
+    if (kinds.has("tracking_added")) return '<span class="pill settled">Shipped</span>';
+    if (kinds.has("payment_captured")) return '<span class="pill settled">Paid, not shipped</span>';
+    if (d.badge) return d.badge;
+    return '<span class="pill">Not paid</span>';
+  }
+
+  function orderAmount(events) {
+    const inv = events.find((e) => e.kind === "invoice_paid");
+    if (inv) return UI.money(inv.payload.amount, inv.payload.currency);
+    const c = events.find((e) => e.kind === "order_created");
+    return c ? UI.money(c.payload.amount, c.payload.currency) : "";
+  }
+
+  function orderRow(o, buyer, exp) {
+    const { events } = o;
+    const state = currentDispute(events);
+    const d = disputePanel(state);
+    const invoicePaid = events.find((e) => e.kind === "invoice_paid");
+    const captured = events.some((e) => e.kind === "payment_captured") || Boolean(invoicePaid);
+    const tracked = events.some((e) => e.kind === "tracking_added");
+    const tone = orderTone(events, state);
+    const open = openOrders.has(o.order_id);
+    const title = invoicePaid ? `Invoice ${invoicePaid.payload.number || o.order_id}` : `Order …${o.order_id.slice(-6)}`;
+    const sub = invoicePaid ? "Paid by invoice" : `Created ${UI.date(events[0]?.created_at || 0)}`;
+    const bodyId = `o-${o.order_id.replace(/[^\w-]/g, "")}`;
+    const form = captured && !tracked && !invoicePaid ? `
+        <form class="ship" data-order="${esc(o.order_id)}">
+          <label class="field">Tracking number <input name="tracking_number" required autocomplete="off" /></label>
+          <label class="field">Carrier <select name="carrier">${CARRIERS.map((c) => `<option value="${c}">${esc(UI.word("carrier", c))}</option>`).join("")}</select></label>
+          <button>Mark shipped</button>
+        </form><div class="msg"></div>` : "";
+    return `<article class="order" data-order-id="${esc(o.order_id)}" data-tone="${esc(tone)}">
+        <button class="order-head" aria-expanded="${open}" aria-controls="${esc(bodyId)}">
+          <span class="cl-mark" data-tone="${esc(tone)}" aria-hidden="true"></span>
+          <span class="title"><strong>${esc(title)}</strong><span>${esc(sub)}</span></span>
+          ${rowStatus(events, state, d)}
+          <span class="amount num">${esc(orderAmount(events))}</span>${CHEV}
+        </button>
+        <div class="order-body" id="${esc(bodyId)}"${open ? "" : " hidden"}>
+          <div class="history"><h3>History</h3>${timelineRows(events, o.order_id)}</div>
+          <div class="work">${d.panel}${aiCard(events, state, d.resolved)}${form}${buyerSection(o.order_id, buyer)}${exportSection(o.order_id, exp)}</div>
+        </div></article>`;
+  }
+
   async function render() {
-    const all = await (await fetch("/api/orders")).json();
-    renderInvoices();
+    const [all] = await Promise.all([fetch("/api/orders").then((r) => r.json()), renderInvoices()]);
     // Invoices show in the orders list once paid (with a buyer link like any order).
     const orders = all.filter((o) => !isSide(o.order_id)
       && !(o.kinds.includes("invoice_status") && !o.kinds.includes("invoice_paid")));
-    const root = document.getElementById("orders");
+    const root = document.getElementById("order-list");
     renderOther(all.filter((o) => isSide(o.order_id)));
-    if (!orders.length) { root.innerHTML = '<p class="muted">No orders yet. Pay one on the checkout page.</p>'; return; }
-    const blocks = await Promise.all(orders.map(async (o) => {
+    const loaded = await Promise.all(orders.map(async (o) => {
       const events = await getTimeline(o.order_id);
-      const state = currentDispute(events);
-      const d = disputePanel(state);
-      const invoicePaid = events.find((e) => e.kind === "invoice_paid");
-      const captured = events.some((e) => e.kind === "payment_captured") || Boolean(invoicePaid);
-      const tracked = events.some((e) => e.kind === "tracking_added");
+      const captured = events.some((e) => e.kind === "payment_captured" || e.kind === "invoice_paid");
       const buyer = captured ? await (await fetch(`/api/orders/${encodeURIComponent(o.order_id)}/buyer`)).json().catch(() => null) : null;
       const exp = captured ? await fetch(`/api/export/${encodeURIComponent(o.order_id)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
-      const steps = timelineRows(events);
-      const title = invoicePaid ? `Invoice ${esc(invoicePaid.payload.number || o.order_id)} · paid` : esc(o.order_id);
-      const form = captured && !tracked && !invoicePaid ? `
-        <form data-order="${esc(o.order_id)}">
-          <input name="tracking_number" placeholder="Tracking number" required />
-          <select name="carrier"><option>DHL</option><option>FEDEX</option><option>UPS</option><option>USPS</option></select>
-          <button>Mark shipped</button>
-        </form><div class="msg"></div>` : "";
-      return `<div class="order${d.disputed ? " disputed" : ""}"><div class="id">${title}${d.badge}</div>${d.panel}${aiCard(events, state, d.resolved)}${buyerSection(o.order_id, buyer)}${exportSection(o.order_id, exp)}<ol>${steps}</ol>${form}</div>`;
+      return { order_id: o.order_id, events, amount: orderAmount(events), buyer, exp };
     }));
-    root.innerHTML = blocks.join("");
-    root.querySelectorAll("form").forEach((f) => f.addEventListener("submit", async (ev) => {
+    const items = attentionItems(loaded, invoiceRows);
+    document.getElementById("attention").innerHTML = attentionHtml(items);
+    document.querySelectorAll("[data-attend]").forEach((b) => b.addEventListener("click", () => attend(items[Number(b.dataset.attend)])));
+    root.innerHTML = loaded.length ? loaded.map((o) => orderRow(o, o.buyer, o.exp)).join("")
+      : '<div class="empty"><strong>No orders yet</strong>Pay one on the checkout page to see it here.</div>';
+    root.querySelectorAll(".order-head").forEach((h) => h.addEventListener("click", () => {
+      const row = h.closest(".order");
+      setOpen(row, h.getAttribute("aria-expanded") !== "true");
+    }));
+    root.querySelectorAll("form.ship").forEach((f) => f.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const button = f.querySelector("button");
       if (button.disabled) return; // already sending: a second click does nothing
@@ -524,18 +801,18 @@
         const res = await fetch(`/api/orders/${f.dataset.order}/tracking`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
         });
-        if (res.ok) { await render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
+        if (res.ok) { UI.toast("Marked as shipped"); await render(); } else { msg.textContent = `Failed: ${await res.text()}`; }
       } finally { busy--; button.disabled = false; button.textContent = "Mark shipped"; }
     }));
     root.querySelectorAll(".buyer textarea").forEach((el) =>
       el.addEventListener("input", () => { if (el.value) el.dataset.dirty = "1"; else delete el.dataset.dirty; }));
     root.querySelectorAll("[data-reply]").forEach((b) => b.addEventListener("click", () => sendReply(b)));
     root.querySelectorAll("[data-refund]").forEach((b) => b.addEventListener("click", () => refund(b)));
-    root.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () =>
-      navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "Copied ✓"; })));
     root.querySelectorAll("[data-purpose-save]").forEach((b) => b.addEventListener("click", () => savePurpose(b)));
     root.querySelectorAll("[data-purpose-suggest]").forEach((b) => b.addEventListener("click", () => suggestPurpose(b)));
     root.querySelectorAll("[data-fira]").forEach((c) => c.addEventListener("change", () => saveFira(c)));
+    root.querySelectorAll("details.export").forEach((el) => el.addEventListener("toggle", () =>
+      (el.open ? openExports.add(el.dataset.export) : openExports.delete(el.dataset.export))));
     loadStats();
     root.querySelectorAll(".ai textarea, .ai input, .ai select").forEach((el) =>
       el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
@@ -551,16 +828,18 @@
     const el = document.getElementById("sync-status");
     try {
       const s = await (await fetch("/api/disputes/sync/status")).json();
-      const auto = s.auto_sync_minutes > 0 ? `auto every ${s.auto_sync_minutes} min` : "auto-sync off";
-      el.textContent = s.error ? `Last sync failed: ${s.error} (${auto})`
-        : s.last_synced_at ? `Last synced: ${fmt(s.last_synced_at)} (${s.trigger}) · ${auto}`
-        : `Not synced yet · ${auto}`;
+      const auto = s.auto_sync_minutes > 0 ? `checks PayPal every ${s.auto_sync_minutes} min` : "automatic checks off";
+      el.textContent = s.error ? `Last sync failed: ${s.error}`
+        : s.last_synced_at ? `Synced ${fmt(s.last_synced_at)}, ${auto}`
+        : `Not synced yet, ${auto}`;
     } catch { el.textContent = ""; }
   }
 
   // Sandbox-only test tool; the server refuses it (404) in live mode as well.
-  function sandboxRequireEvidence(button) {
-    if (!confirm("SANDBOX TEST TOOL: ask PayPal's Sandbox to move this dispute from UNDER_REVIEW to waiting for the seller's evidence?")) return;
+  async function sandboxRequireEvidence(button) {
+    if (!await UI.confirm({ title: "Sandbox test tool", confirm: "Ask PayPal Sandbox",
+      what: ["Asks PayPal's Sandbox to move this dispute from \"PayPal is reviewing\" to waiting for your evidence.",
+             "This only exists in the Sandbox. No money moves."] })) return;
     return withBusy(button, "Asking PayPal Sandbox…", async () => {
       const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.sandbox)}/sandbox/require-seller-evidence`, { method: "POST" });
       if (!res.ok) throw new Error(await errorText(res));
@@ -578,28 +857,31 @@
       });
       if (!res.ok) throw new Error(`Reply failed: ${await errorText(res)}`);
       delete box.dataset.dirty; box.value = "";
+      UI.toast("Reply sent. The buyer sees it on their order page.");
       await render();
     });
   }
 
-  // Refunds move money: always ask first, and let the server check the amount again.
-  function refund(button) {
+  // Refunds move money: always ask first in the in-app dialog, and let the server check the
+  // amount again.
+  async function refund(button) {
     const { order, request, max, currency } = button.dataset;
+    const partial = button.dataset.refund === "partial";
     let amount = max;
-    if (button.dataset.refund === "partial") {
-      amount = prompt(`Refund how much? (at most ${max} ${currency})`, "");
-      if (amount === null) return;
-      amount = amount.trim();
-      if (!(Number(amount) > 0 && Number(amount) <= Number(max))) { alert(`Enter an amount between 0.01 and ${max}.`); return; }
-    }
-    if (!confirm(`Refund ${amount} ${currency} to the buyer through PayPal? This can't be undone.`)) return;
+    if (partial) {
+      amount = await UI.confirm({ title: "Refund part of the payment", tone: "money",
+        input: { label: `Amount to refund (${currency})`, max, currency, verb: "Refund" },
+        what: ["PayPal sends this amount back to the buyer from your balance.", "This can't be undone."] });
+      if (!amount) return;
+    } else if (!await UI.confirm({ title: "Refund the buyer", amount: `${max} ${currency}`, tone: "money", confirm: `Refund ${max} ${currency}`,
+      what: ["PayPal sends the full amount back to the buyer from your balance.", "The buyer sees the refund on their order page.", "This can't be undone."] })) return;
     return withBusy(button, "Refunding…", async () => {
-      const body = button.dataset.refund === "full" ? { mode: "full", request_id: request }
-        : { mode: "partial", amount, request_id: request };
+      const body = partial ? { mode: "partial", amount, request_id: request } : { mode: "full", request_id: request };
       const res = await fetch(`/api/orders/${encodeURIComponent(order)}/refund`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (!res.ok) { await render(); throw new Error(`Refund not sent: ${await errorText(res)}`); }
+      UI.toast(`Refund of ${amount} ${currency} sent`);
       await render();
     });
   }
@@ -625,7 +907,7 @@
   function regenerate(button) {
     return withBusy(button, "Thinking…", async () => {
       const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.regen)}/recommendation`, { method: "POST" });
-      if (!res.ok) throw new Error(`Regenerate failed: ${await errorText(res)}`);
+      if (!res.ok) throw new Error(`The AI couldn't answer: ${await errorText(res)}`);
       await render();
     });
   }
@@ -650,26 +932,30 @@
     reader.readAsDataURL(file);
   });
 
-  function approve(button) {
+  async function approve(button) {
     const card = button.closest(".ai");
     const field = (name) => card.querySelector(`[data-field="${name}"]`)?.value?.trim();
     const decision = button.dataset.decision;
     const body = { action: decision, message_to_buyer: field("message_to_buyer"), note_to_paypal: field("note_to_paypal") };
     if (decision === "OFFER") body.offer = { type: field("offer_type"), amount: Number(field("offer_amount")) };
     const file = button.dataset.needsFile ? card.querySelector('[data-field="evidence_file"]')?.files[0] : null;
-    if (button.dataset.needsFile && !file) return; // Approve stays disabled until a file is attached
+    if (button.dataset.needsFile && !file) return; // stays disabled until a document is attached
     const typeLabel = card.querySelector('[data-field="evidence_type"]')?.selectedOptions[0]?.textContent;
-    const what = file ? `send "${file.name}" to PayPal as "${typeLabel}" evidence, with your note to PayPal`
-      : { FIGHT: "submit your tracking as proof of shipment (if PayPal allows it) and then message the buyer (if still allowed)",
-          OFFER: `offer the buyer ${body.offer?.amount} (${body.offer?.type})`,
-          REFUND: "accept the claim and refund the full disputed amount" }[decision];
-    if (!confirm(`This will ${what}. Continue?`)) return;
+    const amount = card.closest(".order")?.querySelector(".dispute .num")?.textContent || "";
+    const cur = amount.split(" ")[1] || "";
+    const plan = file
+      ? { title: "Send your document to PayPal", what: [`Uploads "${file.name}" as "${typeLabel}" evidence.`, "Adds your note to PayPal."] }
+      : { FIGHT: { title: "Send your evidence to PayPal", what: ["Sends your tracking to PayPal as proof of shipment, if PayPal allows it.", "Then sends your message to the buyer, if that's still allowed."] },
+          OFFER: { title: "Make the buyer an offer", amount: `${body.offer?.amount} ${cur}`.trim(), what: [`Offers the buyer ${body.offer?.amount} ${cur} (${UI.word("offer", body.offer?.type)}).`, "Money moves only if the buyer accepts."] },
+          REFUND: { title: "Accept the claim and refund", amount, what: ["Accepts the claim: PayPal refunds the full disputed amount to the buyer.", "The dispute closes. This can't be undone."] } }[decision];
+    if (!await UI.confirm({ ...plan, confirm: button.textContent, tone: decision === "FIGHT" ? "" : "money" })) return;
     return withBusy(button, "Sending…", async () => {
       if (file) body.evidence = { type: field("evidence_type"), file_name: file.name, content_base64: await toBase64(file) };
       const res = await fetch(`/api/disputes/${encodeURIComponent(button.dataset.approve)}/act`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (!res.ok) { await render(); throw new Error(`PayPal: ${await errorText(res)}`); }
+      UI.toast("Sent to PayPal");
       await render();
     });
   }
@@ -680,7 +966,7 @@
     if (!side.length) { root.innerHTML = ""; return; }
     const blocks = await Promise.all(side.map(async (o) => {
       const events = await getTimeline(o.order_id);
-      return `<div class="order"><div class="id">${esc(o.order_id)}</div><ol>${timelineRows(events)}</ol></div>`;
+      return `<div class="panel"><div class="mono small muted">${esc(o.order_id)}</div>${timelineRows(events, o.order_id)}</div>`;
     }));
     root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
   }
@@ -692,10 +978,10 @@
   $("inv-currency").innerHTML = CURRENCIES.map((c) => `<option>${c}</option>`).join("");
 
   const itemRow = (it = {}) => `<div class="item-row">
-      <input data-item="name" placeholder="What you're billing for" maxlength="200" value="${esc(it.name || "")}" />
-      <input data-item="quantity" type="number" min="0.00001" step="any" value="${esc(it.quantity ?? 1)}" />
-      <input data-item="unit_amount" type="number" min="0.01" step="0.01" placeholder="Amount" value="${esc(it.unit_amount ?? "")}" />
-      <button class="secondary" data-item-remove>✕</button></div>`;
+      <input data-item="name" placeholder="What you're billing for" maxlength="200" value="${esc(it.name || "")}" aria-label="Item" />
+      <input data-item="quantity" type="number" min="0.00001" step="any" value="${esc(it.quantity ?? 1)}" aria-label="Quantity" />
+      <input data-item="unit_amount" type="number" min="0.01" step="0.01" placeholder="Amount" value="${esc(it.unit_amount ?? "")}" aria-label="Amount" />
+      <button class="secondary" data-item-remove aria-label="Remove line">✕</button></div>`;
   function setItems(items) {
     $("inv-items").innerHTML = (items.length ? items : [{}]).map(itemRow).join("");
     $("inv-items").querySelectorAll("[data-item-remove]").forEach((b) => b.addEventListener("click", () => {
@@ -722,14 +1008,14 @@
     $("inv-due").value = d.due_date || "";
     $("inv-note").value = d.note || "";
     setItems(d.items || []);
-    return `Draft filled in by AI (${d.provider}). Check it, type the client's email, then Create draft.`;
+    return `Draft filled in by AI (${UI.sentence(d.provider)}). Check it, type the client's email, then Create draft.`;
   }));
 
   $("invoice-create").addEventListener("click", (ev) => {
     const body = { client_name: $("inv-client").value.trim(), email: $("inv-email").value.trim(),
                    currency: $("inv-currency").value, items: readItems().filter((i) => i.name),
                    due_date: $("inv-due").value || null, note: $("inv-note").value.trim() || null };
-    if (!body.client_name || !body.email || !body.items.length) { alert("Fill in the client, their email and at least one line."); return; }
+    if (!body.client_name || !body.email || !body.items.length) { UI.notice("Missing details", "Fill in the client, their email and at least one line."); return; }
     return withBusy(ev.currentTarget, "Creating…", async () => {
       const res = await fetch("/api/invoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`Not created: ${await errorText(res)}`);
@@ -739,11 +1025,14 @@
     });
   });
 
-  function sendInvoice(button) {
-    if (!confirm("Send this invoice to the client by PayPal email now?")) return;
+  async function sendInvoice(button) {
+    const r = invoiceRows.find((x) => x.invoice_id === button.dataset.invoiceSend) || {};
+    if (!await UI.confirm({ title: "Send this invoice", amount: UI.money(r.amount, r.currency), confirm: "Send invoice",
+      what: [`PayPal emails invoice ${r.number || ""} to ${r.client || "the client"} with a link to pay.`.replace("  ", " "), "You can't edit it after it's sent."] })) return;
     return withBusy(button, "Sending…", async () => {
       const res = await fetch(`/api/invoices/${encodeURIComponent(button.dataset.invoiceSend)}/send`, { method: "POST" });
       if (!res.ok) throw new Error(`Not sent: ${await errorText(res)}`);
+      UI.toast("Invoice sent");
       await renderInvoices();
     });
   }
@@ -757,23 +1046,26 @@
       const res = await fetch(`/api/invoices/${encodeURIComponent(id)}/reminder-draft`, { method: "POST" });
       if (!res.ok) throw new Error(await errorText(res));
       const d = await res.json();
-      cell.innerHTML = `<label>Subject <input data-rem="subject" maxlength="100" value="${esc(d.subject)}" /></label>
-        <label>Note <textarea data-rem="note" maxlength="600">${esc(d.note)}</textarea></label>
-        <div class="muted">${d.source === "ai" ? `Drafted by AI for ${esc(d.days_overdue)} days overdue.` : "Plain template (AI unavailable)."} Edit freely; nothing is sent until you click.</div>
-        <button data-rem-send="${esc(id)}">Send reminder via PayPal</button><div class="msg"></div>`;
+      cell.innerHTML = `<label class="field">Subject <input data-rem="subject" maxlength="100" value="${esc(d.subject)}" /></label>
+        <label class="field">Note <textarea data-rem="note" maxlength="600">${esc(d.note)}</textarea></label>
+        <div class="hint">${d.source === "ai" ? `Drafted by AI for ${esc(d.days_overdue)} days overdue.` : "Plain template (AI unavailable)."} Edit freely; nothing is sent until you click.</div>
+        <div class="actions"><button data-rem-send="${esc(id)}">Send reminder</button></div><div class="msg"></div>`;
       cell.querySelectorAll("input, textarea").forEach((el) => el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
       cell.querySelector("[data-rem-send]").addEventListener("click", (e) => sendReminder(e.currentTarget, cell));
     });
   }
 
-  function sendReminder(button, cell) {
+  async function sendReminder(button, cell) {
     const subject = cell.querySelector('[data-rem="subject"]').value.trim(), note = cell.querySelector('[data-rem="note"]').value.trim();
-    if (!confirm("Send this reminder to the client through PayPal?")) return;
+    const r = invoiceRows.find((x) => x.invoice_id === button.dataset.remSend) || {};
+    if (!await UI.confirm({ title: "Send this reminder", amount: UI.money(r.amount, r.currency), confirm: "Send reminder",
+      what: [`PayPal emails your reminder to ${r.client || "the client"}.`, `Subject: ${subject}`] })) return;
     return withBusy(button, "Sending…", async () => {
       const res = await fetch(`/api/invoices/${encodeURIComponent(button.dataset.remSend)}/remind`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject, note }),
       });
       if (!res.ok) throw new Error(`Not sent: ${await errorText(res)}`);
+      UI.toast("Reminder sent");
       await renderInvoices();
     });
   }
@@ -782,7 +1074,7 @@
 
   function savePurpose(button) {
     const code = button.closest(".export").querySelector("[data-purpose]").value;
-    if (!code) { alert("Choose a purpose code first."); return; }
+    if (!code) { UI.notice("Choose a purpose code", "Pick the code that fits this payment first."); return; }
     return withBusy(button, "Saving…", async () => {
       const res = await fetch(`/api/export/${encodeURIComponent(button.dataset.purposeSave)}/purpose`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }),
@@ -810,32 +1102,41 @@
 
   function policyForm(p) {
     const reasons = Object.entries(p.reasons).map(([k, v]) =>
-      `<label><input type="checkbox" data-pol-reason="${esc(k)}"${p.allowed_reasons.includes(k) ? " checked" : ""} /> ${esc(v)}</label>`).join("");
-    return `<div class="grid">
-        <label><input type="checkbox" data-pol="enabled"${p.enabled ? " checked" : ""} /> <strong>Auto-resolve on</strong></label>
-        <label>Currency <select data-pol="currency">${CURRENCIES.map((c) => `<option${c === p.currency ? " selected" : ""}>${c}</option>`).join("")}</select></label>
-        <label>Max refund per order <input type="number" min="0" step="0.01" data-pol="max_refund_per_order" value="${esc(p.max_refund_per_order)}" /></label>
-        <label>Daily total cap <input type="number" min="0" step="0.01" data-pol="daily_cap" value="${esc(p.daily_cap)}" />
-          <span class="muted">used today: ${esc(p.spent_today)}</span></label>
-        <label><input type="checkbox" data-pol="require_no_dispute"${p.require_no_dispute ? " checked" : ""} /> Only if the order has no dispute</label>
-        <label><input type="checkbox" data-pol="only_if_not_shipped"${p.only_if_not_shipped ? " checked" : ""} /> Only if not yet shipped</label>
-      </div><div><strong>Allowed reasons</strong></div><div class="grid">${reasons}</div>`;
+      `<label class="check"><input type="checkbox" data-pol-reason="${esc(k)}"${p.allowed_reasons.includes(k) ? " checked" : ""} /> ${esc(v)}</label>`).join("");
+    return `<label class="check switch"><input type="checkbox" data-pol="enabled"${p.enabled ? " checked" : ""} /> <strong>Refund matching requests automatically</strong></label>
+      <fieldset><legend>Limits</legend><div class="grid">
+        <label class="field">Currency <select data-pol="currency">${CURRENCIES.map((c) => `<option${c === p.currency ? " selected" : ""}>${c}</option>`).join("")}</select></label>
+        <label class="field">Most per order <input type="number" min="0" step="0.01" inputmode="decimal" data-pol="max_refund_per_order" value="${esc(p.max_refund_per_order)}" /></label>
+        <label class="field">Most per day, in total <input type="number" min="0" step="0.01" inputmode="decimal" data-pol="daily_cap" value="${esc(p.daily_cap)}" />
+          <span class="hint">Used today: <span class="num">${esc(p.spent_today)}</span></span></label>
+      </div></fieldset>
+      <fieldset><legend>Only when</legend>
+        <label class="check"><input type="checkbox" data-pol="require_no_dispute"${p.require_no_dispute ? " checked" : ""} /> The order has no dispute</label>
+        <label class="check"><input type="checkbox" data-pol="only_if_not_shipped"${p.only_if_not_shipped ? " checked" : ""} /> The order hasn't shipped yet</label>
+      </fieldset>
+      <fieldset><legend>For these reasons</legend><div class="grid">${reasons}</div></fieldset>`;
   }
   async function loadPolicy() {
     const res = await fetch("/api/policy");
     if (!res.ok) return;
     const p = await res.json();
     $("policy-form").innerHTML = policyForm(p);
-    $("policy-state").textContent = p.enabled ? `on · up to ${p.max_refund_per_order} ${p.currency} per order, ${p.daily_cap} per day` : "off";
+    $("policy-state").textContent = p.enabled ? `On, up to ${p.max_refund_per_order} ${p.currency} per order` : "Off";
+    $("policy-state").className = p.enabled ? "pill settled" : "pill";
   }
-  $("policy-save").addEventListener("click", (ev) => {
+  $("policy-save").addEventListener("click", async (ev) => {
+    const button = ev.currentTarget;
     const form = $("policy-form"), val = (k) => form.querySelector(`[data-pol="${k}"]`);
     const body = { enabled: val("enabled").checked, currency: val("currency").value,
                    max_refund_per_order: val("max_refund_per_order").value || "0", daily_cap: val("daily_cap").value || "0",
                    require_no_dispute: val("require_no_dispute").checked, only_if_not_shipped: val("only_if_not_shipped").checked,
                    allowed_reasons: [...form.querySelectorAll("[data-pol-reason]:checked")].map((c) => c.dataset.polReason) };
-    if (body.enabled && !confirm(`Refund matching requests automatically, up to ${body.max_refund_per_order} ${body.currency} per order and ${body.daily_cap} per day, without asking you?`)) return;
-    return withBusy(ev.currentTarget, "Saving…", async () => {
+    if (body.enabled && !await UI.confirm({ title: "Turn on automatic refunds", tone: "money", confirm: "Turn on auto-resolve",
+      amount: `${body.max_refund_per_order} ${body.currency} per order`,
+      what: [`Clearline refunds matching buyer requests right away, without asking you.`,
+             `At most ${body.max_refund_per_order} ${body.currency} per order and ${body.daily_cap} ${body.currency} a day in total.`,
+             "Anything outside these rules still comes to you."] })) return;
+    return withBusy(button, "Saving…", async () => {
       const res = await fetch("/api/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`Not saved: ${await errorText(res)}`);
       await loadPolicy();
@@ -851,26 +1152,37 @@
 
   document.getElementById("sync").addEventListener("click", async (ev) => {
     const button = ev.currentTarget, msg = document.getElementById("sync-msg");
-    button.disabled = true; msg.textContent = "Syncing…"; busy++;
+    button.disabled = true; msg.textContent = "Checking PayPal for disputes…"; busy++;
     try {
       const res = await fetch("/api/disputes/sync", { method: "POST" });
       const c = await res.json();
       msg.textContent = res.ok
-        ? `${c.listed} on PayPal · ${c.new} new · ${c.changed} changed · ${c.unchanged} unchanged${c.failed ? ` · ${c.failed} failed` : ""}`
+        ? `${c.listed} on PayPal: ${c.new} new, ${c.changed} changed, ${c.unchanged} unchanged${c.failed ? `, ${c.failed} failed` : ""}.`
         : `Sync failed: ${JSON.stringify(c.detail || c)}`; // textContent: no HTML parsing
       await render();
     } catch (err) { msg.textContent = `Sync failed: ${err.message}`; }
     finally { busy--; button.disabled = false; }
   });
 
+  // Nav: highlight the section in view.
+  const navLinks = [...document.querySelectorAll('.shell-nav a[href^="#"]')];
+  if (typeof IntersectionObserver === "function") {
+    const io = new IntersectionObserver((entries) => entries.forEach((en) => {
+      if (!en.isIntersecting) return;
+      navLinks.forEach((a) => (a.getAttribute("href") === `#${en.target.id}` ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+    }), { rootMargin: "-30% 0px -60% 0px" });
+    document.querySelectorAll("main > .section").forEach((s) => io.observe(s));
+  }
+
   // Refresh every 10s so new disputes appear, but never while the seller is typing, has
   // edited an AI draft, has a half-typed tracking number, or is waiting on a button.
   function typing() {
     const active = document.activeElement;
-    if (active && active.closest("#orders, .invoices") && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return true;
-    if (document.querySelector("#orders [data-dirty], .invoices [data-dirty]")) return true;
+    if (active && active.closest("#order-list, .invoices") && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return true;
+    if (document.querySelector("#order-list [data-dirty], .invoices [data-dirty]")) return true;
     if (document.querySelector(".reminder-row:not([hidden])")) return true; // a reminder is being drafted
-    return busy > 0 || [...document.querySelectorAll("#orders form input")].some((i) => i.value);
+    if (document.querySelector("dialog[open]")) return true; // a confirm dialog is open
+    return busy > 0 || [...document.querySelectorAll("#order-list form input")].some((i) => i.value);
   }
 
   fetch("/api/config").then((r) => r.json()).then((c) => { ENV = c.env; }).catch(() => {}).finally(render);

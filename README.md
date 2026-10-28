@@ -477,3 +477,6 @@ didn't fit on the timeline (the buyer isn't told which). Invoice payments are ne
 | `app/agents.py` | MCP server (`/mcp`): buyer and merchant tools, call log, Origin/Bearer guard |
 | `app/policy.py` | Auto-resolve policy rules for refunds without a seller click |
 | `app/static/agents.html` | `/agents`: MCP URL, tools and the last 20 agent calls |
+| `app/static/ui.css` | Design system: colour tokens (light and dark), type scale, components and "the clear line" (each order's history as one line coloured by money state) |
+| `app/static/ui.js` | Plain words for PayPal codes, the clear line, toasts, the in-app confirm used by every money action, copy and the theme toggle |
+| `app/static/fonts/` | Instrument Sans, self-hosted (SIL Open Font License, `OFL.txt`) |

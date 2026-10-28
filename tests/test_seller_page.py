@@ -117,10 +117,146 @@ def test_invoice_timeline_rows_have_plain_labels():
         ("invoice_action_failed", {"action": "send", "error": "PayPal said no"}),
     ]]
     [out] = render({"env": "sandbox", "events": rows})
-    labels = re.findall(r"<li>([^<]+?) <span", out["timeline"])
+    labels = re.findall(r'<div class="cl-title">([^<]+)</div>', out["timeline"])
     assert labels == ["Invoice status: Sent", "Invoice sent", "Reminder sent",
                       "Invoice status: Paid", "Paid", "Invoice action failed"]
-    assert "invoice_" not in out["timeline"].split("<span")[0]
+    assert "invoice_" not in visible_text(out["timeline"])
+
+
+# ---- Plain words only, and money actions behind the in-app confirm -----------------------
+
+# A PayPal code: SNAKE_CASE, or one of the single-word codes we store.
+RAW_CODE = re.compile(r"\b[A-Z]{2,}(?:_[A-Z]+)+\b|\b(?:INQUIRY|CHARGEBACK|RESOLVED|COMPLETED|PENDING|"
+                      r"FIGHT|REFUND|OFFER|DRAFT|SENT|PAID|FEDEX|OTHER)\b")
+
+
+def visible_text(html):
+    """What a reader sees: tags and attributes removed. PayPal's raw error (collapsed under
+    "details" for support) is the one place codes are allowed, so it's dropped too."""
+    html = re.sub(r'<details class="tech">.*?</details>', " ", html, flags=re.S)
+    return htmllib.unescape(re.sub(r"<[^>]+>", " ", html))
+
+
+def every_kind_of_event():
+    """One timeline with every event kind and code the seller page can show."""
+    def ev(kind, **payload):
+        return {"kind": kind, "created_at": 1 + len(rows), "payload": {"dispute_id": "PP-R-WDJ-1", **payload}}
+    rows = []
+    for kind, payload in [
+        ("order_created", {"amount": "120.00", "currency": "USD", "status": "CREATED"}),
+        ("payment_captured", {"status": "COMPLETED", "payer_country": "US"}),
+        ("webhook_payment_capture_pending", {"status": "PENDING", "pending_reason": "PENDING_REVIEW",
+                                             "amount": {"value": "120.00", "currency_code": "USD"}}),
+        ("webhook_payment_capture_completed", {"status": "COMPLETED", "amount": {"value": "120.00", "currency_code": "USD"}}),
+        ("webhook_other", {"event_type": "CHECKOUT.ORDER.APPROVED"}),
+        ("tracking_added", {"carrier": "FEDEX", "tracking_number": "999"}),
+        ("buyer_request", {"request_id": "R1", "type": "not_arrived", "via": "agent"}),
+        ("seller_reply", {"request_id": "R1", "message": "On its way", "auto": True}),
+        ("refund_sent", {"amount": "40.00", "currency": "USD", "mode": "partial", "status": "PENDING",
+                         "trigger": "auto-policy", "rule": "Item not received up to 50.00 USD"}),
+        ("auto_policy_skipped", {"request_id": "R1", "reason": "Over the per-order maximum"}),
+        ("ai_recommendation", RECOMMENDATION["payload"]),
+        ("ai_failed", {"error": "timeout"}),
+        ("ai_provider_switched", {"from": "gemini", "to": "groq", "reason": "rate limited"}),
+        ("dispute_action_sent", {"action": "FIGHT", "endpoint": "provide-evidence", "run_id": "1"}),
+        ("dispute_action_skipped", {"action": "FIGHT", "endpoint": "send-message", "run_id": "1",
+                                    "reason": "dispute is waiting for the buyer"}),
+        ("dispute_action_failed", {"action": "OFFER", "endpoint": "make-offer", "run_id": "2",
+                                   "error": "PayPal rejected this step", "paypal_error": MULTI_DETAIL_ERROR}),
+        ("invoice_status", {"status": "MARKED_AS_PAID", "number": "0042"}),
+        ("invoice_action_failed", {"action": "send", "error": "PayPal said no"}),
+    ]:
+        rows.append(ev(kind, **payload))
+    return rows
+
+
+def test_no_raw_paypal_code_reaches_the_seller_page():
+    base = every_kind_of_event()
+    scenarios = []
+    for stage in ("INQUIRY", "CHARGEBACK"):
+        for status, allowed in [("WAITING_FOR_SELLER_RESPONSE", ["FIGHT", "REFUND", "OFFER"]),
+                                ("WAITING_FOR_BUYER_RESPONSE", []), ("UNDER_REVIEW", []),
+                                ("UNDER_REVIEW", ["REFUND"]), ("RESOLVED", [])]:
+            for decision in ("FIGHT", "REFUND", "OFFER"):
+                d = dispute("dispute_updated", status, "2026-10-27T05:00:00Z", allowed, 90)
+                d["payload"].update(dispute_life_cycle_stage=stage, seller_response_due_date="2026-11-15T16:58:07Z",
+                                    reason="MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED")
+                rec = json.loads(json.dumps(RECOMMENDATION))
+                rec["created_at"] = 91
+                rec["payload"]["recommendation"].update(
+                    decision=decision, offer={"type": "REFUND", "amount": "40.00"} if decision == "OFFER" else None)
+                scenarios.append({"env": "sandbox", "events": [*base, dispute("dispute_created", "OPEN", "", [], 2), d, rec]})
+    scenarios[0]["buyer"] = {"link": "/o/tok", "refundable": "80.00", "currency": "USD",
+                             "refunds": [{"amount": "40.00", "currency": "USD", "status": "PENDING", "at": 5}],
+                             "requests": [{"id": "R1", "type": "refund", "reason": "Item not received", "amount": "40.00",
+                                           "message": "Hi", "at": 4, "via": "agent", "replies": [],
+                                           "auto_refund": {"amount": "40.00", "currency": "USD", "rule": "Item not received"}}]}
+    scenarios[0]["exportData"] = {"suggestion": {"code": "P0802", "reason": "Design work"}, "purpose_code": None,
+                                  "purpose_codes": {"P0802": "Software consultancy"}, "disclaimer": "Guidance only.",
+                                  "payment": {"amount": "120.00", "currency": "USD", "country": "US", "description": "Kit"},
+                                  "fira_downloaded": False, "sources": [{"label": "RBI", "url": "https://rbi.org.in"}]}
+    for page in render(*scenarios):
+        for part in ("card", "timeline", "buyer", "export"):
+            text = visible_text(page[part])
+            assert not RAW_CODE.search(text), (part, RAW_CODE.findall(text), text)
+    assert "Your turn to respond" in visible_text(render(scenarios[0])[0]["card"])
+
+
+def money_actions(answer):
+    out = subprocess.run([NODE, str(ROOT / "tests/js/confirm_harness.js"), str(ROOT / "app/static/seller.html")],
+                         input=json.dumps({"answer": answer}), capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=True)
+    return {a["action"]: a for a in json.loads(out.stdout)}
+
+
+def test_money_actions_use_the_in_app_confirm():
+    script = (ROOT / "app/static/seller.html").read_text(encoding="utf-8")
+    assert not re.search(r"(?<![\w.])(confirm|prompt|alert)\(", script)  # no browser dialogs at all
+
+    cancelled = money_actions(False)
+    assert len(cancelled) == 9
+    for name, a in cancelled.items():  # Cancel: one dialog, nothing sent
+        assert len(a["confirms"]) == 1 and a["fetches"] == [] and a["native"] == [], name
+
+    confirmed = money_actions("25.00")  # what the dialog returns after a partial amount is typed
+    for name, a in confirmed.items():  # OK: exactly one write, after the dialog
+        assert len(a["confirms"]) == 1 and len(a["fetches"]) == 1 and a["native"] == [], name
+    assert confirmed["refund partial"]["fetches"] == [
+        'POST /api/orders/O1/refund {"mode":"partial","amount":"25.00","request_id":"R1"}']
+    full = confirmed["refund full"]["confirms"][0]
+    assert full["amount"] == "120.00 USD" and full["confirm"] == "Refund 120.00 USD"
+    partial = confirmed["refund partial"]["confirms"][0]
+    assert partial["input"]["max"] == "120.00" and partial["input"]["verb"] == "Refund"
+    assert confirmed["dispute refund"]["confirms"][0]["confirm"] == "Refund 120.00 USD"
+    assert any("can't be undone" in w for w in confirmed["dispute refund"]["confirms"][0]["what"])
+
+
+def test_the_line_changes_colour_at_the_event_that_changed_the_state():
+    events = [
+        {"kind": "order_created", "created_at": 1, "payload": {"amount": "120.00", "currency": "USD"}},
+        {"kind": "payment_captured", "created_at": 2, "payload": {"status": "COMPLETED"}},
+        {"kind": "tracking_added", "created_at": 3, "payload": {"carrier": "DHL", "tracking_number": "1"}},
+        {"kind": "buyer_request", "created_at": 4, "payload": {"request_id": "R1", "type": "not_arrived"}},
+        {"kind": "seller_reply", "created_at": 5, "payload": {"request_id": "R1", "message": "On its way"}},
+        dispute("dispute_created", "WAITING_FOR_SELLER_RESPONSE", "2026-10-27T04:00:00Z", ["FIGHT"], 6),
+        dispute("dispute_resolved", "RESOLVED", "2026-10-28T04:00:00Z", [], 7),
+    ]
+    [out] = render({"env": "sandbox", "events": events})
+    segs = re.findall(r'<li class="cl-stop[^"]*"[^>]*data-seg="(\w+)"', out["timeline"])
+    # grey before payment, teal once paid, amber while the buyer waits, crimson from the claim, teal when it closes
+    assert segs == ["none", "settled", "settled", "held", "settled", "disputed", "settled"]
+
+
+def test_self_hosted_font_and_no_google_fonts(tmp_path):
+    client, _ = make_client(tmp_path, login=False)
+    for name in ("instrument-sans-latin", "instrument-sans-latin-ext"):
+        res = client.get(f"/static/fonts/{name}.woff2")  # public: the checkout and buyer pages use it
+        assert res.status_code == 200 and res.headers["content-type"] == "font/woff2" and res.content[:4] == b"wOF2"
+    seller, _ = make_client(tmp_path)  # logged in: anything not listed is a 404, not a redirect
+    assert seller.get("/static/fonts/OFL.txt").status_code == 404  # only the listed files are served
+    assert seller.get("/static/seller.html").status_code == 404
+    for page in (ROOT / "app/static").glob("*.html"):
+        assert "fonts.googleapis" not in page.read_text(encoding="utf-8") and "gstatic" not in page.read_text(encoding="utf-8")
 
 
 def test_pages_are_served_with_no_cache(tmp_path):

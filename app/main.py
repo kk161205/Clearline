@@ -171,11 +171,12 @@ PAYPAL_TEXT_LIMIT = 2000  # maxLength of message/note fields in the Disputes sch
 
 LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Clearline · Seller</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;color:#14213d;background:#f6f7f9;margin:0}
-main{max-width:520px;margin:64px auto;padding:0 16px}code{background:#e3e6ec;padding:1px 6px;border-radius:6px}</style>
-</head><body><main><h1>Seller login isn't set up</h1>
+<link rel="stylesheet" href="/static/ui.css"><script src="/static/ui.js"></script>
+<style>main{max-width:520px;margin:64px auto;padding:0 16px}h1{margin:20px 0 12px}</style>
+</head><body><main><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span>
+<div class="panel" style="margin-top:20px"><h1>Seller login isn't set up</h1>
 <p>Set <code>SELLER_PASSWORD</code> in <code>.env</code> (and <code>APP_SECRET</code>), then restart
-the app. Until then the seller pages and APIs stay locked.</p></main></body></html>"""
+the app. Until then the seller pages and APIs stay locked.</p></div></main></body></html>"""
 
 
 STATE_CHANGED_ISSUE = "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"
@@ -430,6 +431,19 @@ def create_app(settings: Settings | None = None,
     @app.get("/seller", include_in_schema=False)
     async def seller_page():
         return FileResponse(STATIC / "seller.html", headers={"Cache-Control": "no-cache"})
+
+    # The shared design system (Day 7) and its self-hosted font. Only these files are served.
+    static_files = {"ui.css": None, "ui.js": None,
+                    "fonts/instrument-sans-latin.woff2": "font/woff2",
+                    "fonts/instrument-sans-latin-ext.woff2": "font/woff2"}
+
+    @app.get("/static/{name:path}", include_in_schema=False)
+    async def static_file(name: str):
+        if name not in static_files:
+            raise HTTPException(404, "Not Found")
+        cache = "public, max-age=604800" if name.startswith("fonts/") else "no-cache"
+        return FileResponse(STATIC / name, media_type=static_files[name],
+                            headers={"Cache-Control": cache})
 
     @app.get("/api/config")
     async def config():

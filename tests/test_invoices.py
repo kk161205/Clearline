@@ -313,7 +313,7 @@ def test_paid_invoice_gets_a_buyer_link_with_masked_number(tmp_path):
     assert page["item"] == "Logo design" and page["amount"] == "1200.00" and page["shipping"] is None
     assert "not_arrived" not in page["request_types"]
     assert "billing@acme.example" not in json.dumps(page) and "INV-2026-000123" not in json.dumps(page)
-    assert "invoice …000123 (Logo design)" in page["summary"]["text"]
+    assert page["summary"]["text"] == "Your payment is complete. Nothing else is needed from you."
 
 
 # ---- India export checklist ------------------------------------------------------------------

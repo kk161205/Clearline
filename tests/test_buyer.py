@@ -1,6 +1,7 @@
 """Buyer clarity page, buyer requests, seller replies, refunds and the counter (no network)."""
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -89,7 +90,9 @@ def test_buyer_page_shows_facts_but_no_pii(tmp_path):
         ("120.00", "USD", "PayPal", "US")
     assert page["shipping"]["carrier"] == "DHL" and page["shipping"]["tracking_number"] == "999999999999999"
     assert page["summary"]["source"] == "template"  # no AI key: the template, instantly
-    assert "shipped with DHL" in page["summary"]["text"] and "deliver" not in page["summary"]["text"].lower()
+    # One short line that doesn't repeat the page's headline, seller, item or amount.
+    assert page["summary"]["text"] == "It's on its way with DHL. Follow it with the tracking number below."
+    assert "deliver" not in page["summary"]["text"].lower()
 
 
 @respx.mock
@@ -153,8 +156,14 @@ def test_summary_guardrail_and_template():
     assert summary_problems("Your order shipped with DHL on 27 Oct 2026 (tracking 999).", facts) == []
     assert summary_problems("Expected delivery: 2 Nov 2026.", facts)
     assert summary_problems("Write to help@seller.example", facts)
-    assert template_summary(facts) == ("You paid 120.00 USD to S for Kit with PayPal on 27 Oct 2026."
-                                       " Your order shipped with DHL on 27 Oct 2026 (tracking number 999).")
+    assert summary_problems("You paid S 120.00 USD for Kit with PayPal on 27 Oct 2026, and your order "
+                            "shipped with DHL the same day; it should arrive soon, see tracking 999.", facts)
+    assert template_summary(facts) == "It's on its way with DHL. Follow it with the tracking number below."
+    assert template_summary({**facts, "shipped": False}) == "The seller adds tracking here as soon as it ships."
+    assert template_summary({**facts, "refunded": "40.00"}) == "A refund of 40.00 USD was sent to you."
+    assert template_summary({**facts, "refunded": "120.00"}).startswith("Refunds go back to the way you paid")
+    for text in (template_summary(facts), template_summary({**facts, "shipped": False})):
+        assert "120.00" not in text and "Kit" not in text and "S " not in text  # nothing the headline says
 
 
 @respx.mock
@@ -369,3 +378,17 @@ def test_buyer_page_not_shipped_and_no_requests():
     [page] = render_buyer({"data": data, "open": "not_arrived"})
     assert "Not shipped yet" in page and 'data-source="ai"' in page
     assert "Your messages" not in page and "Refund of" not in page
+    assert "Delivery not confirmed yet" not in page
+
+
+@needs_node
+def test_buyer_line_shows_next_step_without_a_date():
+    data = {"order_ref": "ABC123", "seller": "S", "item": "Kit", "amount": "10.00", "currency": "USD",
+            "paid_on": "27 Oct 2026", "paid_with": "PayPal", "country": None,
+            "shipping": {"shipped": True, "carrier": "FedEx", "tracking_number": "7789 2210", "shipped_on": "28 Oct 2026"},
+            "summary": {"text": "It's on its way.", "source": "template"}, "charge_explanation": "x",
+            "requests": [], "refunds": [], "request_types": {}, "refund_reasons": {}}
+    [page] = render_buyer({"data": data})
+    ahead = re.search(r'<li class="cl-stop ahead".*?</li>', page, re.S).group(0)
+    assert "Delivery not confirmed yet" in ahead and "Oct" not in ahead  # never an invented date
+    assert "Shipped with FedEx" in page and '<span class="num">7789 2210</span>' in page

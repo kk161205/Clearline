@@ -23,12 +23,14 @@ from .store import DISPUTE_KINDS, TimelineStore
 
 log = logging.getLogger("clearline.buyer")
 
-SUMMARY_PROMPT_VERSION = "buyer-summary-v1"
-SUMMARY_PROMPT = """You write one or two short, friendly sentences for a buyer who opened their
-PayPal order page. Use only the FACTS given (JSON). Say who they paid, for what, and the
-shipping status (carrier, tracking number, ship date) or refund if present. Never invent or
-estimate a delivery date, and never promise anything. No links, emails or phone numbers.
-Write numbers and dates exactly as they appear in FACTS. Reply with JSON only."""
+SUMMARY_PROMPT_VERSION = "buyer-summary-v2"
+SUMMARY_PROMPT = """You write ONE short, friendly sentence (at most 20 words) for a buyer who opened
+their order page. The page already shows the seller, the item, the amount, the payment date and
+the shipping or refund headline, so don't repeat those. Say where things stand or what happens
+next (for example: follow the tracking number on the page, or a partial refund was sent). Use
+only the FACTS given (JSON). Never invent or estimate a delivery date, and never promise
+anything. No links, emails or phone numbers. Write numbers exactly as they appear in FACTS.
+Reply with JSON only."""
 SUMMARY_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["summary"],
     "properties": {"summary": {"type": "string"}},
@@ -40,6 +42,8 @@ REQUEST_TYPES = {"unrecognised": "I don't recognise this charge",
 # Labels for every stored request type; "message" only comes from buyer agents (Day 6), so
 # it isn't a button on the buyer page.
 REQUEST_LABELS = {**REQUEST_TYPES, "message": "Message to the seller"}
+# PayPal carrier codes as buyers know them (the summary and the page never show a raw code).
+CARRIER_NAMES = {"DHL": "DHL", "FEDEX": "FedEx", "UPS": "UPS", "USPS": "USPS"}
 REFUND_REASONS = {"not_received": "Item not received", "damaged": "Item arrived damaged",
                   "not_as_described": "Not as described", "changed_mind": "Changed my mind",
                   "other": "Other"}
@@ -47,7 +51,7 @@ REFUND_REASONS = {"not_received": "Item not received", "damaged": "Item arrived 
 
 class BuyerSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    summary: str = Field(min_length=10, max_length=400)
+    summary: str = Field(min_length=10, max_length=200)
 
 
 def buyer_token(secret: str, order_id: str) -> str:
@@ -116,7 +120,8 @@ def order_facts(events: list[dict], seller_name: str, item_names: dict[str, str]
         "shipped": bool(tracked),
     }
     if tracked:
-        facts.update(carrier=tracked["payload"].get("carrier"),
+        carrier = tracked["payload"].get("carrier")
+        facts.update(carrier=CARRIER_NAMES.get(carrier, carrier),
                      tracking_number=tracked["payload"].get("tracking_number"),
                      shipped_on=_day(tracked["created_at"]))
     if refunded:
@@ -137,22 +142,21 @@ def invoice_facts(paid: dict, seller_name: str) -> dict:
 
 
 def template_summary(facts: dict) -> str:
-    """Plain sentence used until the AI summary is ready, or if the AI fails."""
-    if facts.get("invoice_ref"):
-        return (f"You paid {facts.get('amount')} {facts.get('currency')} to {facts['seller']} "
-                f"for invoice …{facts['invoice_ref']} ({facts['item']}) with PayPal"
-                + (f" on {facts['paid_on']}." if facts.get("paid_on") else "."))
-    text = (f"You paid {facts.get('amount')} {facts.get('currency')} to {facts['seller']} for "
-            f"{facts['item']} with PayPal" + (f" on {facts['paid_on']}." if facts.get("paid_on") else "."))
-    if facts.get("shipped"):
-        text += (f" Your order shipped with {facts.get('carrier')}"
-                 + (f" on {facts['shipped_on']}" if facts.get("shipped_on") else "")
-                 + f" (tracking number {facts.get('tracking_number')}).")
-    else:
-        text += " It hasn't shipped yet; the seller adds tracking when it does."
+    """One short line used until the AI summary is ready, or if the AI fails. The page's
+    headline already says who, what, how much and where it is; this says what's next."""
+    try:
+        full_refund = Decimal(facts.get("refunded") or 0) >= Decimal(facts.get("amount") or 0) > 0
+    except InvalidOperation:
+        full_refund = False
+    if full_refund:
+        return "Refunds go back to the way you paid; your bank or card may take a few days to show it."
     if facts.get("refunded"):
-        text += f" A refund of {facts['refunded']} {facts.get('currency')} was sent."
-    return text
+        return f"A refund of {facts['refunded']} {facts.get('currency')} was sent to you."
+    if facts.get("invoice_ref"):
+        return "Your payment is complete. Nothing else is needed from you."
+    if facts.get("shipped"):
+        return f"It's on its way with {facts.get('carrier')}. Follow it with the tracking number below."
+    return "The seller adds tracking here as soon as it ships."
 
 
 def explain_charge(facts: dict) -> str:
@@ -167,7 +171,8 @@ def explain_charge(facts: dict) -> str:
 
 def state_key(facts: dict) -> str:
     """Changes whenever anything the summary depends on changes."""
-    return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()[:16]
+    # The prompt version is part of it, so a new prompt replaces summaries cached in the old style.
+    return hashlib.sha256(json.dumps([SUMMARY_PROMPT_VERSION, facts], sort_keys=True).encode()).hexdigest()[:16]
 
 
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -188,8 +193,8 @@ def summary_problems(text: str, facts: dict) -> list[str]:
         problems.append(f"numbers not in the facts: {invented}")
     if EMAIL_RE.search(text) or URL_RE.search(text):
         problems.append("no emails or links")
-    if len(text.split()) > 60:
-        problems.append("keep it under 60 words")
+    if len(text.split()) > 25:
+        problems.append("keep it to one short sentence (at most 20 words)")
     return problems
 
 

@@ -2,40 +2,52 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Clearline · Checkout</title>
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
   <style>
-    :root { --ink:#14213d; --muted:#5c6475; --line:#e3e6ec; --bg:#f6f7f9; --ok:#1a7f4b; --bad:#b42318; }
-    * { box-sizing: border-box; }
-    body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
-    main { max-width:480px; margin:48px auto; padding:0 16px; }
-    .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:24px; }
-    h1 { font-size:20px; margin:0 0 4px; }
-    .muted { color:var(--muted); font-size:14px; }
-    .price { font-size:28px; font-weight:600; margin:16px 0; }
-    #result { margin-top:16px; font-size:14px; min-height:1.5em; }
-    .ok { color:var(--ok); } .bad { color:var(--bad); }
-    .paid { border:1px solid #b7e1c8; background:#effaf3; color:var(--ok); border-radius:10px; padding:14px 16px; }
-    .paid p { margin:6px 0 10px; color:var(--ink); font-size:14px; }
-    .paid a { color:var(--ok); font-size:14px; }
-    .mono { font-family:ui-monospace, monospace; font-size:13px; }
+    body { font-size: 1rem; }
+    main { min-height: 100vh; display: grid; place-items: center; padding: 24px var(--gutter); }
+    .wrap { width: min(440px, 100%); }
+    .top { margin-bottom: 20px; }
+    .card { padding: 28px 24px; }
+    .note { font-size: var(--t-xs); color: var(--muted); margin: 0 0 16px; }
+    h1 { font-size: var(--t-xl); margin: 0; }
+    .from { color: var(--muted); margin-top: 4px; }
+    .price { font-size: var(--t-2xl); font-weight: 650; margin: 20px 0; }
+    #result { margin-top: 12px; min-height: 1.5em; font-size: var(--t-sm); }
+    #result:empty { min-height: 0; margin: 0; }
+    .paid { margin-top: 4px; }
+    .paid .cl { margin: 4px 0 16px; }
+    .paid p { margin: 0 0 12px; }
+    .paid .actions { margin-top: 0; }
+    footer { margin-top: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: var(--t-xs); }
   </style>
 </head>
 <body>
 <main>
-  <div class="card">
-    <p class="muted">Sandbox demo · sold by an India-based studio</p>
-    <h1 id="item-name">Loading…</h1>
-    <div class="price" id="item-price"></div>
-    <paypal-button hidden></paypal-button>
-    <div id="paid" class="paid" hidden>
-      <strong>Payment received ✓</strong>
-      <p>Order <span id="paid-order" class="mono"></span> is confirmed. The seller has been notified.</p>
-      <p><a id="paid-help" href="#">Questions about this order?</a> Keep this link: it shows
-        shipping updates and lets you message the seller.</p>
-      <a href="/">Buy another</a>
+  <div class="wrap">
+    <div class="top"><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span></div>
+    <div class="panel card">
+      <p class="note">PayPal Sandbox demo. Sold by an India-based design studio.</p>
+      <h1 id="item-name"><span class="skeleton" style="width:80%;height:1.2em"></span></h1>
+      <div class="from">Demo Design Studio</div>
+      <div class="price num" id="item-price"><span class="skeleton" style="width:40%;height:1em"></span></div>
+      <paypal-button hidden></paypal-button>
+      <div id="paid" class="paid" hidden>
+        <ol class="cl"><li class="cl-stop" data-tone="settled" data-seg="settled"><span class="cl-dot" aria-hidden="true"></span>
+          <div class="cl-body"><div class="cl-title">Payment received</div><div class="cl-detail">Order <span id="paid-order" class="num"></span> is confirmed. The seller has been told.</div></div></li>
+          <li class="cl-stop ahead"><span class="cl-dot" aria-hidden="true"></span>
+          <div class="cl-body"><div class="cl-title">Shipping comes next</div><div class="cl-detail">Your order page shows tracking as soon as it ships.</div></div></li></ol>
+        <p>Keep your order page link: it shows shipping updates and lets you message the seller.</p>
+        <div class="actions"><a id="paid-help" class="btn" href="#">Open your order page</a><a class="btn secondary" href="/">Buy another</a></div>
+      </div>
+      <div id="result" role="status"></div>
     </div>
-    <div id="result"></div>
+    <footer><span>Payments are handled by PayPal.</span>
+      <button class="ghost small" data-theme-toggle aria-pressed="false">Theme</button></footer>
   </div>
 </main>
 
@@ -81,7 +93,7 @@
     const config = await (await fetch("/api/config")).json();
     const item = config.catalogue[ITEM_ID];
     document.getElementById("item-name").textContent = item.description;
-    document.getElementById("item-price").textContent = `$${item.amount} ${item.currency}`;
+    document.getElementById("item-price").textContent = `${item.amount} ${item.currency}`;
     if (await restorePaidState()) return; // already paid: don't load the button
 
     const script = document.createElement("script");
@@ -96,16 +108,16 @@
       button.addEventListener("click", async () => {
         const session = sdk.createPayPalOneTimePaymentSession({
           onApprove: async (data) => {
-            show("Capturing payment…");
+            show("Confirming your payment…");
             const res = await fetch(`/api/orders/${data.orderId}/capture`, { method: "POST" });
             const body = await res.json();
             if (res.ok && body.status === "COMPLETED") {
               showPaid(data.orderId.slice(-6), body.buyerLink);
             } else {
-              show(`Capture problem: ${JSON.stringify(body)}`, "bad");
+              show(`The payment didn't complete. Details: ${JSON.stringify(body)}`, "bad");
             }
           },
-          onCancel: () => show("Payment cancelled."),
+          onCancel: () => show("Payment cancelled. You haven't been charged."),
           onError: (err) => show(`PayPal error: ${err?.message || err}`, "bad"),
         });
         try {
@@ -116,7 +128,7 @@
       });
       button.removeAttribute("hidden");
     };
-    script.onerror = () => show("Could not load the PayPal SDK.", "bad");
+    script.onerror = () => show("Could not load PayPal checkout. Please refresh the page.", "bad");
     document.head.appendChild(script);
   }
 

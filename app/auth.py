@@ -30,6 +30,7 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/login"),
     ("POST", r"/api/logout"),
     ("GET", r"/favicon\.ico"),
+    ("GET", r"/static/(?:ui\.(?:css|js)|fonts/instrument-sans-latin(?:-ext)?\.woff2)"),  # design system + font
     # MCP server for AI agents (Day 6). Not a seller session: buyer tools are scoped by the
     # order link, merchant tools need MERCHANT_API_KEY as a Bearer token (checked in agents.py).
     ("POST", r"/mcp"),

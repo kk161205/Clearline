@@ -31,7 +31,7 @@ def test_seller_routes_need_login(tmp_path, method, path):
 
 
 def test_public_routes_are_exactly_the_agreed_ones():
-    assert len(PUBLIC_ROUTES) == 16  # adding a public route should be a deliberate change
+    assert len(PUBLIC_ROUTES) == 17  # adding a public route should be a deliberate change
     for method, path in [("GET", "/"), ("GET", "/api/config"), ("POST", "/api/orders"),
                          ("POST", "/api/orders/X/capture"), ("GET", "/o/abc"), ("GET", "/api/o/abc"),
                          ("GET", "/api/o/abc/status"), ("POST", "/api/o/abc/requests"),

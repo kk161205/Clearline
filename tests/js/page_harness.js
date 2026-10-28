@@ -3,6 +3,7 @@
 // [{env, events, buyer?, exportData?}] -> [{sandbox, compact, approve, card, timeline, buyer, export}]
 // (card / timeline / buyer / export are HTML).
 const fs = require("fs");
+const path = require("path");
 
 const html = fs.readFileSync(process.argv[2], "utf8");
 const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
@@ -10,6 +11,8 @@ const stub = { addEventListener() {}, querySelector: () => null, querySelectorAl
 global.document = { getElementById: () => stub, querySelector: () => null, querySelectorAll: () => [] };
 global.fetch = () => new Promise(() => {}); // never resolves: the page doesn't render on its own
 global.setInterval = () => 0;
+// The shared design system first (the page uses UI.*), as <script src="/static/ui.js"> does.
+new Function(fs.readFileSync(path.join(path.dirname(process.argv[2]), "ui.js"), "utf8"))();
 
 global.location = { origin: "https://shop.example" };
 

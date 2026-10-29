@@ -86,6 +86,8 @@
   const STATE_LABEL = { settled: "Settled", held: "Waiting", disputed: "Disputed", unpaid: "Unpaid" };
   const STATE_TONE = { Settled: "settled", Waiting: "held", Disputed: "disputed", Unpaid: "none" };
   const FONT = "Instrument Sans, ui-sans-serif, system-ui, sans-serif";
+  // Money as everywhere else in Clearline: two decimals, no thousands separator ("1200.00").
+  const MONEY = { format: "0.00" };
 
   // ---- Data: the same PII-free rows as /api/dashboard, in the main currency -----------------
 
@@ -99,9 +101,13 @@
     { id: "status", name: "Status", format: "textFormat" },
     { id: "next", name: "Next action", format: "textFormat" },
     { id: "needs_you", name: "Needs you", format: "booleanFormat" },
-    { id: "amount", name: "Amount", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
-    { id: "refunded", name: "Refunded", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
-    { id: "net", name: "Net of refunds", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
+    { id: "deadline", name: "Deadline", format: "dateFormat", formatOptions: { format: "d mmm" } },
+    { id: "amount", name: "Amount value", format: "currencyFormat", formatOptions: MONEY },
+    // The same amount as text ("900.00 USD", as everywhere in Clearline): grids format summed
+    // numbers their own way ("900.0"), so the grid shows this one.
+    { id: "amount_label", name: "Amount", format: "textFormat" },
+    { id: "refunded", name: "Refunded", format: "currencyFormat", formatOptions: MONEY },
+    { id: "net", name: "Net of refunds", format: "currencyFormat", formatOptions: MONEY },
   ];
   // Disputes only, so dispute charts aren't swamped by orders that never had one.
   const DISPUTE_FIELDS = [
@@ -109,11 +115,11 @@
     { id: "stage", name: "Stage", format: "textFormat" },
     { id: "reason", name: "Reason", format: "textFormat" },
     { id: "outcome", name: "Outcome", format: "textFormat" },
-    { id: "amount", name: "Disputed amount", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
+    { id: "amount", name: "Disputed amount", format: "currencyFormat", formatOptions: MONEY },
   ];
   const DAILY_FIELDS = [
     { id: "day", name: "Day", format: "dateFormat", formatOptions: { format: "d mmm" } },
-    ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat", formatOptions: { format: "#,##0.00" } })),
+    ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat", formatOptions: MONEY })),
   ];
 
   // Pure: Studio sources from an /api/dashboard payload (the page harness tests this).
@@ -122,7 +128,8 @@
     const money = d.rows.filter((r) => r.currency === cur).map((r) => ({
       ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.date, item: r.item,
       country: r.country || "Unknown", state: STATE_LABEL[r.state], status: r.status, next: r.next,
-      needs_you: r.next !== "Nothing to do", amount: Number(r.amount), refunded: Number(r.refunded),
+      needs_you: Boolean(r.needs_you), deadline: r.deadline || null, amount: Number(r.amount), refunded: Number(r.refunded),
+      amount_label: `${r.amount} ${r.currency}`,
       net: Number(r.amount) - Number(r.refunded),
     }));
     const disputes = d.rows.filter((r) => r.dispute && r.currency === cur).map((r) => ({
@@ -153,8 +160,7 @@
         "per-day": { type: "column-chart-stacked",
                      dataMapping: { categoryKey: [f("daily.day")], valueKey: ["settled", "waiting", "disputed", "unpaid"].map((s) => f(`daily.${s}`, "sum")) },
                      format: title(`Per day, ${cur}`) },
-        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.next"), f("money.amount", "sum")] },
-                   sort: [{ field: f("money.amount", "sum"), direction: "desc" }],
+        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.next"), f("money.amount_label")] },
                    format: title("Orders and invoices") },
         "state-filter": { type: "list-filter", dataMapping: { value: [f("money.state")] }, format: title("Show") },
         "reasons": { type: "bar-chart-grouped", dataMapping: { categoryKey: [f("disputes.reason")], valueKey: [f("disputes.ref", "countd")] },
@@ -204,7 +210,7 @@
     const order = ["Disputed", "Waiting", "Unpaid", "Settled"];
     rows = rows.filter((r) => r.amount > 0).sort((a, b) => (order.indexOf(a.state) + 99) % 99 - (order.indexOf(b.state) + 99) % 99);
     const total = rows.reduce((s, r) => s + r.amount, 0) || 1;
-    const fmt = (n) => n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmt = (n) => n.toFixed(2);
     const color = (s) => `var(--${{ settled: "settled", held: "held", disputed: "disputed" }[STATE_TONE[s]] || "none"})`;
     return `<div class="ms-total">Net amount<strong class="num">${esc(fmt(total))}</strong></div>
       <div class="ms-line" role="img" aria-label="${esc(rows.map((r) => `${r.state} ${Math.round((r.amount / total) * 100)}%`).join(", "))}">
@@ -435,7 +441,7 @@
       report = layout.state || defaultState(data.charts.currency);
       $("studio").innerHTML = "";
       api = agStudio.createStudio($("studio"), {
-        data: { sources: toSources(data) }, widgets, mode: "view", theme: studioTheme(),
+        data: { sources: toSources(data), formats: agStudio.createFormats({ overrides: { currencyFormat: { formatOptions: MONEY }, decimalFormat: { formatOptions: MONEY } } }) }, widgets, mode: "view", theme: studioTheme(),
         initialState: desktop() ? report : stackForPhone(report),
         layout: { minWidth: desktop() ? 460 : 300 },
         onStateUpdated: (e) => queueSave(e.state),

@@ -229,3 +229,23 @@ def test_dashboard_page_renders_kpis_rows_and_side_panel(mixed):
     assert 'href="/seller#order-0PLAIN"' in plain
     late = next(h for h in out["drawers"] if "Invoice 0002" in h)
     assert 'href="/seller#invoices"' in late and "Invoice overdue 3 days" in late
+
+
+def test_needs_you_means_the_seller_has_something_to_do(mixed):
+    client, store = mixed
+    order(store, "ORDER00WAITBUYER")  # a dispute waiting on the buyer doesn't need the seller
+    dispute(store, "ORDER00WAITBUYER", "dispute_created", "WAITING_FOR_BUYER_RESPONSE", "INQUIRY", iso(-1))
+    rows = rows_by_ref(client.get("/api/dashboard").json())
+    due_in_5 = date.fromisoformat(iso(5)[:10]).isoformat()
+    expected = {
+        "…NQUIRY": (True, due_in_5),             # dispute, the seller's turn: respond-by date
+        "…0ASKED": (True, None),                 # a buyer is waiting for a reply
+        "…0CLAIM": (False, None),                # PayPal is reviewing
+        "…TBUYER": (False, None),                # waiting for the buyer
+        "…0PLAIN": (False, None),                # shipped, nothing to do
+        "…CLOSED": (True, None),                 # dispute closed, but it was never shipped: Add tracking
+        "Invoice 0002": (True, (date.today() - timedelta(days=3)).isoformat()),   # overdue
+        "Invoice 0003": (False, (date.today() + timedelta(days=4)).isoformat()),  # sent, not due yet
+        "Invoice 0001": (False, None),           # paid
+    }
+    assert {ref: (rows[ref]["needs_you"], rows[ref]["deadline"]) for ref in expected} == expected

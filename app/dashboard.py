@@ -109,25 +109,28 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
     else:
         state = "settled"
 
+    # needs_you: the seller has something to do. Waiting on the buyer or on PayPal doesn't count.
+    deadline, needs_you = None, True
     if open_dispute:
         p = dispute["payload"]
         due = _iso_day(p.get("seller_response_due_date"))
         status = p.get("status")
         if status == "WAITING_FOR_SELLER_RESPONSE":
+            deadline = due
             nxt = (f"Respond by {short_day(due, today)}" if due and due >= today
                    else "Response overdue" if due else "Respond to the dispute")
         elif status == "WAITING_FOR_BUYER_RESPONSE":
-            nxt = "Waiting for the buyer"
+            nxt, needs_you = "Waiting for the buyer", False
         else:
-            nxt = "PayPal is reviewing"
+            nxt, needs_you = "PayPal is reviewing", False
     elif asks:
         nxt = ASKS.get(asks[-1]["payload"].get("type"), "Buyer sent a request")
     elif pending:
-        nxt = "PayPal is holding the payment"
+        nxt, needs_you = "PayPal is holding the payment", False
     elif "tracking_added" not in kinds and refunded < captured:
         nxt = "Add tracking"
     else:
-        nxt = "Nothing to do"
+        nxt, needs_you = "Nothing to do", False
 
     item_id = created["payload"].get("item_id")
     dp = dispute["payload"] if dispute else {}
@@ -145,7 +148,7 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
                      "outcome": None if open_dispute else OUTCOMES.get(dp.get("outcome"), "Closed, outcome not recorded"),
                      "responded": any(e["kind"] == "dispute_action_sent" for e in events)}
                     if dispute else None),
-        "next": nxt,
+        "next": nxt, "needs_you": needs_you, "deadline": deadline.isoformat() if deadline else None,
         "auto_refunds": [_amount(e["payload"].get("amount")) for e in events
                          if e["kind"] == "refund_sent" and e["payload"].get("trigger") == TRIGGER],
         "history": safe_history(events),
@@ -181,6 +184,9 @@ def invoice_row(ref: str, events: list[dict], today: date) -> dict | None:
         "amount": _amount(s.get("amount")), "refunded": f"{refunded:.2f}", "currency": s.get("currency") or "",
         "state": state, "status": STATE_LABELS[state] if state != "unpaid" or not overdue else "Overdue",
         "dispute": None, "next": nxt, "overdue_days": overdue, "auto_refunds": [],
+        # An invoice needs the seller once it's overdue (a reminder); before that it's waiting.
+        "needs_you": bool(state == "unpaid" and overdue),
+        "deadline": due.isoformat() if state == "unpaid" and due else None,
         "history": safe_history(events),
     }
 

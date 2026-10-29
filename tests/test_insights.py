@@ -127,3 +127,11 @@ def test_insights_report_is_built_from_the_dashboard_data(mixed):  # noqa: F811
     ms = view["moneyState"]
     assert 'data-tone="settled"' in ms and 'data-tone="disputed"' in ms and "Waiting" not in ms
     assert "75%" in ms and "25%" in ms and "400.00" in ms
+
+
+def test_insights_money_uses_the_apps_two_decimal_format():
+    html = (ROOT / "app/static/insights.html").read_text(encoding="utf-8")
+    assert 'const MONEY = { format: "0.00" };' in html
+    assert "createFormats({ overrides: { currencyFormat: { formatOptions: MONEY }, decimalFormat: { formatOptions: MONEY } } })" in html
+    fields = re.findall(r'format: "currencyFormat"[^}]*}', html)
+    assert fields and all("formatOptions: MONEY" in f for f in fields)

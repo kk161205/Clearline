@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Day 8: AG Studio licence key for /insights. Optional: without it AG Studio shows its
     # watermark. Sent only to the logged-in seller's browser at runtime; never commit it.
     ag_studio_license_key: str | None = None
+    # Level for Clearline's own logs (uvicorn's are untouched). Lines carry counts, ids and
+    # statuses only, so they're safe to ship to a log service.
+    log_level: str = "INFO"
 
     @property
     def api_base(self) -> str:

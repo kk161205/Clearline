@@ -15,6 +15,7 @@ from collections.abc import Mapping
 import httpx
 
 from .config import Settings
+from .logsafe import safe
 
 log = logging.getLogger("clearline.paypal")
 
@@ -221,7 +222,7 @@ class PayPalClient:
             result = await self._request("POST", "/v1/notifications/verify-webhook-signature",
                                          json=body)
         except (PayPalError, httpx.HTTPError) as err:
-            log.warning("Webhook signature verification call failed: %s", err)
+            log.warning("Webhook signature verification call failed: %s", safe(err))
             return False
         return result.get("verification_status") == "SUCCESS"
 

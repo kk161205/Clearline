@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from .config import Settings
+from .logsafe import safe
 from .store import TimelineStore
 
 log = logging.getLogger("clearline.ai")
@@ -127,7 +128,7 @@ class AIClient:
                 return await self._tools_turn(provider, messages, tools, tool_choice)
             except AIError as err:
                 log.warning("Insights assistant: %s failed (%s)%s", PROVIDERS[provider]["label"],
-                            err.reason, ", trying Groq for this request" if provider == "gemini" else "")
+                            safe(err), ", trying Groq for this request" if provider == "gemini" else "")
                 last = err
         raise last or AIError("none", "no AI key configured", switch=False, config_error=True)
 
@@ -193,10 +194,10 @@ class AIClient:
     def _switch_to_groq(self, err: AIError) -> None:
         if err.config_error:
             log.error("AI configuration error on Gemini (%s); switching to Groq permanently. "
-                      "Fix the key, then POST /api/ai/reset.", err.reason)
+                      "Fix the key, then POST /api/ai/reset.", safe(err))
         else:
             log.warning("Gemini failed (%s); switching to Groq permanently until "
-                        "POST /api/ai/reset.", err.reason)
+                        "POST /api/ai/reset.", safe(err))
         self.store.set_ai_provider("groq", err.reason)
         self.store.add("other", "ai_provider_switched",
                        {"from": "gemini", "to": "groq", "reason": err.reason})

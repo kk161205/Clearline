@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai import AIClient, AIError
+from .logsafe import safe
 from .assistant import EMAIL_RE, URL_RE
 from .store import DISPUTE_KINDS, TimelineStore
 
@@ -240,10 +241,10 @@ class SummaryCache:
                     {"role": "assistant", "content": result.data.model_dump_json()},
                     {"role": "user", "content": "Fix these problems: " + "; ".join(problems)}]
             self.failed.add((order_id, key))
-            log.warning("Buyer summary for %s rejected by guardrails: %s", order_id, problems)
+            log.warning("Buyer summary for %s rejected by guardrails (%d problems)", order_id, len(problems))
         except AIError as err:
             self.failed.add((order_id, key))
-            log.warning("Buyer summary for %s failed (%s); showing the template", order_id, err)
+            log.warning("Buyer summary for %s failed (%s); showing the template", order_id, safe(err))
         except Exception:
             self.failed.add((order_id, key))
             log.exception("Buyer summary for %s crashed; showing the template", order_id)

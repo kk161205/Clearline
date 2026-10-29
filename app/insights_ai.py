@@ -31,6 +31,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,7 +52,15 @@ SYSTEM = """You are the Insights analyst in Clearline, a seller's payments works
 questions about the seller's orders, invoices, refunds and disputes from the report's data only:
 call view_schema, then execute_query. You may add widgets and configure the widget you are given.
 You cannot move money, reply to buyers, answer disputes or contact PayPal; those happen on the
-Orders page. Be brief and use plain words. The data has no personal details."""
+Orders page. Be brief and use plain words. The data has no personal details.
+Rules:
+- "Needs me", "needs my attention", "what should I do": only rows where Needs you is true.
+  Waiting for the buyer, PayPal is reviewing and settled items do not need the seller: never
+  list them as needing attention.
+- "This week", "today", "overdue": filter on Deadline (respond-by or due date) when a row has
+  one, otherwise on Date. Today is {today}. If nothing matches, say so plainly.
+- Money always has 2 decimals and the currency: "120.00 USD".
+- For each item, give its next action and its deadline when there is one."""
 
 HISTORY_QUESTIONS = 3        # keep the last three questions (and what followed each)
 MAX_TOOL_RESULT = 4000       # characters of one tool result sent to the model
@@ -261,7 +270,8 @@ def chat_messages(turn: InsightsTurn) -> list[dict]:
     Consecutive tool calls become one assistant message, as chat/completions expects; the
     provider-specific form (signatures for Gemini) is made by for_provider()."""
     guidance = clean(turn.instructions)[:MAX_STUDIO_GUIDANCE] if turn.instructions else ""
-    messages: list[dict] = [{"role": "system", "content": SYSTEM + (f"\n\nFor this turn: {guidance}" if guidance else "")}]
+    system = SYSTEM.replace("{today}", date.today().isoformat())
+    messages: list[dict] = [{"role": "system", "content": system + (f"\n\nFor this turn: {guidance}" if guidance else "")}]
     for item in recent_items(turn.items):
         kind, typ = item.get("kind"), item.get("type")
         if typ == "message" and kind == "input":
@@ -306,7 +316,7 @@ def for_provider(messages: list[dict], provider: str, cache: SignatureCache) -> 
         hit = cache.get(ids[0])
         if provider == "gemini":
             if hit and hit[0] == "gemini" and [c["id"] for c in hit[1].get("tool_calls") or []] == ids:
-                out.append(copy.deepcopy(hit[1]))
+                out.append({"role": "assistant", **copy.deepcopy(hit[1])})  # raw, every field kept
                 continue
             log.warning("Insights assistant: no thought signature cached for a Gemini tool call; "
                         "sending Google's skip value")
@@ -317,6 +327,34 @@ def for_provider(messages: list[dict], provider: str, cache: SignatureCache) -> 
             out.append({"role": "assistant", "content": m.get("content"),
                         "tool_calls": [standard_call(c) for c in m["tool_calls"]]})
     return out
+
+
+ALREADY_HAVE = ("\n[You already have this result: the same call ran earlier for this question. "
+                "Use it instead of calling again.]")
+
+
+def canonical_call(name: str, arguments: Any) -> str:
+    """A tool call's identity: its name and its arguments with keys sorted and spacing removed."""
+    try:
+        args = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        args = arguments
+    return f"{name}:{json.dumps(args or {}, sort_keys=True, separators=(',', ':'), default=str)}"
+
+
+def earlier_results(turn: InsightsTurn) -> dict[str, str]:
+    """The results of the tool calls already made for the latest question, by canonical call."""
+    items = turn.items
+    asked = [i for i, it in enumerate(items)
+             if it.get("type") == "message" and it.get("kind") == "input" and it.get("role") == "user"]
+    calls, results = {}, {}
+    for item in items[asked[-1] if asked else 0:]:
+        if item.get("type") == "function_call":
+            calls[str(item.get("callId"))] = canonical_call(str(item.get("name")), item.get("arguments"))
+        elif item.get("type") == "function_call_output" and str(item.get("callId")) in calls:
+            output = clean(item.get("output"), tool_output=True)
+            results[calls[str(item.get("callId"))]] = output[:MAX_TOOL_RESULT] + (TRUNCATED if len(output) > MAX_TOOL_RESULT else "")
+    return results
 
 
 def turns_used(turn: InsightsTurn) -> int:

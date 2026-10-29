@@ -174,8 +174,8 @@
     });
   }
 
-  // Next action's colour follows the row's money state.
-  const nextTone = (r) => (r.next === "Nothing to do" ? "none" : r.state === "disputed" ? "disputed" : "held");
+  // Next action is coloured only when it needs the seller, in the row's money-state colour.
+  const nextTone = (r) => (!r.needs_you ? "none" : r.state === "disputed" ? "disputed" : "held");
 
   function drawerHtml(r) {
     const link = r.kind === "order" ? `/seller#order-${encodeURIComponent(r.ref.replace(/^…/, ""))}` : "/seller#invoices";

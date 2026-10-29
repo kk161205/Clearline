@@ -3,22 +3,30 @@ always mocked with respx: no live AI calls."""
 
 import base64
 import json
+import logging
 import re
 import shutil
+from datetime import date
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
-from app.insights_ai import (ALLOWED_TOOLS, MAX_TURNS, SKIP_SIGNATURE, TOO_MANY_TURNS, TRUNCATED,
-                             chat_tools, estimate_tokens, simplify_schema)
+from app.ai import AIError
+from app.assistant import strip_pii
+from app.insights_ai import (ALLOWED_TOOLS, ALREADY_HAVE, MAX_TURNS, SKIP_SIGNATURE, TOO_MANY_TURNS,
+                             TRUNCATED, canonical_call, chat_tools, clean, estimate_tokens,
+                             simplify_schema)
+from app.logsafe import safe
+from app.paypal import PayPalError
 from app.store import TimelineStore
 from tests.support import GEMINI, GROQ, make_client
 from tests.test_dashboard import mixed  # noqa: F401  (fixture)
 from tests.test_insights import insights_view
 
 NODE = shutil.which("node")
+ROOT = Path(__file__).parent.parent
 
 PII = ("jane.buyer@example.com", "+1 415 555 0100", "https://evil.example/x")
 
@@ -328,3 +336,148 @@ def test_short_rate_limit_is_retried_long_one_is_busy_503(tmp_path):
     busy = client.post("/api/insights/ai", json=question())
     assert busy.status_code == 503 and busy.json()["detail"] == "The assistant is busy, try again in a minute."
     assert groq.call_count == 3  # no retry for a long wait
+
+
+# ---- Answer quality: the guidance the model gets -------------------------------------------
+
+# The live case: six rows, three of them waiting for the buyer (they don't need the seller).
+SIX_ROWS = "\n".join([
+    "| Order | Next action | Needs you | Deadline | Amount |",
+    "| …AGYPCZ | Respond by 3 Nov | true | 2026-11-03 | 85.00 |",
+    "| …5K6YKJ | Buyer says it hasn't arrived | true |  | 120.00 |",
+    "| Invoice 0104 | Invoice overdue 7 days | true | 2026-10-22 | 650.00 |",
+    "| …R3EPVH | Waiting for the buyer | false |  | 60.00 |",
+    "| …ZY19KR | Waiting for the buyer | false |  | 120.00 |",
+    "| …DTGDUK | Waiting for the buyer | false |  | 60.00 |",
+])
+
+
+@respx.mock
+def test_needs_you_guidance_and_today_are_sent_with_the_question(tmp_path):
+    gemini = respx.post(GEMINI).mock(return_value=answer("Three items need you."))
+    client, _ = make_client(tmp_path)
+    turn = then_result({"tool_calls": [{"id": "q1", "name": "execute_query", "arguments": "{}"}]}, output=SIX_ROWS)
+    assert client.post("/api/insights/ai", json=turn).status_code == 200
+    body = sent(gemini)
+    system = body["messages"][0]["content"]
+    assert "only rows where Needs you is true" in system
+    assert "Waiting for the buyer, PayPal is reviewing and settled items do not need the seller" in system
+    assert "filter on Deadline (respond-by or due date)" in system and "If nothing matches, say so plainly" in system
+    assert '"120.00 USD"' in system and "its next action and its deadline" in system
+    assert f"Today is {date.today().isoformat()}." in system
+    tool = next(m for m in body["messages"] if m["role"] == "tool")
+    assert tool["content"] == SIX_ROWS  # the rows, dates and amounts reach the model intact
+
+
+# ---- Repeated tool calls within one question ---------------------------------------------
+
+def asked_once(args='{"query": {"variant": "projection", "kind": "apiQuery"}}', result="RESULT-A", rounds=1):
+    """A question whose execute_query already ran (`rounds` rounds of it), with its result."""
+    turn = question()
+    for i in range(rounds):
+        turn["items"] += [
+            {"kind": "output", "type": "function_call", "callId": f"q{i}", "name": "execute_query",
+             "arguments": args, "status": "completed"},
+            {"kind": "input", "type": "function_call_output", "callId": f"q{i}", "output": result}]
+    return turn
+
+
+@respx.mock
+def test_a_repeated_query_is_answered_from_the_earlier_result_not_run_again(tmp_path, caplog):
+    same_call_reordered = '{"query":{"kind":"apiQuery","variant":"projection"}}'  # same, keys in another order
+    gemini = respx.post(GEMINI).mock(side_effect=[answer(calls=[("execute_query", same_call_reordered)]),
+                                                  answer("Done, from the earlier result.")])
+    client, _ = make_client(tmp_path)
+    caplog.set_level("INFO")
+    out = client.post("/api/insights/ai", json=asked_once()).json()
+    assert out["text"] == "Done, from the earlier result." and out["tool_calls"] == []  # the browser runs nothing
+    assert gemini.call_count == 2
+    tool = [m for m in sent(gemini, 1)["messages"] if m["role"] == "tool"][-1]
+    assert tool["content"] == "RESULT-A" + ALREADY_HAVE
+    assert "1 repeated tool call(s) answered from earlier results" in caplog.text
+
+
+@respx.mock
+def test_a_new_query_still_goes_to_the_browser(tmp_path):
+    respx.post(GEMINI).mock(return_value=answer(calls=[("execute_query", '{"query":{"variant":"aggregation"}}')]))
+    client, _ = make_client(tmp_path)
+    out = client.post("/api/insights/ai", json=asked_once()).json()
+    assert [c["name"] for c in out["tool_calls"]] == ["execute_query"]
+
+
+@respx.mock
+def test_answering_a_repeat_counts_toward_the_turn_cap(tmp_path):
+    gemini = respx.post(GEMINI).mock(return_value=answer(calls=[("execute_query", '{"query": {"variant": "projection", "kind": "apiQuery"}}')]))
+    client, _ = make_client(tmp_path)
+    out = client.post("/api/insights/ai", json=asked_once(rounds=MAX_TURNS - 1)).json()
+    assert out["text"] == TOO_MANY_TURNS and gemini.call_count == 1  # the repeat used the last turn
+
+
+def test_canonical_calls_ignore_key_order_and_spacing():
+    assert canonical_call("q", '{"b": 1, "a": [1, 2]}') == canonical_call("q", '{"a":[1,2],"b":1}')
+    assert canonical_call("q", '{"a": 1}') != canonical_call("q", '{"a": 2}')
+    assert canonical_call("q", "{}") != canonical_call("r", "{}")
+
+
+# ---- Logs: counts, ids and statuses only -----------------------------------------------
+
+@respx.mock
+def test_ai_failures_are_logged_without_provider_text(tmp_path, caplog):
+    echo = "Invalid value at 'messages[1]': Which orders for jane.buyer@example.com"
+    respx.post(GEMINI).mock(return_value=httpx.Response(400, json={"error": {"message": echo}}))
+    respx.post(GROQ).mock(return_value=httpx.Response(400, json={"error": {"message": echo}}))
+    client, _ = make_client(tmp_path)
+    caplog.set_level("INFO")
+    assert client.post("/api/insights/ai", json=question("Orders for jane.buyer@example.com?")).status_code == 502
+    assert "Insights assistant: Gemini failed (gemini: HTTP 400)" in caplog.text
+    assert "jane" not in caplog.text and "Which orders" not in caplog.text and "Invalid value" not in caplog.text
+
+
+def test_safe_error_text_keeps_status_name_and_debug_id_only():
+    err = PayPalError(400, {"name": "INVALID_REQUEST", "debug_id": "f0e1", "message": "bad",
+                            "details": [{"field": "/primary_recipients/0/email", "value": "client@acme.example"}]})
+    assert safe(err) == "HTTP 400 INVALID_REQUEST debug_id f0e1"
+    assert safe(AIError("groq", "HTTP 400: Tool call validation failed: /query secret", switch=False)) == "groq: HTTP 400"
+    assert safe(AIError("gemini", "timeout", switch=False)) == "gemini: timeout"
+    assert safe(httpx.ConnectTimeout("to https://api.example/x?key=SECRET")) == "ConnectTimeout"
+
+
+def test_logging_is_configured_once_at_the_chosen_level(tmp_path):
+    uvicorn = logging.getLogger("uvicorn")
+    before = (uvicorn.level, list(uvicorn.handlers))
+    make_client(tmp_path, log_level="WARNING")
+    logger = logging.getLogger("clearline")
+    assert logger.level == logging.WARNING
+    make_client(tmp_path, log_level="INFO")
+    assert logger.level == logging.INFO
+    assert sum(h.get_name() == "clearline-console" for h in logger.handlers) == 1  # no duplicates
+    assert logger.propagate  # pytest's caplog (and any root handler) still sees the records
+    assert (uvicorn.level, list(uvicorn.handlers)) == before  # uvicorn's loggers are untouched
+
+
+def test_no_log_call_formats_a_raw_error_or_content():
+    """Every log call passes errors through safe() and logs counts, never problem lists."""
+    checked = 0
+    for path in (ROOT / "app").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for call in re.findall(r"log\.(?:info|warning|error)\((.*?)\)\n", text, re.S):
+            args = [a.strip() for a in call.split(",")]
+            assert not {"err", "err.reason", "problems", "messages", "body"} & set(args), f"{path.name}: {call}"
+            checked += 1
+    assert checked >= 15  # the scan really found the log calls
+
+
+# ---- strip_pii, on both AI paths -----------------------------------------------------------
+
+PII_TEXT = ("Write to jane.buyer@example.com or call +91 98765 43210, card 4111111111111111, "
+            "see https://evil.example/x on 2026-10-29")
+
+
+@pytest.mark.parametrize("path", ["dispute assistant", "insights"])
+def test_strip_pii_on_both_ai_paths(path):
+    out = strip_pii(PII_TEXT) if path == "dispute assistant" else clean(PII_TEXT)
+    for gone in ("jane.buyer@example.com", "98765 43210", "4111111111111111", "https://evil.example/x"):
+        assert gone not in out, (path, gone)
+    if path == "insights":
+        assert "2026-10-29" in out  # dates are data, kept on the Insights path
+    assert clean(PII_TEXT, tool_output=True).count("2026-10-29") == 1

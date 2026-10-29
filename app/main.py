@@ -27,9 +27,11 @@ from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
+from .logsafe import configure_logging, safe
 from .insights_ai import MAX_TURNS as INSIGHTS_MAX_TURNS
-from .insights_ai import (TOO_MANY_TURNS, InsightsTurn, SignatureCache, chat_messages,
-                          chat_tools, for_provider, turns_used)
+from .insights_ai import (ALREADY_HAVE, TOO_MANY_TURNS, InsightsTurn, SignatureCache,
+                          canonical_call, chat_messages, chat_tools, earlier_results,
+                          for_provider, turns_used)
 from .insights_ai import reply as insights_reply
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
@@ -347,6 +349,7 @@ def create_app(settings: Settings | None = None,
                http: httpx.AsyncClient | None = None,
                ai_http: httpx.AsyncClient | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings.log_level)
     paypal = PayPalClient(settings, http)
     store = TimelineStore(settings.database_path)
     ai = AIClient(settings, store, ai_http)
@@ -752,7 +755,7 @@ def create_app(settings: Settings | None = None,
             invoice = await paypal.get_invoice(invoice_id)
         except (PayPalError, httpx.HTTPError) as err:
             log.warning("Invoice %s webhook: re-fetch failed (%s); using the webhook copy",
-                        invoice_id, err)
+                        invoice_id, safe(err))
         record_invoice(invoice_summary(invoice), source="webhook", event_id=event.get("id"))
 
     def invoice_row(summary: dict) -> dict:
@@ -841,7 +844,7 @@ def create_app(settings: Settings | None = None,
         try:
             record_invoice(invoice_summary(await paypal.get_invoice(invoice_id)), source=action)
         except PayPalError as err:
-            log.warning("Invoice %s: re-fetch after %s failed: %s", invoice_id, action, err)
+            log.warning("Invoice %s: re-fetch after %s failed: %s", invoice_id, action, safe(err))
         return invoice_row(latest_invoice(invoice_id))
 
     @app.post("/api/invoices/{invoice_id}/send")
@@ -886,9 +889,9 @@ def create_app(settings: Settings | None = None,
                 messages = messages + [
                     {"role": "assistant", "content": result.data.model_dump_json()},
                     {"role": "user", "content": "Fix these problems: " + "; ".join(problems)}]
-            log.warning("Reminder draft for %s rejected by guardrails: %s", invoice_id, problems)
+            log.warning("Reminder draft for %s rejected by guardrails (%d problems)", invoice_id, len(problems))
         except AIError as err:
-            log.warning("Reminder draft for %s failed (%s); using the template", invoice_id, err)
+            log.warning("Reminder draft for %s failed (%s); using the template", invoice_id, safe(err))
         return template
 
     @app.post("/api/invoices/{invoice_id}/remind")
@@ -1238,7 +1241,7 @@ def create_app(settings: Settings | None = None,
                 store_dispute(snapshot_kind(current, fresh), fresh, dispute_id=dispute_id,
                               extra={"source": "action"})
         except (PayPalError, httpx.HTTPError) as err:
-            log.warning("Could not re-fetch dispute %s after action: %s", dispute_id, err)
+            log.warning("Could not re-fetch dispute %s after action: %s", dispute_id, safe(err))
 
         summary = step_summary(results)
         if failed:
@@ -1319,7 +1322,7 @@ def create_app(settings: Settings | None = None,
         try:
             invoices = await paypal.list_invoices()
         except Exception as err:  # e.g. Invoicing not enabled for the app
-            log.warning("Invoice sync failed: %s", err)
+            log.warning("Invoice sync failed: %s", safe(err))
             return {"error": err.readable if isinstance(err, PayPalError) else str(err)}
         changed = sum(record_invoice(invoice_summary(inv), source="sync") for inv in invoices)
         return {"listed": len(invoices), "changed": changed, "error": None}
@@ -1339,7 +1342,7 @@ def create_app(settings: Settings | None = None,
             try:
                 dispute = await paypal.get_dispute(dispute_id)
             except (PayPalError, httpx.HTTPError) as err:
-                log.warning("Sync: could not fetch dispute %s: %s", dispute_id, err)
+                log.warning("Sync: could not fetch dispute %s: %s", dispute_id, safe(err))
                 counts["failed"] += 1
                 continue
             if not is_new_state(known, dispute):
@@ -1478,24 +1481,39 @@ def create_app(settings: Settings | None = None,
         insights_ai_limit.hit(INSIGHTS_OWNER)
         if not ai.configured:
             raise HTTPException(503, "No AI key configured, so the Insights assistant is off.")
-        if turns_used(turn) >= INSIGHTS_MAX_TURNS:
-            return insights_reply(TOO_MANY_TURNS, [], None, None)
+        rounds = turns_used(turn)
         messages = chat_messages(turn)
+        known = earlier_results(turn)
 
         def prepare(provider: str):
             # Gemini gets its own raw tool-call messages back (thought signatures) and every
             # allowed tool; Groq gets standard fields and the reduced, trimmed tool set.
             return for_provider(messages, provider, signatures), chat_tools(turn.tools, provider)
 
-        try:
-            out = await ai.chat_tools(prepare, turn.tool_choice)
-        except AIError as err:
-            if err.busy:
-                raise HTTPException(503, "The assistant is busy, try again in a minute.")
-            raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
-        if out["tool_calls"]:
-            signatures.put(out["provider"], out["raw"])  # stays on the server, never sent to the browser
-        return insights_reply(out["text"], out["tool_calls"], out["provider"], out["model"])
+        while True:
+            if rounds >= INSIGHTS_MAX_TURNS:
+                return insights_reply(TOO_MANY_TURNS, [], None, None)
+            try:
+                out = await ai.chat_tools(prepare, turn.tool_choice)
+            except AIError as err:
+                if err.busy:
+                    raise HTTPException(503, "The assistant is busy, try again in a minute.")
+                raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
+            rounds += 1
+            if out["tool_calls"]:
+                signatures.put(out["provider"], out["raw"])  # stays on the server, never sent to the browser
+            repeats = [known.get(canonical_call(c["name"], c["arguments"])) for c in out["tool_calls"]]
+            if not out["tool_calls"] or None in repeats:
+                return insights_reply(out["text"], out["tool_calls"], out["provider"], out["model"])
+            # Every call repeats one already made for this question: answer it from the earlier
+            # result instead of running it again, and ask the model once more (a turn, too).
+            log.info("Insights assistant: %d repeated tool call(s) answered from earlier results", len(repeats))
+            messages.append({"role": "assistant", "content": out["text"] or None,
+                             "tool_calls": [{"id": c["id"], "type": "function",
+                                             "function": {"name": c["name"], "arguments": c["arguments"]}}
+                                            for c in out["tool_calls"]]})
+            messages.extend({"role": "tool", "tool_call_id": c["id"], "content": result + ALREADY_HAVE}
+                            for c, result in zip(out["tool_calls"], repeats))
 
     # ---- Money in flight dashboard (Day 7): read-only, no PII ------------------
 

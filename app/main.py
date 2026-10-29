@@ -16,7 +16,7 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.routing import Route
 
 from .agents import BUYER_TOOLS, AgentDeps, McpGuard, build_mcp
@@ -27,6 +27,10 @@ from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
+from .insights_ai import MAX_TURNS as INSIGHTS_MAX_TURNS
+from .insights_ai import (REDUCED_TOOLS, TOO_MANY_TURNS, InsightsTurn, chat_messages, chat_tools,
+                          turns_used)
+from .insights_ai import reply as insights_reply
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
                         PURPOSE_PROMPT_VERSION, PURPOSE_SCHEMA, REMINDER_PROMPT,
@@ -68,6 +72,7 @@ CATALOGUE = {
 # there is one seller, so every layout belongs to this constant.
 INSIGHTS_OWNER = "seller"
 MAX_LAYOUT_BYTES = 256 * 1024
+MAX_AI_TURN_BYTES = 1024 * 1024
 
 # Webhook event type -> timeline event kind.
 DISPUTE_EVENTS = {
@@ -1452,6 +1457,43 @@ def create_app(settings: Settings | None = None,
     async def reset_insights_layout():
         store.delete_insights_layout(INSIGHTS_OWNER)
         return {"ok": True}
+
+    insights_ai_limit = RateLimiter(60, 3600)  # model turns per seller per hour
+
+    @app.post("/api/insights/ai")
+    async def insights_ai(request: Request):
+        """One model turn for AG Studio's analyst agent (see app/insights_ai.py). Read and
+        arrange the report only; Gemini first, Groq for this request only, never the sticky
+        switch."""
+        raw = await request.body()
+        if len(raw) > MAX_AI_TURN_BYTES:
+            raise HTTPException(422, "This conversation is too long. Start a new one.")
+        try:
+            turn = InsightsTurn.model_validate_json(raw)
+        except ValidationError:
+            raise HTTPException(422, "Not an Insights assistant turn.")
+        if insights_ai_limit.blocked(INSIGHTS_OWNER):
+            raise HTTPException(429, "That's a lot of questions this hour. Try again later.")
+        insights_ai_limit.hit(INSIGHTS_OWNER)
+        if not ai.configured:
+            raise HTTPException(503, "No AI key configured, so the Insights assistant is off.")
+        if turns_used(turn) >= INSIGHTS_MAX_TURNS:
+            return insights_reply(TOO_MANY_TURNS, [], None, None)
+        messages, tools = chat_messages(turn), chat_tools(turn.tools)
+        try:
+            out = await ai.chat_tools(messages, tools, turn.tool_choice)
+        except AIError as err:
+            reduced = [t for t in tools if t["function"]["name"] in REDUCED_TOOLS]
+            if "HTTP 400" not in err.reason or len(reduced) == len(tools):
+                raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
+            # Both providers rejected the request (e.g. a widget tool's schema): answer with the
+            # reduced tool set, schema and query only.
+            log.warning("Insights assistant: falling back to schema + query tools (%s)", err.reason)
+            try:
+                out = await ai.chat_tools(messages, reduced, turn.tool_choice)
+            except AIError:
+                raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
+        return insights_reply(out["text"], out["tool_calls"], out["provider"], out["model"])
 
     # ---- Money in flight dashboard (Day 7): read-only, no PII ------------------
 

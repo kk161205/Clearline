@@ -23,6 +23,12 @@
     .phone-note { font-size: var(--t-xs); color: var(--muted); }
     .studio { height: max(640px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; background: var(--surface); }
     @media (max-width: 1023.98px) { .studio { height: max(560px, calc(100vh - 160px)); } }
+    /* Clearline's base button and input styles must not leak into AG Studio's own controls (in
+       dark mode its panel headers inherited our on-accent text colour). :where() keeps this at
+       element specificity, so Studio's class rules still win; it only undoes ours. */
+    :where(.studio) :is(button, input, select, textarea) { all: revert; }
+    :where(.studio) button:hover, :where(.studio) button:disabled { filter: none; opacity: revert; cursor: revert; }
+    :where(.studio) input[type="checkbox"] { all: revert; }
     .studio.failed { height: auto; border: 0; background: none; }
     .studio-failed { padding: 32px 16px; }
 
@@ -243,6 +249,99 @@
     });
   }
 
+  // ---- The assistant: AG Studio's agent framework on Clearline's own AI ---------------------
+  // One analyst agent. Each model turn goes to POST /api/insights/ai, which PII-strips it and
+  // asks Gemini (or Groq for that request only). The tools only read the report and arrange
+  // widgets: nothing here can move money, answer a dispute or contact PayPal.
+
+  const PROMPT_STARTERS = [
+    { label: "Needs me this week", prompt: "Which orders and invoices need me this week, and what is the next action for each?" },
+    { label: "Where money waits", prompt: "Where is most money waiting or disputed right now? Answer with amounts." },
+    { label: "Chart disputes", prompt: "Add a bar chart of disputes by reason." },
+  ];
+
+  // Pure: AG-UI events for one turn's reply (text first, then any tool calls).
+  function turnEvents(reply) {
+    const events = [];
+    if (reply.text) {
+      const messageId = `${reply.id}-text`;
+      events.push({ type: "TEXT_MESSAGE_START", messageId, role: "assistant" },
+                  { type: "TEXT_MESSAGE_CONTENT", messageId, delta: reply.text },
+                  { type: "TEXT_MESSAGE_END", messageId });
+    }
+    for (const c of reply.tool_calls || []) {
+      events.push({ type: "TOOL_CALL_START", toolCallId: c.id, toolCallName: c.name },
+                  { type: "TOOL_CALL_ARGS", toolCallId: c.id, delta: c.arguments || "{}" },
+                  { type: "TOOL_CALL_END", toolCallId: c.id });
+    }
+    return events;
+  }
+
+  // Pure: the consolidated AgLlmResponse for the same reply.
+  function turnResponse(reply) {
+    const output = [];
+    if (reply.text) output.push({ id: `${reply.id}-text`, kind: "output", type: "message", role: "assistant", status: "completed",
+                                  content: [{ type: "text", text: reply.text, annotations: [] }] });
+    for (const c of reply.tool_calls || []) output.push({ id: c.id, kind: "output", type: "function_call", callId: c.id,
+                                                          name: c.name, arguments: c.arguments || "{}", status: "completed" });
+    return { id: reply.id, createdAt: Date.now(), status: "completed", model: reply.model || undefined, output };
+  }
+
+  // Pure: the request body for one turn (only what the server needs).
+  function turnBody(request) {
+    return { instructions: request.instructions || null, items: request.input || [],
+             tools: (request.tools || []).map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+             tool_choice: typeof request.toolChoice === "string" ? request.toolChoice : null };
+  }
+
+  const insightsAdapter = {
+    executeTurn(request, options = {}) {
+      let resolve, reject;
+      const complete = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+      complete.catch(() => {}); // observed even if the stream is abandoned
+      async function* run() {
+        try {
+          const res = await fetch("/api/insights/ai", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                       body: JSON.stringify(turnBody(request)), signal: options.signal });
+          const reply = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(reply.detail || "The assistant couldn't answer just now.");
+          yield* turnEvents(reply);
+          resolve(turnResponse(reply));
+        } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); }
+      }
+      const it = run();
+      return { stream: { [Symbol.asyncIterator]: () => it }, complete };
+    },
+  };
+
+  // Pure: which widget configure_widget is bound to this round: the newest widget with no data
+  // yet (the one just added), otherwise the one the seller has selected.
+  function configureTarget(state) {
+    const page = (state.pages || []).find((p) => p.id === state.selectedPageId) || (state.pages || [])[0];
+    if (!page) return null;
+    const widgets = page.widgets || {};
+    const empty = Object.keys(widgets).filter((id) => !Object.values(widgets[id].dataMapping || {}).some((v) => (v || []).length));
+    const id = empty.length ? empty[empty.length - 1] : page.selection && page.selection.type === "widget" ? page.selection.id : null;
+    return id && widgets[id] ? { widgetId: id, widgetType: widgets[id].type } : null;
+  }
+
+  function analyst(api) {
+    return agStudio.createAiHarness(api, ({ tools: { studio } }) => ({
+      agents: [agStudio.directLlmRunner({
+        id: "analyst", description: "Answers questions about the seller's money and arranges the report.",
+        maxTurns: 6, adapter: insightsAdapter,
+        instructions: () => "Answer from the report's data. Amounts are in the report's currency. Keep answers short.",
+        tools: () => {
+          const target = configureTarget(api.getState());
+          return [studio.viewSchema(), studio.viewReport(), studio.viewPage(), studio.viewWidget(), studio.executeQuery(),
+                  studio.addWidget(), studio.positionWidget(), ...(target ? [studio.configureWidget(target)] : [])];
+        },
+      })],
+      primary: "analyst",
+      promptStarters: PROMPT_STARTERS,
+    }));
+  }
+
   // ---- Page ----------------------------------------------------------------------------------
 
   let api = null, saveTimer = 0, applying = false, currency = "USD";
@@ -294,6 +393,7 @@
         fetch("/api/dashboard").then((r) => r.json()),
       ]);
       if (licence.key) agStudio.AgStudioLicenseManager.setLicenseKey(licence.key); // no key: AG Studio shows its watermark
+      agStudio.AgStudioModuleRegistry.registerModules([agStudio.AgStudioAiModule]);
       const widgets = agStudio.createWidgets({
         additionalTypes: [{
           id: "money-state", label: "Money state", icon: { url: "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="10" width="9" height="4" rx="2" fill="#0E8C7E"/><rect x="12" y="10" width="5" height="4" rx="2" fill="#B7791F"/><rect x="18" y="10" width="4" height="4" rx="2" fill="#C2364A"/></svg>') },
@@ -315,6 +415,7 @@
         initialState: desktop() ? report : stackForPhone(report),
         layout: { minWidth: desktop() ? 720 : 300 },
         onStateUpdated: (e) => queueSave(e.state),
+        ai: ({ api: studioApi }) => analyst(studioApi),
       });
       currency = data.charts.currency;
       if (layout.updated_at) setSaved(`Your layout, saved ${UI.dateTime(layout.updated_at)}`);

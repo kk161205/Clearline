@@ -545,6 +545,19 @@ watermark and a console notice; a free 45-day trial key is at
 If jsDelivr can't be reached, `/insights` says so and links to `/dashboard`, which needs no
 third-party script.
 
+**The assistant.** In *Edit layout*, AG Studio's *AI Assistant* panel answers questions such as
+"Which orders need me this week?" and can add widgets. It runs on Clearline's own AI, not AG
+Grid's:
+- One analyst agent. Each model turn goes to `POST /api/insights/ai`, which forwards it to
+  Gemini, or Groq for that request only. It never touches the dispute assistant's sticky switch.
+- Tools: read the report, query the data, add, move and configure widgets. Nothing can refund,
+  reply, answer a dispute or contact PayPal.
+- Limits: at most 6 model turns per question and 60 turns an hour. Messages and query results
+  are PII-stripped first; the data has no personal details to begin with.
+- If both providers reject Studio's widget-tool schemas, the turn is retried with the schema and
+  query tools only.
+- Without a Gemini or Groq key the panel shows that the assistant is off.
+
 ## Deployment notes
 
 - Content-Security-Policy: `/insights` is the only page with a third-party script, so allow

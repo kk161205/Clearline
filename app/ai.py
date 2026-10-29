@@ -100,6 +100,53 @@ class AIClient:
         return await self._call_validated("groq", messages, schema_name, schema, model_cls,
                                           prompt_version)
 
+    async def chat_tools(self, messages: list[dict], tools: list[dict],
+                         tool_choice=None) -> dict:
+        """One tool-calling chat turn for the Insights assistant: {text, tool_calls, provider,
+        model}. Starts on Gemini every time and falls back to Groq for this request only. It
+        never reads or writes the sticky ai_state (that switch belongs to the dispute
+        assistant), so the next request starts on Gemini again. Raises the last AIError."""
+        last: AIError | None = None
+        for provider in ("gemini", "groq"):
+            if not getattr(self.settings, PROVIDERS[provider]["key"]):
+                continue
+            try:
+                return await self._post_tools(provider, messages, tools, tool_choice)
+            except AIError as err:
+                log.warning("Insights assistant: %s failed (%s)%s", PROVIDERS[provider]["label"],
+                            err.reason, ", trying Groq for this request" if provider == "gemini" else "")
+                last = err
+        raise last or AIError("none", "no AI key configured", switch=False, config_error=True)
+
+    async def _post_tools(self, provider: str, messages: list[dict], tools: list[dict],
+                          tool_choice) -> dict:
+        cfg = PROVIDERS[provider]
+        body = {"model": self.model_for(provider), "messages": messages}
+        if tools:
+            body["tools"] = tools
+            if tool_choice in ("auto", "none", "required"):
+                body["tool_choice"] = tool_choice
+        try:
+            resp = await self.http.post(f"{cfg['base_url']}/chat/completions", json=body,
+                                        headers={"Authorization": f"Bearer {getattr(self.settings, cfg['key'])}"},
+                                        timeout=self.settings.ai_timeout_seconds)
+        except httpx.TimeoutException:
+            raise AIError(provider, "timeout", switch=False)
+        except httpx.HTTPError as err:
+            raise AIError(provider, f"network error: {type(err).__name__}", switch=False)
+        if resp.status_code >= 400:
+            # Includes 400 (e.g. a tool schema this provider rejects): the next provider may cope.
+            raise AIError(provider, f"HTTP {resp.status_code}: {_error_message(resp)}", switch=False)
+        try:
+            message = resp.json()["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise AIError(provider, "unreadable reply", switch=False)
+        calls = [{"id": c.get("id") or f"call-{i}", "name": c["function"]["name"],
+                  "arguments": c["function"].get("arguments") or "{}"}
+                 for i, c in enumerate(message.get("tool_calls") or []) if c.get("function")]
+        return {"text": message.get("content") or "", "tool_calls": calls,
+                "provider": provider, "model": self.model_for(provider)}
+
     def _switch_to_groq(self, err: AIError) -> None:
         if err.config_error:
             log.error("AI configuration error on Gemini (%s); switching to Groq permanently. "

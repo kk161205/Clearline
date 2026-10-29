@@ -63,6 +63,12 @@ CATALOGUE = {
 }
 
 
+# Insights layouts are keyed per seller account.
+# TODO(accounts): key by the logged-in seller's account id once DB accounts land; until then
+# there is one seller, so every layout belongs to this constant.
+INSIGHTS_OWNER = "seller"
+MAX_LAYOUT_BYTES = 256 * 1024
+
 # Webhook event type -> timeline event kind.
 DISPUTE_EVENTS = {
     "CUSTOMER.DISPUTE.CREATED": "dispute_created",
@@ -1409,6 +1415,43 @@ def create_app(settings: Settings | None = None,
                 "sdk": f"mcp {package_version('mcp')}",
                 "merchant_enabled": bool(settings.merchant_api_key), "tools": tools,
                 "calls": store.agent_calls(20)}
+
+    # ---- Insights (Day 8): the seller's own AG Studio report over the same data ----
+
+    @app.get("/insights", include_in_schema=False)
+    async def insights_page():
+        return FileResponse(STATIC / "insights.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/insights/license")
+    async def insights_license():
+        """AG Studio's licence key for the seller's browser (AG Studio checks it client-side).
+        Never logged, never cached; {"key": null} means Studio shows its watermark."""
+        return JSONResponse({"key": settings.ag_studio_license_key or None},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/insights/layout")
+    async def get_insights_layout():
+        saved = store.insights_layout(INSIGHTS_OWNER)
+        return saved or {"state": None, "updated_at": None}
+
+    @app.put("/api/insights/layout")
+    async def put_insights_layout(request: Request):
+        """Save the seller's AG Studio report state: a JSON object of at most 256 KB."""
+        raw = await request.body()
+        if len(raw) > MAX_LAYOUT_BYTES:
+            raise HTTPException(422, "Layout is too large (at most 256 KB).")
+        try:
+            state = json.loads(raw)
+        except ValueError:
+            raise HTTPException(422, "Layout must be JSON.")
+        if not isinstance(state, dict):
+            raise HTTPException(422, "Layout must be a JSON object.")
+        return {"ok": True, "updated_at": store.set_insights_layout(INSIGHTS_OWNER, state)}
+
+    @app.delete("/api/insights/layout")
+    async def reset_insights_layout():
+        store.delete_insights_layout(INSIGHTS_OWNER)
+        return {"ok": True}
 
     # ---- Money in flight dashboard (Day 7): read-only, no PII ------------------
 

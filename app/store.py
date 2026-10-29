@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS insights_layouts (
+    user_key TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at REAL NOT NULL,
@@ -215,6 +220,28 @@ class TimelineStore:
                    WHERE kind = ? AND created_at >= ? ORDER BY id""", (kind, since)).fetchall()
         return [{"order_id": r["order_id"], "payload": json.loads(r["payload"]),
                  "created_at": r["created_at"]} for r in rows]
+
+    # ---- Insights layouts (Day 8): the seller's own AG Studio report ------------
+
+    def insights_layout(self, user_key: str) -> dict | None:
+        with closing(self._conn()) as conn:
+            row = conn.execute("SELECT state, updated_at FROM insights_layouts WHERE user_key = ?",
+                               (user_key,)).fetchone()
+        return {"state": json.loads(row["state"]), "updated_at": row["updated_at"]} if row else None
+
+    def set_insights_layout(self, user_key: str, state: dict) -> float:
+        now = time.time()
+        with closing(self._conn()) as conn, conn:
+            conn.execute(
+                """INSERT INTO insights_layouts (user_key, state, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(user_key) DO UPDATE SET state = excluded.state,
+                                                       updated_at = excluded.updated_at""",
+                (user_key, json.dumps(state), now))
+        return now
+
+    def delete_insights_layout(self, user_key: str) -> None:
+        with closing(self._conn()) as conn, conn:
+            conn.execute("DELETE FROM insights_layouts WHERE user_key = ?", (user_key,))
 
     def log_agent_call(self, role: str, tool: str, outcome: str, order_ref: str | None,
                        keep: int = 500) -> None:

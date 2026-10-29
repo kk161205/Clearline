@@ -517,6 +517,39 @@ the variable (or open a new terminal) to go back to your real data.
 3. Tick *Group by status*, search "overdue", and sort by amount.
 4. Switch the theme: the grid and charts follow it.
 
+## Insights (AG Studio)
+
+`/insights` (seller login) is the seller's own view of the money in flight, built with
+[AG Studio](https://www.ag-grid.com/studio/). It is read-only: replies, refunds and dispute
+answers stay on `/seller`.
+
+- **Data:** the same PII-free rows as `/api/dashboard`, as three sources: money items, daily
+  totals and disputes. The numbers match the dashboard.
+- **Default report:** KPI values, *Money state*, amounts per day, a state filter, an
+  orders-and-invoices grid and disputes by reason. Everything uses Clearline's tokens and
+  status colours, and follows the light/dark theme.
+- **Money state** is Clearline's own AG Studio widget: one line split into settled, waiting,
+  disputed and unpaid, with each amount and share. It's under *Clearline* in the widget list.
+- **Editing:** *Edit layout* (screens 1024px and wider) to move, resize and add widgets. Changes
+  save automatically to the `insights_layouts` table; *Reset to default* restores Clearline's
+  report. Phones are view-only and show the same report stacked.
+
+**Licence.** AG Studio is a commercial product of AG Grid Ltd under its own licence; it's loaded
+from jsDelivr, pinned to `ag-studio@3.0.0` with an integrity hash, and is not in this
+repository. The licence key is optional. Without it everything works, with AG Studio's
+watermark and a console notice; a free 45-day trial key is at
+<https://www.ag-grid.com/studio/license-pricing/?tab=trial>. To use one, set
+`AG_STUDIO_LICENSE_KEY` in `.env` and restart. Only the logged-in seller's browser receives it.
+**Never commit a licence key.**
+
+If jsDelivr can't be reached, `/insights` says so and links to `/dashboard`, which needs no
+third-party script.
+
+## Deployment notes
+
+- Content-Security-Policy: `/insights` is the only page with a third-party script, so allow
+  `script-src https://cdn.jsdelivr.net` on that route only.
+
 ## Layout
 
 | File | Purpose |
@@ -545,3 +578,4 @@ the variable (or open a new terminal) to go back to your real data.
 | `app/static/dashboard.html` | `/dashboard`: KPI tiles, AG Grid, AG Charts and the side panel |
 | `app/static/history.js` | The clear line for one order's events, shared by `/seller` and `/dashboard` |
 | `app/static/vendor/` | AG Grid Community 36.2.0 and AG Charts Community 14.2.0 (MIT), pinned |
+| `app/static/insights.html` | `/insights`: AG Studio report, the *Money state* widget and saved layouts |

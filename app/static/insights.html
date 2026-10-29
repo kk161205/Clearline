@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Clearline · Insights</title>
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
+  <!-- AG Studio 3.0.0 (commercial, AG Grid Ltd) from jsDelivr, pinned with Subresource Integrity.
+       This is the only third-party script in Clearline: a CSP for this page needs
+       script-src https://cdn.jsdelivr.net (see README, Deployment notes). -->
+  <script src="https://cdn.jsdelivr.net/npm/ag-studio@3.0.0/dist/umd/ag-studio.min.js"
+          integrity="sha384-7PJhP4EokYImcTjoBC8tU70g15uKpbbnOmciR0SmXBL5r5EBAqIVCo748JuYDB5n"
+          crossorigin="anonymous" onerror="window.studioLoadFailed = true"></script>
+  <style>
+    @media (min-width: 1024px) { .shell-main.wide { max-width: none; } }
+    .lead { color: var(--muted); margin: 6px 0 0; max-width: 70ch; }
+    .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 16px 0 12px; }
+    .bar .saved { font-size: var(--t-xs); color: var(--muted); margin-right: auto; }
+    .bar .desk { display: none; }
+    @media (min-width: 1024px) { .bar .desk { display: inline-flex; } .bar .phone-note { display: none; } }
+    .phone-note { font-size: var(--t-xs); color: var(--muted); }
+    .studio { height: max(640px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; background: var(--surface); }
+    @media (max-width: 1023.98px) { .studio { height: max(560px, calc(100vh - 160px)); } }
+    .studio.failed { height: auto; border: 0; background: none; }
+    .studio-failed { padding: 32px 16px; }
+
+    /* "Money state": Clearline's own widget inside AG Studio. One line split by money state,
+       in the status colours, with each state's amount and share. */
+    .ms { height: 100%; display: flex; flex-direction: column; gap: 14px; padding: 4px 6px; font-family: var(--font); color: var(--ink); }
+    .ms-total { font-size: var(--t-xs); color: var(--muted); }
+    .ms-total { line-height: 1.3; }
+    .ms-total strong { display: block; margin-top: 2px; color: var(--ink); font-size: var(--t-xl); font-weight: 650; line-height: 1.2; }
+    .ms-line { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--none-tint); gap: 2px; }
+    .ms-line span { display: block; height: 100%; min-width: 3px; }
+    .ms-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    .ms-list li { display: grid; grid-template-columns: 4px 1fr auto 3.5em; gap: 10px; align-items: center; font-size: var(--t-sm); }
+    .ms-list .cl-mark { height: 18px; }
+    .ms-list .amt { font-weight: 600; text-align: right; }
+    .ms-list .pct { color: var(--muted); text-align: right; font-size: var(--t-xs); }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <nav class="shell-nav" aria-label="Seller">
+    <div class="shell-side-brand"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a></div>
+    <ul>
+      <li><a href="/seller#today"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></svg>Today</a></li>
+      <li><a href="/dashboard"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16"/><path d="M7 16v-5M12 16V6M17 16v-8"/></svg>Dashboard</a></li>
+      <li><a href="/insights" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="7" height="9" rx="1.5"/><rect x="13" y="4" width="7" height="5" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/><rect x="4" y="15" width="7" height="5" rx="1.5"/></svg>Insights</a></li>
+      <li><a href="/seller#orders"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>Orders</a></li>
+      <li><a href="/seller#invoices"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5" stroke-linecap="round"/></svg>Invoices</a></li>
+      <li><a href="/agents"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9.5 13h.01M14.5 13h.01" stroke-linecap="round"/></svg>Agents</a></li>
+      <li><a href="/seller#settings"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</a></li>
+    </ul>
+  </nav>
+
+  <main class="shell-main wide">
+    <div class="shell-top"><a class="brand" href="/seller"><span class="brand-mark" aria-hidden="true"></span>Clearline</a>
+      <button class="ghost small" data-theme-toggle aria-pressed="false">Theme</button></div>
+
+    <section>
+      <h1>Insights</h1>
+      <p class="lead">Your own view of the money in flight: move, resize and add widgets, and Clearline keeps the layout.
+        Same numbers as the dashboard, no personal data. Read-only: replies, refunds and dispute answers stay on Orders.</p>
+      <div class="bar">
+        <span class="saved" id="saved" role="status"></span>
+        <span class="phone-note">Editing works on a larger screen.</span>
+        <button class="secondary small desk" id="mode" aria-pressed="false">Edit layout</button>
+        <button class="ghost small desk" id="reset">Reset to default</button>
+      </div>
+      <div class="studio" id="studio" aria-label="Insights report"><span class="skeleton row" style="height:100%"></span></div>
+    </section>
+  </main>
+</div>
+
+<script>
+  const esc = UI.esc;
+  const STATE_LABEL = { settled: "Settled", held: "Waiting", disputed: "Disputed", unpaid: "Unpaid" };
+  const STATE_TONE = { Settled: "settled", Waiting: "held", Disputed: "disputed", Unpaid: "none" };
+  const FONT = "Instrument Sans, ui-sans-serif, system-ui, sans-serif";
+
+  // ---- Data: the same PII-free rows as /api/dashboard, in the main currency -----------------
+
+  const MONEY_FIELDS = [
+    { id: "ref", name: "Order", format: "textFormat", cardinality: "high" },
+    { id: "kind", name: "Kind", format: "textFormat" },
+    { id: "date", name: "Date", format: "dateFormat", formatOptions: { format: "d mmm" } },
+    { id: "item", name: "Item", format: "textFormat" },
+    { id: "country", name: "Buyer country", format: "textFormat" },
+    { id: "state", name: "Money state", format: "textFormat" },
+    { id: "status", name: "Status", format: "textFormat" },
+    { id: "next", name: "Next action", format: "textFormat" },
+    { id: "needs_you", name: "Needs you", format: "booleanFormat" },
+    { id: "amount", name: "Amount", format: "currencyFormat" },
+    { id: "refunded", name: "Refunded", format: "currencyFormat" },
+    { id: "net", name: "Net of refunds", format: "currencyFormat" },
+  ];
+  // Disputes only, so dispute charts aren't swamped by orders that never had one.
+  const DISPUTE_FIELDS = [
+    { id: "ref", name: "Order", format: "textFormat", cardinality: "high" },
+    { id: "stage", name: "Stage", format: "textFormat" },
+    { id: "reason", name: "Reason", format: "textFormat" },
+    { id: "outcome", name: "Outcome", format: "textFormat" },
+    { id: "amount", name: "Disputed amount", format: "currencyFormat" },
+  ];
+  const DAILY_FIELDS = [
+    { id: "day", name: "Day", format: "dateFormat", formatOptions: { format: "d mmm" } },
+    ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat" })),
+  ];
+
+  // Pure: Studio sources from an /api/dashboard payload (the page harness tests this).
+  function toSources(d) {
+    const cur = d.charts.currency;
+    const money = d.rows.filter((r) => r.currency === cur).map((r) => ({
+      ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.date, item: r.item,
+      country: r.country || "Unknown", state: STATE_LABEL[r.state], status: r.status, next: r.next,
+      needs_you: r.next !== "Nothing to do", amount: Number(r.amount), refunded: Number(r.refunded),
+      net: Number(r.amount) - Number(r.refunded),
+    }));
+    const disputes = d.rows.filter((r) => r.dispute && r.currency === cur).map((r) => ({
+      ref: r.ref, stage: r.dispute.stage, reason: r.dispute.reason,
+      outcome: r.dispute.open ? "Open" : r.dispute.outcome, amount: Number(r.dispute.amount),
+    }));
+    const daily = d.charts.per_day.map((p) => ({ day: p.day, settled: p.settled, waiting: p.held, disputed: p.disputed, unpaid: p.unpaid }));
+    return [{ id: "money", data: money, fields: MONEY_FIELDS }, { id: "daily", data: daily, fields: DAILY_FIELDS },
+            { id: "disputes", data: disputes, fields: DISPUTE_FIELDS }];
+  }
+
+  // ---- The default report: what a seller sees before arranging their own ----------------------
+
+  const f = (id, aggregation) => (aggregation ? { id, aggregation } : { id });
+  const kpi = (id, aggregation, text) => ({ type: "value", dataMapping: { value: [f(id, aggregation)] }, format: { caption: { enabled: true, text } } });
+  const defaultState = (cur) => ({
+    pages: [{
+      id: "money",
+      widgets: {
+        "kpi-items": kpi("money.ref", "countd", "Orders and invoices"),
+        "kpi-amount": kpi("money.amount", "sum", `Total amount, ${cur}`),
+        "kpi-refunded": kpi("money.refunded", "sum", `Refunded, ${cur}`),
+        "kpi-net": kpi("money.net", "sum", `Net of refunds, ${cur}`),
+        "money-state": { type: "money-state", dataMapping: { state: [f("money.state")], value: [f("money.net", "sum")] },
+                         format: { title: { enabled: true, text: "Money state" } } },
+        "per-day": { type: "column-chart-stacked",
+                     dataMapping: { categoryKey: [f("daily.day")], valueKey: ["settled", "waiting", "disputed", "unpaid"].map((s) => f(`daily.${s}`, "sum")) },
+                     format: { title: { enabled: true, text: `Amounts per day, ${cur}` } } },
+        "state-filter": { type: "list-filter", dataMapping: { value: [f("money.state")] }, format: { title: { enabled: true, text: "Show" } } },
+        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.date"), f("money.state"), f("money.next"), f("money.amount", "sum")] },
+                   sort: [{ field: f("money.amount", "sum"), direction: "desc" }],
+                   format: { title: { enabled: true, text: "Orders and invoices" } } },
+        "reasons": { type: "bar-chart-grouped", dataMapping: { categoryKey: [f("disputes.reason")], valueKey: [f("disputes.ref", "countd")] },
+                     format: { title: { enabled: true, text: "Disputes by reason" } } },
+      },
+      widgetLayout: {
+        "kpi-items": { xTrack: 0, yTrack: 0, xSpan: 6, ySpan: 5 },
+        "kpi-amount": { xTrack: 6, yTrack: 0, xSpan: 6, ySpan: 5 },
+        "kpi-refunded": { xTrack: 12, yTrack: 0, xSpan: 6, ySpan: 5 },
+        "kpi-net": { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 5 },
+        "money-state": { xTrack: 0, yTrack: 5, xSpan: 9, ySpan: 14 },
+        "per-day": { xTrack: 9, yTrack: 5, xSpan: 15, ySpan: 14 },
+        "state-filter": { xTrack: 0, yTrack: 19, xSpan: 5, ySpan: 16 },
+        "items": { xTrack: 5, yTrack: 19, xSpan: 12, ySpan: 16 },
+        "reasons": { xTrack: 17, yTrack: 19, xSpan: 7, ySpan: 16 },
+      },
+    }],
+    selectedPageId: "money",
+    panels: { filters: { collapsed: true }, data: { collapsed: true } },
+  });
+
+  // ---- "Money state": our custom widget -------------------------------------------------------
+
+  class MoneyStateWidget {
+    init(p) { this.el = document.createElement("div"); this.el.className = "ms"; this.refresh(p); }
+    getGui() { return this.el; }
+    destroy() {}
+    async refresh(p) {
+      const cat = (p.dataMapping.state || [])[0], val = (p.dataMapping.value || [])[0];
+      if (!cat || !val) { p.widgetApi.setDisplayState("incompleteDataMapping"); return; }
+      p.widgetApi.setDisplayState("loading", { prominent: false });
+      try {
+        const res = await p.widgetApi.getData({ kind: "flat", fields: [cat, val] });
+        const rows = (res.results && res.results.rows) || [];
+        if (!rows.length) { p.widgetApi.setDisplayState("noData"); return; }
+        this.el.innerHTML = moneyStateHtml(rows.map((r) => ({ state: r[cat.key], amount: Number(r[val.key]) || 0 })));
+        p.widgetApi.setDisplayState("displayed");
+      } catch (err) {
+        if (err && err.name === "AbortError") return; // a newer refresh replaced this one
+        this.el.innerHTML = '<p class="muted small">Couldn\'t load this widget.</p>';
+        p.widgetApi.setDisplayState("displayed");
+      }
+    }
+  }
+
+  // Pure: one line split by state, then each state with its amount and share.
+  function moneyStateHtml(rows) {
+    const order = ["Disputed", "Waiting", "Unpaid", "Settled"];
+    rows = rows.filter((r) => r.amount > 0).sort((a, b) => (order.indexOf(a.state) + 99) % 99 - (order.indexOf(b.state) + 99) % 99);
+    const total = rows.reduce((s, r) => s + r.amount, 0) || 1;
+    const fmt = (n) => n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const color = (s) => `var(--${{ settled: "settled", held: "held", disputed: "disputed" }[STATE_TONE[s]] || "none"})`;
+    return `<div class="ms-total">Net amount<strong class="num">${esc(fmt(total))}</strong></div>
+      <div class="ms-line" role="img" aria-label="${esc(rows.map((r) => `${r.state} ${Math.round((r.amount / total) * 100)}%`).join(", "))}">
+        ${rows.map((r) => `<span style="flex:${r.amount};background:${color(r.state)}"></span>`).join("")}</div>
+      <ul class="ms-list">${rows.map((r) => `<li><span class="cl-mark" data-tone="${esc(STATE_TONE[r.state] || "none")}"></span>
+        <span>${esc(r.state)}</span><span class="amt num">${esc(fmt(r.amount))}</span>
+        <span class="pct num">${Math.round((r.amount / total) * 100)}%</span></li>`).join("")}</ul>`;
+  }
+
+  // Pure: the same report with every widget full width, one under another, for phones. Shown
+  // only, never saved (phones are view-only).
+  function stackForPhone(state) {
+    return { ...state, pages: state.pages.map((page) => {
+      const ids = Object.keys(page.widgetLayout || {}).sort((a, b) =>
+        page.widgetLayout[a].yTrack - page.widgetLayout[b].yTrack || page.widgetLayout[a].xTrack - page.widgetLayout[b].xTrack);
+      let y = 0;
+      const widgetLayout = {};
+      for (const id of ids) {
+        const ySpan = Math.max(page.widgetLayout[id].ySpan, 6);
+        widgetLayout[id] = { xTrack: 0, yTrack: y, xSpan: 24, ySpan };
+        y += ySpan;
+      }
+      return { ...page, widgetLayout };
+    }) };
+  }
+
+  // ---- Theme from our tokens (charts draw on canvas, so colours are resolved values) -----------
+
+  const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const isDark = () => document.documentElement.dataset.theme === "dark"
+    || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  function studioTheme() {
+    return agStudio.studioTheme.withParams({
+      fontFamily: FONT, chartFontFamily: FONT, browserColorScheme: isDark() ? "dark" : "light",
+      backgroundColor: token("--surface"), foregroundColor: token("--ink"), textColor: token("--ink"),
+      accentColor: token("--settled"), borderColor: token("--border"),
+      chartTextColor: token("--ink"), chartSubtleTextColor: token("--muted"), chartGridLineColor: token("--border"),
+      chartAxisLineColor: token("--border-strong"), chartTooltipBackgroundColor: token("--surface"), chartTooltipTextColor: token("--ink"),
+      // Series colours follow the status colours: settled, waiting, disputed, unpaid, then neutrals.
+      chartPaletteFills1Color: token("--settled"), chartPaletteFills2Color: token("--held"),
+      chartPaletteFills3Color: token("--disputed"), chartPaletteFills4Color: token("--none"),
+      chartPaletteFills5Color: token("--ink"), chartPaletteFills6Color: token("--muted"),
+    });
+  }
+
+  // ---- Page ----------------------------------------------------------------------------------
+
+  let api = null, saveTimer = 0, applying = false, currency = "USD";
+  let report = null; // the seller's real (desktop) layout; phones show a stacked copy of it
+  const desktop = () => window.innerWidth >= 1024;
+  const $ = (id) => document.getElementById(id);
+  const rawFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    const res = await rawFetch(...args);
+    if (res.status === 401) location.href = "/login";
+    return res;
+  };
+
+  function showFailure() {
+    $("studio").classList.add("failed");
+    $("studio").innerHTML = `<div class="empty studio-failed"><strong>Insights couldn't load</strong>
+      The main dashboard still works. <a href="/dashboard">Open the dashboard</a></div>`;
+    $("mode").hidden = true; $("reset").hidden = true; document.querySelector(".phone-note").hidden = true;
+  }
+
+  function setSaved(text) { $("saved").textContent = text; }
+
+  // Debounced save of every layout change; the server keeps it per seller.
+  function queueSave(state) {
+    if (applying || !desktop()) return; // phones only view a stacked copy: nothing to save
+    report = state;
+    clearTimeout(saveTimer);
+    setSaved("Saving…");
+    saveTimer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/insights/layout", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
+        setSaved(res.ok ? `Saved ${UI.dateTime(Date.now() / 1000)}` : "Couldn't save this layout");
+      } catch { setSaved("Couldn't save this layout"); }
+    }, 1200);
+  }
+
+  function setMode(edit) {
+    api.setProperty("mode", edit ? "edit" : "view");
+    $("mode").textContent = edit ? "Done editing" : "Edit layout";
+    $("mode").setAttribute("aria-pressed", String(edit));
+  }
+
+  async function start() {
+    if (window.studioLoadFailed || typeof agStudio === "undefined") { showFailure(); return; }
+    try {
+      const [licence, layout, data] = await Promise.all([
+        fetch("/api/insights/license").then((r) => r.json()),
+        fetch("/api/insights/layout").then((r) => r.json()),
+        fetch("/api/dashboard").then((r) => r.json()),
+      ]);
+      if (licence.key) agStudio.AgStudioLicenseManager.setLicenseKey(licence.key); // no key: AG Studio shows its watermark
+      const widgets = agStudio.createWidgets({
+        additionalTypes: [{
+          id: "money-state", label: "Money state", icon: { url: "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="10" width="9" height="4" rx="2" fill="#0E8C7E"/><rect x="12" y="10" width="5" height="4" rx="2" fill="#B7791F"/><rect x="18" y="10" width="4" height="4" rx="2" fill="#C2364A"/></svg>') },
+          dataMapping: {
+            state: { type: "field", supportedRoles: ["category"], requires: { cardinality: "one" }, required: true },
+            value: { type: "field", supportedRoles: ["numeric"], requires: { cardinality: "one" }, required: true },
+          },
+          form: (fp) => fp.createDefaults({ dataMappingItems: [{ key: "state", label: "Money state" }, { key: "value", label: "Amount" }] }),
+          comp: MoneyStateWidget,
+          defaultSize: { width: 420, height: 320 }, minSize: { width: 240, height: 200 },
+          ai: { description: "Clearline's money state: one line split into settled, waiting, disputed and unpaid amounts, in Clearline's status colours, with each state's amount and share." },
+        }],
+        menu: [{ label: "Clearline", widgetIds: ["money-state"] }],
+      });
+      report = layout.state || defaultState(data.charts.currency);
+      $("studio").innerHTML = "";
+      api = agStudio.createStudio($("studio"), {
+        data: { sources: toSources(data) }, widgets, mode: "view", theme: studioTheme(),
+        initialState: desktop() ? report : stackForPhone(report),
+        layout: { minWidth: desktop() ? 720 : 300 },
+        onStateUpdated: (e) => queueSave(e.state),
+      });
+      currency = data.charts.currency;
+      if (layout.updated_at) setSaved(`Your layout, saved ${UI.dateTime(layout.updated_at)}`);
+    } catch (err) { showFailure(); return; }
+
+    $("mode").addEventListener("click", () => setMode(api.getProperty("mode") !== "edit"));
+    $("reset").addEventListener("click", async () => {
+      if (!await UI.confirm({ title: "Reset Insights to the default layout?", confirm: "Reset layout",
+        what: ["Your arranged widgets are replaced by Clearline's default report.", "No money or orders are affected."] })) return;
+      await fetch("/api/insights/layout", { method: "DELETE" });
+      report = defaultState(currency);
+      applying = true; api.setState(desktop() ? report : stackForPhone(report)); applying = false;
+      setSaved("Default layout");
+    });
+    // Phones: view only, stacked. Crossing the breakpoint swaps between the two views.
+    let wasDesktop = desktop();
+    window.addEventListener("resize", () => {
+      if (desktop() === wasDesktop) return;
+      wasDesktop = desktop();
+      if (!wasDesktop) setMode(false);
+      applying = true; api.setState(wasDesktop ? report : stackForPhone(report)); applying = false;
+      api.setProperty("layout", { minWidth: wasDesktop ? 720 : 300 });
+    });
+    // Charts draw on canvas, so the theme is rebuilt from the tokens when it changes.
+    const retheme = () => api.setProperty("theme", studioTheme());
+    new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
+  }
+
+  if (typeof document !== "undefined" && document.readyState !== undefined) start();
+</script>
+</body>
+</html>

@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Day 6: Bearer key for the read-only merchant tools on the MCP server (/mcp). Empty =
     # merchant tools are disabled (buyer tools still work with the buyer's own order link).
     merchant_api_key: str | None = None
+    # Day 8: AG Studio licence key for /insights. Optional: without it AG Studio shows its
+    # watermark. Sent only to the logged-in seller's browser at runtime; never commit it.
+    ag_studio_license_key: str | None = None
 
     @property
     def api_base(self) -> str:

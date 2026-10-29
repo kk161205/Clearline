@@ -15,3 +15,4 @@ def no_real_ai_keys(monkeypatch):
     monkeypatch.setenv("SELLER_PASSWORD", "")
     monkeypatch.setenv("APP_SECRET", "")
     monkeypatch.setenv("MERCHANT_API_KEY", "")
+    monkeypatch.setenv("AG_STUDIO_LICENSE_KEY", "")

@@ -554,8 +554,13 @@ Grid's:
   reply, answer a dispute or contact PayPal.
 - Limits: at most 6 model turns per question and 60 turns an hour. Messages and query results
   are PII-stripped first; the data has no personal details to begin with.
-- If both providers reject Studio's widget-tool schemas, the turn is retried with the schema and
-  query tools only.
+- Gemini 3's thought signatures stay on the server (30-minute cache) and go back with the next
+  turn. After a restart the cache is empty, so Google's documented skip value is sent instead.
+- Groq's free tier allows 8,000 tokens a minute, so Groq gets only the schema and query tools,
+  pruned schemas, the last three questions and tool results capped at 4 KB (about 1,500 tokens
+  a turn). A rejected tool call is retried once with the error, a short rate limit is waited
+  out, and a long one shows "The assistant is busy, try again in a minute".
+- Each request logs its estimated size (counts only, never content).
 - Without a Gemini or Groq key the panel shows that the assistant is off.
 
 ## Deployment notes

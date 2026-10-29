@@ -8,8 +8,13 @@ Every reply is requested as strict JSON and then validated again with pydantic h
 provider's own schema enforcement is a convenience, not something we trust.
 """
 
+import asyncio
+import copy
+import json
 import logging
+import re
 import time
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -36,6 +41,9 @@ class AIError(Exception):
         self.reason = reason
         self.switch = switch
         self.config_error = config_error
+        self.busy = False            # rate-limited (HTTP 429)
+        self.retry_after: float | None = None
+        self.tool_validation = False  # the provider rejected the model's tool call
         super().__init__(f"{provider}: {reason}")
 
 
@@ -100,23 +108,49 @@ class AIClient:
         return await self._call_validated("groq", messages, schema_name, schema, model_cls,
                                           prompt_version)
 
-    async def chat_tools(self, messages: list[dict], tools: list[dict],
-                         tool_choice=None) -> dict:
-        """One tool-calling chat turn for the Insights assistant: {text, tool_calls, provider,
-        model}. Starts on Gemini every time and falls back to Groq for this request only. It
-        never reads or writes the sticky ai_state (that switch belongs to the dispute
-        assistant), so the next request starts on Gemini again. Raises the last AIError."""
+    async def chat_tools(self, prepare, tool_choice=None) -> dict:
+        """One tool-calling chat turn for the Insights assistant.
+
+        prepare(provider) -> (messages, tools) builds each provider's own request (Gemini gets
+        its thought signatures back and every tool; Groq gets the reduced, trimmed request).
+        Returns {text, tool_calls, raw, provider, model}, where raw is the assistant message
+        exactly as the provider sent it. Starts on Gemini every time and falls back to Groq for
+        this request only; never reads or writes the sticky ai_state (that switch belongs to
+        the dispute assistant), so the next request starts on Gemini again. Raises the last
+        AIError (busy=True when the last provider was rate-limited)."""
         last: AIError | None = None
         for provider in ("gemini", "groq"):
             if not getattr(self.settings, PROVIDERS[provider]["key"]):
                 continue
+            messages, tools = prepare(provider)
             try:
-                return await self._post_tools(provider, messages, tools, tool_choice)
+                return await self._tools_turn(provider, messages, tools, tool_choice)
             except AIError as err:
                 log.warning("Insights assistant: %s failed (%s)%s", PROVIDERS[provider]["label"],
                             err.reason, ", trying Groq for this request" if provider == "gemini" else "")
                 last = err
         raise last or AIError("none", "no AI key configured", switch=False, config_error=True)
+
+    async def _tools_turn(self, provider: str, messages: list[dict], tools: list[dict],
+                          tool_choice) -> dict:
+        """One provider, with at most one retry: after a short rate-limit wait (under 5 s), or
+        after a rejected tool call (the model gets the validation error to correct itself)."""
+        retried = False
+        while True:
+            try:
+                return await self._post_tools(provider, messages, tools, tool_choice)
+            except AIError as err:
+                if retried:
+                    raise
+                if err.retry_after is not None and err.retry_after < 5:
+                    await asyncio.sleep(err.retry_after)
+                elif err.tool_validation:
+                    messages = messages + [{"role": "user", "content":
+                        "Your last tool call was rejected: " + err.reason[:400] + ". Call the tool again "
+                        "with arguments that match its schema exactly (required fields included)."}]
+                else:
+                    raise
+                retried = True
 
     async def _post_tools(self, provider: str, messages: list[dict], tools: list[dict],
                           tool_choice) -> dict:
@@ -126,6 +160,9 @@ class AIClient:
             body["tools"] = tools
             if tool_choice in ("auto", "none", "required"):
                 body["tool_choice"] = tool_choice
+        # Sizes only, never content.
+        log.info("Insights assistant: %s request, about %d tokens (%d messages, %d tools)",
+                 cfg["label"], estimate_tokens(body), len(messages), len(tools))
         try:
             resp = await self.http.post(f"{cfg['base_url']}/chat/completions", json=body,
                                         headers={"Authorization": f"Bearer {getattr(self.settings, cfg['key'])}"},
@@ -135,16 +172,22 @@ class AIClient:
         except httpx.HTTPError as err:
             raise AIError(provider, f"network error: {type(err).__name__}", switch=False)
         if resp.status_code >= 400:
-            # Includes 400 (e.g. a tool schema this provider rejects): the next provider may cope.
-            raise AIError(provider, f"HTTP {resp.status_code}: {_error_message(resp)}", switch=False)
+            message = _error_message(resp)
+            err = AIError(provider, f"HTTP {resp.status_code}: {message}", switch=False)
+            if resp.status_code == 429:
+                err.busy, err.retry_after = True, _retry_after(resp, message)
+            # Includes 400 for a tool schema or thought signature this provider rejects.
+            err.tool_validation = resp.status_code == 400 and (
+                "tool_use_failed" in resp.text or "Tool call validation failed" in message)
+            raise err
         try:
-            message = resp.json()["choices"][0]["message"]
+            raw = resp.json()["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError):
             raise AIError(provider, "unreadable reply", switch=False)
-        calls = [{"id": c.get("id") or f"call-{i}", "name": c["function"]["name"],
-                  "arguments": c["function"].get("arguments") or "{}"}
-                 for i, c in enumerate(message.get("tool_calls") or []) if c.get("function")]
-        return {"text": message.get("content") or "", "tool_calls": calls,
+        raw = with_ids(raw)
+        calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"].get("arguments") or "{}"}
+                 for c in raw.get("tool_calls") or [] if c.get("function")]
+        return {"text": raw.get("content") or "", "tool_calls": calls, "raw": raw,
                 "provider": provider, "model": self.model_for(provider)}
 
     def _switch_to_groq(self, err: AIError) -> None:
@@ -222,6 +265,33 @@ class AIClient:
             return resp.json()["choices"][0]["message"]["content"] or ""
         except (ValueError, KeyError, IndexError, TypeError):
             return ""  # treated as invalid JSON by the caller
+
+
+def estimate_tokens(body: dict) -> int:
+    """A rough prompt size (about 4 characters a token), for the logs and the budget."""
+    return len(json.dumps(body, separators=(",", ":"))) // 4
+
+
+def with_ids(raw: dict) -> dict:
+    """A provider's raw assistant message with an id on every tool call (kept unchanged
+    otherwise), so the browser and the signature cache agree on which call is which."""
+    raw = copy.deepcopy(raw)
+    for call in raw.get("tool_calls") or []:
+        if not call.get("id"):
+            call["id"] = f"call-{uuid.uuid4().hex[:12]}"
+    return raw
+
+
+def _retry_after(resp: httpx.Response, message: str) -> float | None:
+    """Seconds to wait from a 429: the Retry-After header, or "try again in 1.2s / 350ms"."""
+    try:
+        return float(resp.headers["retry-after"])
+    except (KeyError, ValueError):
+        pass
+    m = re.search(r"try again in ([\d.]+)\s*(ms|s)", message, re.IGNORECASE)
+    if not m:
+        return None
+    return float(m.group(1)) / (1000 if m.group(2).lower() == "ms" else 1)
 
 
 def _error_message(resp: httpx.Response) -> str:

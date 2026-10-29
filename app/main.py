@@ -28,8 +28,8 @@ from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
 from .insights_ai import MAX_TURNS as INSIGHTS_MAX_TURNS
-from .insights_ai import (REDUCED_TOOLS, TOO_MANY_TURNS, InsightsTurn, chat_messages, chat_tools,
-                          turns_used)
+from .insights_ai import (TOO_MANY_TURNS, InsightsTurn, SignatureCache, chat_messages,
+                          chat_tools, for_provider, turns_used)
 from .insights_ai import reply as insights_reply
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
@@ -1459,6 +1459,7 @@ def create_app(settings: Settings | None = None,
         return {"ok": True}
 
     insights_ai_limit = RateLimiter(60, 3600)  # model turns per seller per hour
+    signatures = SignatureCache()  # Gemini's raw tool-call messages, by tool-call id
 
     @app.post("/api/insights/ai")
     async def insights_ai(request: Request):
@@ -1479,20 +1480,21 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(503, "No AI key configured, so the Insights assistant is off.")
         if turns_used(turn) >= INSIGHTS_MAX_TURNS:
             return insights_reply(TOO_MANY_TURNS, [], None, None)
-        messages, tools = chat_messages(turn), chat_tools(turn.tools)
+        messages = chat_messages(turn)
+
+        def prepare(provider: str):
+            # Gemini gets its own raw tool-call messages back (thought signatures) and every
+            # allowed tool; Groq gets standard fields and the reduced, trimmed tool set.
+            return for_provider(messages, provider, signatures), chat_tools(turn.tools, provider)
+
         try:
-            out = await ai.chat_tools(messages, tools, turn.tool_choice)
+            out = await ai.chat_tools(prepare, turn.tool_choice)
         except AIError as err:
-            reduced = [t for t in tools if t["function"]["name"] in REDUCED_TOOLS]
-            if "HTTP 400" not in err.reason or len(reduced) == len(tools):
-                raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
-            # Both providers rejected the request (e.g. a widget tool's schema): answer with the
-            # reduced tool set, schema and query only.
-            log.warning("Insights assistant: falling back to schema + query tools (%s)", err.reason)
-            try:
-                out = await ai.chat_tools(messages, reduced, turn.tool_choice)
-            except AIError:
-                raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
+            if err.busy:
+                raise HTTPException(503, "The assistant is busy, try again in a minute.")
+            raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
+        if out["tool_calls"]:
+            signatures.put(out["provider"], out["raw"])  # stays on the server, never sent to the browser
         return insights_reply(out["text"], out["tool_calls"], out["provider"], out["model"])
 
     # ---- Money in flight dashboard (Day 7): read-only, no PII ------------------

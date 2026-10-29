@@ -1,14 +1,18 @@
 """Day 8: the Insights assistant (AG Studio's agent framework on our own AI client). The AI is
 always mocked with respx: no live AI calls."""
 
+import base64
 import json
+import re
 import shutil
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
-from app.insights_ai import ALLOWED_TOOLS, MAX_TURNS, TOO_MANY_TURNS, simplify_schema
+from app.insights_ai import (ALLOWED_TOOLS, MAX_TURNS, SKIP_SIGNATURE, TOO_MANY_TURNS, TRUNCATED,
+                             chat_tools, estimate_tokens, simplify_schema)
 from app.store import TimelineStore
 from tests.support import GEMINI, GROQ, make_client
 from tests.test_dashboard import mixed  # noqa: F401  (fixture)
@@ -153,20 +157,6 @@ def test_insights_ai_without_any_ai_key(tmp_path):
     assert res.status_code == 503 and "AI key" in res.json()["detail"]
 
 
-@respx.mock
-def test_schema_rejected_by_both_providers_falls_back_to_schema_and_query_tools(tmp_path):
-    bad = httpx.Response(400, json={"error": {"message": "Invalid JSON payload: unknown field"}})
-    gemini = respx.post(GEMINI).mock(side_effect=[bad, answer("Answered with the reduced tools.")])
-    groq = respx.post(GROQ).mock(return_value=bad)
-    client, _ = make_client(tmp_path)
-    tools = TOOLS + [{"name": "add_widget", "description": "Adds.", "parameters": {"type": "object", "properties": {}}}]
-    out = client.post("/api/insights/ai", json={**question(), "tools": tools}).json()
-    assert out["text"] == "Answered with the reduced tools."
-    assert [t["function"]["name"] for t in sent(gemini, 0)["tools"]] == ["view_schema", "execute_query", "add_widget"]
-    assert [t["function"]["name"] for t in sent(gemini, 1)["tools"]] == ["view_schema", "execute_query"]
-    assert groq.call_count == 1
-
-
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_browser_adapter_translates_turns_both_ways(mixed):  # noqa: F811
     client, _ = mixed
@@ -182,7 +172,12 @@ def test_browser_adapter_translates_turns_both_ways(mixed):  # noqa: F811
               {"pages": [{**page, "widgets": {"a": page["widgets"]["a"]}, "selection": {"type": "widget", "id": "a"}}],
                "selectedPageId": "p"},  # nothing new: bind to the selected widget
               {"pages": [{**page, "widgets": {"a": page["widgets"]["a"]}}], "selectedPageId": "p"}]  # nothing to bind
-    view = insights_view({**data, "assistant": {"reply": reply, "request": request, "states": states}})["assistant"]
+    panels = [{"filters": {"collapsed": True}}, {"ai": {"collapsed": True}, "edit": {"collapsed": False}}]
+    view = insights_view({**data, "assistant": {"reply": reply, "request": request, "states": states,
+                                                "panels": panels}})["assistant"]
+    # With the assistant open, Compose ("edit"), Data and Filters collapse; closed, nothing changes.
+    assert view["panels"] == [{"filters": {"collapsed": True}, "edit": {"collapsed": True},
+                               "data": {"collapsed": True}}, None]
     assert [e["type"] for e in view["events"]] == ["TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
                                                    "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END"]
     assert view["events"][3]["toolCallName"] == "execute_query" and view["events"][4]["delta"] == '{"kind":"flat"}'
@@ -193,3 +188,143 @@ def test_browser_adapter_translates_turns_both_ways(mixed):  # noqa: F811
                             "tools": [{"name": "view_schema", "description": "d", "parameters": {"type": "object"}}]}
     assert view["targets"] == [{"widgetId": "b", "widgetType": "bar-chart-grouped"},
                                {"widgetId": "a", "widgetType": "grid"}, None]
+
+
+# ---- Gemini thought signatures ----------------------------------------------------------
+
+SIG = "c2lnbmVkLWJ5LWdlbWluaS10aG91Z2h0"  # an opaque value, as Gemini sends it
+
+
+def gemini_tool_call(call_id="gem-call-1"):
+    """A Gemini 3 reply: a tool call carrying its thought signature in an extra field, plus an
+    unknown field on the message, both of which must come back unchanged."""
+    return httpx.Response(200, json={"choices": [{"message": {
+        "role": "assistant", "content": None, "x_unknown": {"keep": True},
+        "tool_calls": [{"id": call_id, "type": "function",
+                        "function": {"name": "view_schema", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": SIG}}}]}}]})
+
+
+def then_result(turn1_reply, output="| money.ref | text |"):
+    """The browser's next turn: the question, the model's call (as Studio echoes it), its result."""
+    call = turn1_reply["tool_calls"][0]
+    turn = question()
+    turn["items"] = turn["items"][:1] + [
+        {"kind": "output", "type": "function_call", "callId": call["id"], "name": call["name"],
+         "arguments": call["arguments"], "status": "completed"},
+        {"kind": "input", "type": "function_call_output", "callId": call["id"], "output": output}]
+    return turn
+
+
+@respx.mock
+def test_gemini_thought_signature_comes_back_unchanged_and_never_reaches_the_browser(tmp_path):
+    gemini = respx.post(GEMINI).mock(side_effect=[gemini_tool_call(), answer("Two orders need you.")])
+    client, _ = make_client(tmp_path)
+    first = client.post("/api/insights/ai", json=question())
+    assert first.status_code == 200 and SIG not in first.text and "extra_content" not in first.text
+    assert first.json()["tool_calls"] == [{"id": "gem-call-1", "name": "view_schema", "arguments": "{}"}]
+    second = client.post("/api/insights/ai", json=then_result(first.json()))
+    assert second.json()["text"] == "Two orders need you."
+    replayed = next(m for m in sent(gemini, 1)["messages"] if m.get("tool_calls"))
+    assert replayed["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": SIG}}
+    assert replayed["x_unknown"] == {"keep": True}  # every field, not just the signature
+
+
+@respx.mock
+def test_signature_cache_miss_sends_googles_skip_value(tmp_path, caplog):
+    gemini = respx.post(GEMINI).mock(return_value=answer("ok"))
+    client, _ = make_client(tmp_path)  # a fresh app: nothing cached (e.g. after a restart)
+    turn = then_result({"tool_calls": [{"id": "lost-call", "name": "view_schema", "arguments": "{}"}]},
+                       output="private result text")
+    assert client.post("/api/insights/ai", json=turn).status_code == 200
+    call = next(m for m in sent(gemini)["messages"] if m.get("tool_calls"))["tool_calls"][0]
+    assert call["extra_content"]["google"]["thought_signature"] == SKIP_SIGNATURE
+    assert base64.b64decode(SKIP_SIGNATURE) == b"skip_thought_signature_validator"
+    assert "no thought signature cached" in caplog.text and "private result" not in caplog.text
+
+
+@respx.mock
+def test_groq_bound_history_has_no_gemini_fields(tmp_path):
+    respx.post(GEMINI).mock(side_effect=[gemini_tool_call(), httpx.Response(503)])
+    groq = respx.post(GROQ).mock(return_value=answer("From Groq."))
+    client, _ = make_client(tmp_path)
+    first = client.post("/api/insights/ai", json=question()).json()
+    assert client.post("/api/insights/ai", json=then_result(first)).json()["provider"] == "groq"
+    body = json.dumps(sent(groq))
+    assert "extra_content" not in body and SIG not in body and "x_unknown" not in body
+    assert "gem-call-1" in body  # the call itself is still there, in standard form
+
+
+# ---- Groq: discriminated unions, self-correction, token budget -------------------------
+
+FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "studio_turn.json").read_text(encoding="utf-8"))
+
+
+def test_query_variant_stays_required_and_is_named_in_the_description():
+    for provider in ("gemini", "groq"):
+        [schema_tool, query_tool] = chat_tools(FIXTURE["tools"], provider)
+        fn = query_tool["function"]
+        assert "query.variant is required; one of: aggregation, projection." in fn["description"]
+        branches = fn["parameters"]["properties"]["query"]["anyOf"]
+        assert [b["properties"]["variant"]["enum"] for b in branches] == [["aggregation"], ["projection"]]
+        assert all("variant" in b["required"] for b in branches)
+
+
+@respx.mock
+def test_groq_tool_call_validation_failure_is_retried_once_with_the_error(tmp_path):
+    respx.post(GEMINI).mock(return_value=httpx.Response(503))
+    rejected = httpx.Response(400, json={"error": {
+        "message": "Tool call validation failed: parameters for tool execute_query did not match "
+                   "schema: /query: missing properties: 'variant'", "code": "tool_use_failed"}})
+    groq = respx.post(GROQ).mock(side_effect=[rejected, answer("Fixed it.")])
+    client, _ = make_client(tmp_path)
+    assert client.post("/api/insights/ai", json=question()).json()["text"] == "Fixed it."
+    note = sent(groq, 1)["messages"][-1]
+    assert note["role"] == "user" and "missing properties: 'variant'" in note["content"]
+    assert groq.call_count == 2
+
+
+@respx.mock
+def test_groq_gets_the_reduced_trimmed_request_under_3000_tokens(tmp_path, caplog):
+    respx.post(GEMINI).mock(return_value=httpx.Response(503))
+    groq = respx.post(GROQ).mock(return_value=answer("ok"))
+    client, _ = make_client(tmp_path)
+    turn = then_result({"tool_calls": [{"id": "c1", "name": "view_schema", "arguments": "{}"}]},
+                       output=FIXTURE["view_schema_output"])
+    older = [{"kind": "input", "type": "message", "role": "user",
+              "content": [{"type": "text", "text": f"Old question {i}"}]} for i in range(5)]
+    turn["items"] = older + turn["items"]
+    turn["tools"] = FIXTURE["tools"] + TOOLS[2:]  # plus tools Groq must not get
+    turn["instructions"] = "Studio guidance. " * 400
+    caplog.set_level("INFO")
+    assert client.post("/api/insights/ai", json=turn).status_code == 200
+    body = sent(groq)
+    assert [t["function"]["name"] for t in body["tools"]] == ["view_schema", "execute_query"]
+    asked = [m["content"] for m in body["messages"] if m["role"] == "user"]
+    assert asked == ["Old question 3", "Old question 4", "Which orders need me this week?"]  # last 3 only
+    assert estimate_tokens(body) < 3000, estimate_tokens(body)
+    assert re.search(r"Groq request, about \d+ tokens", caplog.text)
+
+
+@respx.mock
+def test_long_tool_results_are_capped_and_flagged(tmp_path):
+    gemini = respx.post(GEMINI).mock(return_value=answer("ok"))
+    client, _ = make_client(tmp_path)
+    turn = then_result({"tool_calls": [{"id": "c1", "name": "execute_query", "arguments": "{}"}]},
+                       output="| …ABC123 | Settled | 120.00 |\n" * 400)
+    client.post("/api/insights/ai", json=turn)
+    tool = next(m for m in sent(gemini)["messages"] if m["role"] == "tool")
+    assert len(tool["content"]) < 4200 and tool["content"].endswith(TRUNCATED)
+
+
+@respx.mock
+def test_short_rate_limit_is_retried_long_one_is_busy_503(tmp_path):
+    respx.post(GEMINI).mock(return_value=httpx.Response(503))
+    soon = httpx.Response(429, json={"error": {"message": "Rate limit reached. Please try again in 10ms."}})
+    later = httpx.Response(429, headers={"retry-after": "42"}, json={"error": {"message": "tokens per minute"}})
+    groq = respx.post(GROQ).mock(side_effect=[soon, answer("ok"), later])
+    client, _ = make_client(tmp_path)
+    assert client.post("/api/insights/ai", json=question()).status_code == 200 and groq.call_count == 2
+    busy = client.post("/api/insights/ai", json=question())
+    assert busy.status_code == 503 and busy.json()["detail"] == "The assistant is busy, try again in a minute."
+    assert groq.call_count == 3  # no retry for a long wait

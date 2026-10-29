@@ -2,7 +2,8 @@
 
 AG Studio runs the agent loop in the seller's browser and calls POST /api/insights/ai once per
 model turn. This module turns Studio's turn (conversation items + tool schemas) into an
-OpenAI-compatible chat request, and the model's reply back into text and tool calls.
+OpenAI-compatible chat request for each provider, and the model's reply back into text and tool
+calls for the browser.
 
 Guardrails:
 - One analyst agent, with read/query and add/configure-widget tools only (ALLOWED_TOOLS); any
@@ -12,31 +13,57 @@ Guardrails:
 - Every message and tool result is PII-stripped (assistant.strip_pii) before it is forwarded.
 - Gemini first, Groq per request only: this never reads or writes the sticky ai_state, which
   belongs to the dispute assistant.
+
+Gemini 3 thought signatures: Gemini attaches a signature to the tool calls it makes and rejects
+the next turn unless the same assistant message comes back with it. The browser only ever sees
+our tool-call ids; the raw assistant message (with every field Gemini sent) stays here, in
+SignatureCache, and is put back into the history before it goes to Gemini again.
+
+Token budget: Groq's free tier allows 8,000 tokens a minute, so Groq gets the reduced tool set
+(schema + query), a pruned query schema, a trimmed history and capped tool results.
 """
 
+import base64
+import copy
 import json
+import logging
 import re
+import time
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .ai import estimate_tokens  # noqa: F401  (re-exported for the tests)
 from .assistant import strip_pii
+
+log = logging.getLogger("clearline.insights")
 
 MAX_TURNS = 6
 TOO_MANY_TURNS = ("That needs more steps than I can take for one question. Try a narrower "
                   "question, for example \"Which orders need me this week?\"")
 ALLOWED_TOOLS = {"view_schema", "view_report", "view_page", "view_widget", "execute_query",
                  "add_widget", "position_widget", "configure_widget", "rename_thread"}
-# If both providers reject the full tool list, the turn is retried with these only.
+# Groq starts with these only (token budget); Gemini gets every allowed tool.
 REDUCED_TOOLS = {"view_schema", "execute_query"}
-SYSTEM = """You are the Insights analyst inside Clearline, a seller's payments workspace.
-You answer questions about the seller's orders, invoices, refunds and disputes using ONLY the
-report's data, through your tools: call view_schema before writing a query, then execute_query.
-You may add widgets to the report and configure the widget you are given. You cannot move money,
-reply to buyers, answer disputes or contact PayPal: if asked, say those actions happen on the
-Orders page. Be brief and use plain words. Amounts are in the currency named in the report.
-The data has no personal details; never ask for any."""
+SYSTEM = """You are the Insights analyst in Clearline, a seller's payments workspace. Answer
+questions about the seller's orders, invoices, refunds and disputes from the report's data only:
+call view_schema, then execute_query. You may add widgets and configure the widget you are given.
+You cannot move money, reply to buyers, answer disputes or contact PayPal; those happen on the
+Orders page. Be brief and use plain words. The data has no personal details."""
+
+HISTORY_QUESTIONS = 3        # keep the last three questions (and what followed each)
+MAX_TOOL_RESULT = 4000       # characters of one tool result sent to the model
+MAX_STUDIO_GUIDANCE = 1200   # characters of Studio's per-turn instructions
+MAX_TOOL_DESCRIPTION = 300   # characters of a tool's own description
+GROQ_SCHEMA_DEPTH = 5        # Groq's query schema is pruned below this depth
+TRUNCATED = "\n[truncated: the result was longer; ask a narrower question or add a limit]"
+# Google's documented placeholder for a tool call whose signature was lost (as LiteLLM sends it).
+SKIP_SIGNATURE = base64.b64encode(b"skip_thought_signature_validator").decode()
+QUERY_EXAMPLES = """Examples (field ids come from view_schema):
+{"query":{"variant":"aggregation","kind":"apiQuery","axes":[{"dimensions":[{"field":{"id":"money.next"}}]}],"measures":[{"field":{"id":"money.amount","aggregation":"sum"}}],"limit":{"count":50}}}
+{"query":{"variant":"projection","kind":"apiQuery","projection":[{"field":{"id":"money.ref","aggregation":"first"}},{"field":{"id":"money.next","aggregation":"first"}}],"limit":{"count":50}}}"""
 
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b")
 EPOCH = re.compile(r"\b1\d{9}(?:\d{3})?\b")  # epoch seconds or ms, as Studio may return dates
@@ -51,6 +78,29 @@ class InsightsTurn(BaseModel):
     items: list[dict] = Field(default_factory=list, max_length=400)
     tools: list[dict] = Field(default_factory=list, max_length=40)
     tool_choice: Any = None
+
+
+class SignatureCache:
+    """Raw assistant tool-call messages as the provider sent them (with Gemini's thought
+    signatures and any other extra fields), by tool-call id. In memory, 30 minutes, capped."""
+
+    def __init__(self, ttl: float = 1800, cap: int = 500):
+        self.ttl, self.cap = ttl, cap
+        self.items: OrderedDict[str, tuple[float, str, dict]] = OrderedDict()
+
+    def put(self, provider: str, raw: dict) -> None:
+        for call in raw.get("tool_calls") or []:
+            self.items[call["id"]] = (time.monotonic(), provider, raw)
+            self.items.move_to_end(call["id"])
+        while len(self.items) > self.cap:
+            self.items.popitem(last=False)
+
+    def get(self, call_id: str) -> tuple[str, dict] | None:
+        hit = self.items.get(call_id)
+        if not hit or time.monotonic() - hit[0] > self.ttl:
+            self.items.pop(call_id, None)
+            return None
+        return hit[1], hit[2]
 
 
 def clean(text: Any, *, tool_output: bool = False) -> str:
@@ -70,18 +120,21 @@ def clean(text: Any, *, tool_output: bool = False) -> str:
     return re.sub("⟦(\\d+)⟧", lambda m: kept[int(m.group(1))], text)
 
 
-def simplify_schema(schema: Any, defs: dict | None = None, depth: int = 0) -> dict:
+def simplify_schema(schema: Any, defs: dict | None = None, depth: int = 0, *,
+                    descriptions: bool = True) -> dict:
     """Studio's JSON Schema 2020-12 -> the subset Gemini's OpenAI layer and Groq both accept:
-    $ref inlined, const as enum, type lists and null branches folded, unknown keywords dropped."""
+    $ref inlined, const as enum, type lists and null branches folded, unknown keywords dropped.
+    descriptions=False drops nested descriptions (Groq's token budget)."""
     if not isinstance(schema, dict):
         return {"type": "string"}
     if defs is None:
         defs = {**schema.get("$defs", {}), **schema.get("definitions", {})}
     if depth > 8:
         return {"type": "object"}
+    nested = lambda s, d=1: simplify_schema(s, defs, depth + d, descriptions=descriptions)  # noqa: E731
     if "$ref" in schema:
         target = defs.get(str(schema["$ref"]).split("/")[-1], {})
-        return simplify_schema({**target, **{k: v for k, v in schema.items() if k != "$ref"}}, defs, depth + 1)
+        return nested({**target, **{k: v for k, v in schema.items() if k != "$ref"}})
     out: dict = {}
     if "const" in schema:
         out["enum"] = [schema["const"]]
@@ -89,8 +142,8 @@ def simplify_schema(schema: Any, defs: dict | None = None, depth: int = 0) -> di
         if key in schema:
             branches = [b for b in schema[key] if not (isinstance(b, dict) and b.get("type") == "null")]
             if len(branches) == 1:
-                return simplify_schema({**branches[0], **{k: v for k, v in schema.items() if k not in ("anyOf", "oneOf")}}, defs, depth + 1)
-            out["anyOf"] = [simplify_schema(b, defs, depth + 1) for b in branches]
+                return nested({**branches[0], **{k: v for k, v in schema.items() if k not in ("anyOf", "oneOf")}})
+            out["anyOf"] = [nested(b) for b in branches]
     t = schema.get("type")
     if isinstance(t, list):
         types = [x for x in t if x != "null"]
@@ -101,13 +154,14 @@ def simplify_schema(schema: Any, defs: dict | None = None, depth: int = 0) -> di
         if key not in SCHEMA_KEYS or key in ("type", "anyOf"):
             continue
         if key == "properties" and isinstance(value, dict):
-            out["properties"] = {k: simplify_schema(v, defs, depth + 1) for k, v in value.items()}
+            out["properties"] = {k: nested(v) for k, v in value.items()}
         elif key == "items":
-            out["items"] = simplify_schema(value, defs, depth + 1)
+            out["items"] = nested(value)
         elif key == "enum" and isinstance(value, list):
             out["enum"] = [v for v in value if v is not None]
         elif key == "description":
-            out["description"] = str(value)[:1000]
+            if descriptions or depth == 0:
+                out["description"] = str(value)[:1000]
         else:
             out[key] = value
     if out.get("type") == "object" or "properties" in out:
@@ -120,12 +174,72 @@ def simplify_schema(schema: Any, defs: dict | None = None, depth: int = 0) -> di
     return out
 
 
-def chat_tools(tools: list[dict]) -> list[dict]:
-    """Studio's tool schemas, allowed tools only, as chat/completions function tools."""
-    return [{"type": "function", "function": {
-                "name": t["name"], "description": str(t.get("description") or "")[:1000],
-                "parameters": simplify_schema(t.get("parameters") or t.get("schema") or {"type": "object"})}}
-            for t in tools if isinstance(t, dict) and t.get("name") in ALLOWED_TOOLS]
+def prune_schema(schema: dict, limit: int, depth: int = 0) -> dict:
+    """Below `limit` levels, keep only a node's type (and enum): the model learns the deep shape
+    from the examples, and Studio validates the real arguments in the browser anyway."""
+    if not isinstance(schema, dict):
+        return schema
+    if depth >= limit:
+        out = {"type": schema.get("type") or ("object" if "properties" in schema else "string")}
+        if "enum" in schema:
+            out["enum"] = schema["enum"]
+        return out
+    out = {}
+    for key, value in schema.items():
+        if key == "properties":
+            out[key] = {k: prune_schema(v, limit, depth + 1) for k, v in value.items()}
+        elif key == "items":
+            out[key] = prune_schema(value, limit, depth + 1)
+        elif key == "anyOf":
+            branches = [prune_schema(b, limit, depth + 1) for b in value]
+            unique = [b for i, b in enumerate(branches) if b not in branches[:i]]
+            if len(unique) == 1:
+                out.update(unique[0])
+            else:
+                out[key] = unique
+        else:
+            out[key] = value
+    return out
+
+
+def discriminators(schema: dict) -> list[str]:
+    """Discriminated unions in a tool's parameters (e.g. query.variant), made explicit: every
+    branch keeps its discriminator required, and the tool description names the values."""
+    notes = []
+    for name, prop in (schema.get("properties") or {}).items():
+        branches = [b for b in prop.get("anyOf") or [] if isinstance(b, dict) and b.get("properties")]
+        if len(branches) < 2:
+            continue
+        common = set.intersection(*(set(b["properties"]) for b in branches))
+        for key in sorted(common):
+            values = [b["properties"][key].get("enum") for b in branches]
+            if all(v and len(v) == 1 for v in values):
+                for b in branches:
+                    if key not in b.setdefault("required", []):
+                        b["required"].insert(0, key)
+                notes.append(f"{name}.{key} is required; one of: {', '.join(str(v[0]) for v in values)}.")
+    return notes
+
+
+def chat_tools(tools: list[dict], provider: str = "gemini") -> list[dict]:
+    """Studio's tool schemas, allowed tools only, as chat/completions function tools. Groq gets
+    the reduced set, no nested descriptions and a pruned query schema with examples."""
+    groq = provider == "groq"
+    out = []
+    for t in tools:
+        if not isinstance(t, dict) or t.get("name") not in (REDUCED_TOOLS if groq else ALLOWED_TOOLS):
+            continue
+        params = simplify_schema(t.get("parameters") or t.get("schema") or {"type": "object"}, descriptions=not groq)
+        notes = discriminators(params)
+        if groq:
+            params = prune_schema(params, GROQ_SCHEMA_DEPTH)
+        description = str(t.get("description") or "")[:MAX_TOOL_DESCRIPTION]
+        if notes:
+            description += "\n" + " ".join(notes)
+        if groq and t["name"] == "execute_query":
+            description += "\n" + QUERY_EXAMPLES
+        out.append({"type": "function", "function": {"name": t["name"], "description": description, "parameters": params}})
+    return out
 
 
 def _text(content: Any) -> str:
@@ -134,12 +248,21 @@ def _text(content: Any) -> str:
     return "\n".join(c.get("text", "") for c in content or [] if isinstance(c, dict) and c.get("text"))
 
 
+def recent_items(items: list[dict]) -> list[dict]:
+    """The last HISTORY_QUESTIONS questions and everything after them. Cutting at a question
+    keeps every tool call together with its result."""
+    asked = [i for i, it in enumerate(items)
+             if it.get("type") == "message" and it.get("kind") == "input" and it.get("role") == "user"]
+    return items[asked[-HISTORY_QUESTIONS]:] if len(asked) > HISTORY_QUESTIONS else items
+
+
 def chat_messages(turn: InsightsTurn) -> list[dict]:
-    """Studio conversation items -> chat messages, PII-stripped. Consecutive tool calls become
-    one assistant message, as chat/completions expects."""
-    system = SYSTEM + (f"\n\nStudio's guidance for this turn:\n{clean(turn.instructions)}" if turn.instructions else "")
-    messages: list[dict] = [{"role": "system", "content": system}]
-    for item in turn.items:
+    """Studio conversation items -> provider-neutral chat messages, PII-stripped and trimmed.
+    Consecutive tool calls become one assistant message, as chat/completions expects; the
+    provider-specific form (signatures for Gemini) is made by for_provider()."""
+    guidance = clean(turn.instructions)[:MAX_STUDIO_GUIDANCE] if turn.instructions else ""
+    messages: list[dict] = [{"role": "system", "content": SYSTEM + (f"\n\nFor this turn: {guidance}" if guidance else "")}]
+    for item in recent_items(turn.items):
         kind, typ = item.get("kind"), item.get("type")
         if typ == "message" and kind == "input":
             role = "user" if item.get("role") == "user" else "system"
@@ -155,10 +278,45 @@ def chat_messages(turn: InsightsTurn) -> list[dict]:
             else:
                 messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
         elif typ == "function_call_output":
-            messages.append({"role": "tool", "tool_call_id": str(item.get("callId")),
-                             "content": clean(item.get("output"), tool_output=True)[:60_000]})
+            output = clean(item.get("output"), tool_output=True)
+            if len(output) > MAX_TOOL_RESULT:
+                output = output[:MAX_TOOL_RESULT] + TRUNCATED
+            messages.append({"role": "tool", "tool_call_id": str(item.get("callId")), "content": output})
         # reasoning items aren't replayed
     return messages
+
+
+def standard_call(call: dict) -> dict:
+    """A tool call with only the standard chat/completions fields (no provider extras)."""
+    fn = call.get("function") or {}
+    return {"id": call["id"], "type": "function",
+            "function": {"name": fn.get("name"), "arguments": fn.get("arguments") or "{}"}}
+
+
+def for_provider(messages: list[dict], provider: str, cache: SignatureCache) -> list[dict]:
+    """The history as `provider` must see it. For Gemini, each assistant tool-call message is
+    replaced by the raw message Gemini sent (its thought signatures intact); on a cache miss,
+    Google's skip value goes on the first call. Anything else gets standard fields only."""
+    out = []
+    for m in messages:
+        if not m.get("tool_calls"):
+            out.append(dict(m))
+            continue
+        ids = [c["id"] for c in m["tool_calls"]]
+        hit = cache.get(ids[0])
+        if provider == "gemini":
+            if hit and hit[0] == "gemini" and [c["id"] for c in hit[1].get("tool_calls") or []] == ids:
+                out.append(copy.deepcopy(hit[1]))
+                continue
+            log.warning("Insights assistant: no thought signature cached for a Gemini tool call; "
+                        "sending Google's skip value")
+            calls = [standard_call(c) for c in m["tool_calls"]]
+            calls[0]["extra_content"] = {"google": {"thought_signature": SKIP_SIGNATURE}}
+            out.append({"role": "assistant", "content": m.get("content"), "tool_calls": calls})
+        else:
+            out.append({"role": "assistant", "content": m.get("content"),
+                        "tool_calls": [standard_call(c) for c in m["tool_calls"]]})
+    return out
 
 
 def turns_used(turn: InsightsTurn) -> int:
@@ -177,10 +335,12 @@ def turns_used(turn: InsightsTurn) -> int:
 
 
 def reply(text: str, tool_calls: list[dict], provider: str | None, model: str | None) -> dict:
-    """The adapter's response: text and (allowed) tool calls."""
+    """The browser's response: text and (allowed) tool calls. Ids and arguments only, never a
+    provider's extra fields such as thought signatures."""
     calls, refused = [], []
     for c in tool_calls:
-        (calls if c["name"] in ALLOWED_TOOLS else refused).append(c)
+        (calls if c["name"] in ALLOWED_TOOLS else refused).append(
+            {"id": c["id"], "name": c["name"], "arguments": c.get("arguments") or "{}"})
     if refused:
         text = (text + "\n\n" if text else "") + "I can only read the report and arrange widgets here."
     return {"id": f"turn-{uuid.uuid4().hex[:12]}", "text": clean(text), "tool_calls": calls,

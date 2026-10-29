@@ -99,9 +99,9 @@
     { id: "status", name: "Status", format: "textFormat" },
     { id: "next", name: "Next action", format: "textFormat" },
     { id: "needs_you", name: "Needs you", format: "booleanFormat" },
-    { id: "amount", name: "Amount", format: "currencyFormat" },
-    { id: "refunded", name: "Refunded", format: "currencyFormat" },
-    { id: "net", name: "Net of refunds", format: "currencyFormat" },
+    { id: "amount", name: "Amount", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
+    { id: "refunded", name: "Refunded", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
+    { id: "net", name: "Net of refunds", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
   ];
   // Disputes only, so dispute charts aren't swamped by orders that never had one.
   const DISPUTE_FIELDS = [
@@ -109,11 +109,11 @@
     { id: "stage", name: "Stage", format: "textFormat" },
     { id: "reason", name: "Reason", format: "textFormat" },
     { id: "outcome", name: "Outcome", format: "textFormat" },
-    { id: "amount", name: "Disputed amount", format: "currencyFormat" },
+    { id: "amount", name: "Disputed amount", format: "currencyFormat", formatOptions: { format: "#,##0.00" } },
   ];
   const DAILY_FIELDS = [
     { id: "day", name: "Day", format: "dateFormat", formatOptions: { format: "d mmm" } },
-    ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat" })),
+    ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat", formatOptions: { format: "#,##0.00" } })),
   ];
 
   // Pure: Studio sources from an /api/dashboard payload (the page harness tests this).
@@ -138,36 +138,37 @@
 
   const f = (id, aggregation) => (aggregation ? { id, aggregation } : { id });
   const kpi = (id, aggregation, text) => ({ type: "value", dataMapping: { value: [f(id, aggregation)] }, format: { caption: { enabled: true, text } } });
+  // Fits a report canvas from about 460px (1280px screen, assistant open) to 1550px wide:
+  // titles at 18px, three KPIs, and a full-width grid with three columns.
+  const title = (text) => ({ title: { enabled: true, text, typography: { fontSize: 18 } } });
   const defaultState = (cur) => ({
     pages: [{
       id: "money",
       widgets: {
-        "kpi-items": kpi("money.ref", "countd", "Orders and invoices"),
-        "kpi-amount": kpi("money.amount", "sum", `Total amount, ${cur}`),
+        "kpi-amount": kpi("money.amount", "sum", `Amount, ${cur}`),
         "kpi-refunded": kpi("money.refunded", "sum", `Refunded, ${cur}`),
-        "kpi-net": kpi("money.net", "sum", `Net of refunds, ${cur}`),
+        "kpi-net": kpi("money.net", "sum", `Net, ${cur}`),
         "money-state": { type: "money-state", dataMapping: { state: [f("money.state")], value: [f("money.net", "sum")] },
-                         format: { title: { enabled: true, text: "Money state" } } },
+                         format: title("Money state") },
         "per-day": { type: "column-chart-stacked",
                      dataMapping: { categoryKey: [f("daily.day")], valueKey: ["settled", "waiting", "disputed", "unpaid"].map((s) => f(`daily.${s}`, "sum")) },
-                     format: { title: { enabled: true, text: `Amounts per day, ${cur}` } } },
-        "state-filter": { type: "list-filter", dataMapping: { value: [f("money.state")] }, format: { title: { enabled: true, text: "Show" } } },
-        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.date"), f("money.state"), f("money.next"), f("money.amount", "sum")] },
+                     format: title(`Per day, ${cur}`) },
+        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.next"), f("money.amount", "sum")] },
                    sort: [{ field: f("money.amount", "sum"), direction: "desc" }],
-                   format: { title: { enabled: true, text: "Orders and invoices" } } },
+                   format: title("Orders and invoices") },
+        "state-filter": { type: "list-filter", dataMapping: { value: [f("money.state")] }, format: title("Show") },
         "reasons": { type: "bar-chart-grouped", dataMapping: { categoryKey: [f("disputes.reason")], valueKey: [f("disputes.ref", "countd")] },
-                     format: { title: { enabled: true, text: "Disputes by reason" } } },
+                     format: title("Disputes by reason") },
       },
       widgetLayout: {
-        "kpi-items": { xTrack: 0, yTrack: 0, xSpan: 6, ySpan: 5 },
-        "kpi-amount": { xTrack: 6, yTrack: 0, xSpan: 6, ySpan: 5 },
-        "kpi-refunded": { xTrack: 12, yTrack: 0, xSpan: 6, ySpan: 5 },
-        "kpi-net": { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 5 },
-        "money-state": { xTrack: 0, yTrack: 5, xSpan: 9, ySpan: 14 },
-        "per-day": { xTrack: 9, yTrack: 5, xSpan: 15, ySpan: 14 },
-        "state-filter": { xTrack: 0, yTrack: 19, xSpan: 5, ySpan: 16 },
-        "items": { xTrack: 5, yTrack: 19, xSpan: 12, ySpan: 16 },
-        "reasons": { xTrack: 17, yTrack: 19, xSpan: 7, ySpan: 16 },
+        "kpi-amount": { xTrack: 0, yTrack: 0, xSpan: 8, ySpan: 5 },
+        "kpi-refunded": { xTrack: 8, yTrack: 0, xSpan: 8, ySpan: 5 },
+        "kpi-net": { xTrack: 16, yTrack: 0, xSpan: 8, ySpan: 5 },
+        "money-state": { xTrack: 0, yTrack: 5, xSpan: 12, ySpan: 14 },
+        "per-day": { xTrack: 12, yTrack: 5, xSpan: 12, ySpan: 14 },
+        "items": { xTrack: 0, yTrack: 19, xSpan: 24, ySpan: 15 },
+        "reasons": { xTrack: 0, yTrack: 34, xSpan: 16, ySpan: 13 },
+        "state-filter": { xTrack: 16, yTrack: 34, xSpan: 8, ySpan: 13 },
       },
     }],
     selectedPageId: "money",
@@ -366,6 +367,7 @@
 
   // Debounced save of every layout change; the server keeps it per seller.
   function queueSave(state) {
+    if (api && !applying) roomForAssistant(state);
     if (applying || !desktop()) return; // phones only view a stacked copy: nothing to save
     report = state;
     clearTimeout(saveTimer);
@@ -382,6 +384,28 @@
     api.setProperty("mode", edit ? "edit" : "view");
     $("mode").textContent = edit ? "Done editing" : "Edit layout";
     $("mode").setAttribute("aria-pressed", String(edit));
+    if (edit) roomForAssistant(api.getState(), true);
+  }
+
+  // Pure: when the AI Assistant panel is open, Compose, Data and Filters are collapsed so the
+  // report keeps its width (the seller can reopen any of them). null = the assistant is closed.
+  function panelsForAssistant(panels) {
+    panels = panels || {};
+    if (panels.ai && panels.ai.collapsed) return null;
+    const closed = ["edit", "data", "filters"]; // Studio's ids: edit is the Compose panel
+    return { ...panels, ...Object.fromEntries(closed.map((k) => [k, { collapsed: true }])) };
+  }
+
+  // On entering Edit layout, and whenever the assistant is opened. Studio doesn't re-apply
+  // saved panel flags on a mode switch, so they're set again (a new object) every time.
+  let assistantWasOpen = false;
+  function roomForAssistant(state, force = false) {
+    const open = !(state.panels && state.panels.ai && state.panels.ai.collapsed);
+    const opened = open && (force || !assistantWasOpen);
+    assistantWasOpen = open;
+    if (!opened || api.getProperty("mode") !== "edit") return;
+    const panels = panelsForAssistant(state.panels);
+    if (panels) api.setState({ ...state, panels });
   }
 
   async function start() {
@@ -413,7 +437,7 @@
       api = agStudio.createStudio($("studio"), {
         data: { sources: toSources(data) }, widgets, mode: "view", theme: studioTheme(),
         initialState: desktop() ? report : stackForPhone(report),
-        layout: { minWidth: desktop() ? 720 : 300 },
+        layout: { minWidth: desktop() ? 460 : 300 },
         onStateUpdated: (e) => queueSave(e.state),
         ai: ({ api: studioApi }) => analyst(studioApi),
       });
@@ -437,7 +461,7 @@
       wasDesktop = desktop();
       if (!wasDesktop) setMode(false);
       applying = true; api.setState(wasDesktop ? report : stackForPhone(report)); applying = false;
-      api.setProperty("layout", { minWidth: wasDesktop ? 720 : 300 });
+      api.setProperty("layout", { minWidth: wasDesktop ? 460 : 300 });
     });
     // Charts draw on canvas, so the theme is rebuilt from the tokens when it changes.
     const retheme = () => api.setProperty("theme", studioTheme());

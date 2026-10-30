@@ -58,15 +58,12 @@ call view_schema, then execute_query. You may add widgets and configure the widg
 You cannot move money, reply to buyers, answer disputes or contact PayPal; those happen on the
 Orders page. Be brief and use plain words. The data has no personal details.
 Rules:
-- "Needs me", "needs my attention", "what should I do": only rows where Needs you is true.
-  Waiting for the buyer, PayPal is reviewing and settled items do not need the seller: never
-  list them as needing attention.
-- "This week", "today", "overdue": a row counts when its Deadline (respond-by or due date) is
-  in that period, OR it has no Deadline and Needs you is true: items waiting on the seller always
-  count. Never drop a row just because its Deadline is empty. Today is {today}. If nothing
+- "Needs me", "this week", "today", "overdue": filter on Act by, never on Deadline. Act by is
+  set only on items that need the seller. This week = Act by on or before the end of this week;
+  today = Act by on or before today; overdue = Act by before today. Today is {today}. If nothing
   matches, say so plainly.
 - Money always has 2 decimals and the currency: "120.00 USD".
-- For each item, give its next action and its deadline when there is one."""
+- For each item, give its Next action, and its Deadline when there is one."""
 
 HISTORY_QUESTIONS = 3        # keep the last three questions (and what followed each)
 MAX_TOOL_RESULT = 4000       # characters of one tool result sent to the model

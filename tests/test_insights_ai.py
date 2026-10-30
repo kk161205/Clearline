@@ -362,10 +362,9 @@ def test_needs_you_guidance_and_today_are_sent_with_the_question(tmp_path):
     assert client.post("/api/insights/ai", json=turn).status_code == 200
     body = sent(gemini)
     system = body["messages"][0]["content"]
-    assert "only rows where Needs you is true" in system
-    assert "Waiting for the buyer, PayPal is reviewing and settled items do not need the seller" in system
-    assert "its Deadline (respond-by or due date)" in system and "say so plainly" in system
-    assert '"120.00 USD"' in system and "its next action and its deadline" in system
+    assert "filter on Act by, never on Deadline" in system
+    assert "Act by is\n  set only on items that need the seller" in system and "say so plainly" in system
+    assert '"120.00 USD"' in system and "its Next action, and its Deadline when there is one" in system
     assert f"Today is {date.today().isoformat()}." in system
     tool = next(m for m in body["messages"] if m["role"] == "tool")
     assert tool["content"] == SIX_ROWS  # the rows, dates and amounts reach the model intact
@@ -487,10 +486,10 @@ def test_strip_pii_on_both_ai_paths(path):
 
 # ---- This round: needs-you wording, widget building, turn caps, issues, per-turn logs -------
 
-def test_this_week_counts_rows_without_a_deadline_that_need_the_seller():
+def test_needs_me_questions_filter_on_act_by():
     system = chat_messages(InsightsTurn(**question()))[0]["content"]
-    assert "OR it has no Deadline and Needs you is true" in system
-    assert "Never drop a row just because its Deadline is empty" in system
+    assert "This week = Act by on or before the end of this week" in system
+    assert "overdue = Act by before today" in system
 
 
 def test_widget_guide_with_the_bar_chart_example_goes_to_gemini_only():

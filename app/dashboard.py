@@ -64,6 +64,15 @@ def _iso_day(value: str | None) -> date | None:
         return None
 
 
+def act_by(needs_you: bool, deadline: date | None, today: date) -> str | None:
+    """When the seller should act: the deadline if there is one, today if the item is waiting
+    on the seller with no deadline, nothing if it isn't the seller's turn. A plain date filter
+    ("Act by this week / today / overdue") then returns exactly the items that need the seller."""
+    if not needs_you:
+        return None
+    return (deadline or today).isoformat()
+
+
 def safe_history(events: list[dict]) -> list[dict]:
     out = []
     for e in events:
@@ -151,6 +160,7 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
                      "responded": any(e["kind"] == "dispute_action_sent" for e in events)}
                     if dispute else None),
         "next": nxt, "needs_you": needs_you, "deadline": deadline.isoformat() if deadline else None,
+        "act_by": act_by(needs_you, deadline, today),
         "auto_refunds": [_amount(e["payload"].get("amount")) for e in events
                          if e["kind"] == "refund_sent" and e["payload"].get("trigger") == TRIGGER],
         "history": safe_history(events),
@@ -189,6 +199,7 @@ def invoice_row(ref: str, events: list[dict], today: date) -> dict | None:
         # An invoice needs the seller once it's overdue (a reminder); before that it's waiting.
         "needs_you": bool(state == "unpaid" and overdue),
         "deadline": due.isoformat() if state == "unpaid" and due else None,
+        "act_by": act_by(bool(state == "unpaid" and overdue), due if state == "unpaid" else None, today),
         "history": safe_history(events),
     }
 

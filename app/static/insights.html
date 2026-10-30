@@ -102,6 +102,9 @@
     { id: "next", name: "Next action", format: "textFormat" },
     { id: "needs_you", name: "Needs you", format: "booleanFormat" },
     { id: "deadline", name: "Deadline", format: "dateFormat", formatOptions: { format: "d mmm" } },
+    // The date to filter on for "needs me / this week / today": the deadline, or today when
+    // the item waits on the seller with no deadline; empty when it isn't the seller's turn.
+    { id: "act_by", name: "Act by", format: "dateFormat", formatOptions: { format: "d mmm" } },
     { id: "amount", name: "Amount", format: "currencyFormat", formatOptions: MONEY },
     { id: "refunded", name: "Refunded", format: "currencyFormat", formatOptions: MONEY },
     { id: "net", name: "Net of refunds", format: "currencyFormat", formatOptions: MONEY },
@@ -129,7 +132,7 @@
     const money = d.rows.filter((r) => r.currency === cur).map((r) => ({
       ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.date, item: r.item,
       country: r.country || "Unknown", state: STATE_LABEL[r.state], status: r.status, next: r.next,
-      needs_you: Boolean(r.needs_you), deadline: r.deadline || null, amount: Number(r.amount), refunded: Number(r.refunded),
+      needs_you: Boolean(r.needs_you), deadline: r.deadline || null, act_by: r.act_by || null, amount: Number(r.amount), refunded: Number(r.refunded),
       net: Number(r.amount) - Number(r.refunded),
     }));
     const disputes = d.rows.filter((r) => r.dispute && r.currency === cur).map((r) => ({

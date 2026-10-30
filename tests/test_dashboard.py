@@ -265,3 +265,37 @@ def test_a_refund_answers_a_buyer_request_too(mixed):
     assert rows["…FUNDED"]["needs_you"] is False and rows["…FUNDED"]["next"] != "Buyer asked for a refund"
     assert rows["…LLOPEN"]["needs_you"] is True and rows["…LLOPEN"]["next"] == "Buyer asked for a refund"
     assert rows["…LLOPEN"]["deadline"] is None  # no deadline, still needs the seller
+
+
+def test_act_by_is_the_date_to_filter_needs_me_questions_on(tmp_path):
+    """The live case: a dispute due this week, an open buyer request with no deadline, a
+    refunded request and a dispute waiting for the buyer."""
+    client, settings = make_client(tmp_path)
+    store = TimelineStore(settings.database_path)
+    today = datetime.now(timezone.utc).date()
+    end_of_week = today + timedelta(days=6 - today.weekday())
+    order(store, "ORDER0000053815W")
+    dispute(store, "ORDER0000053815W", "dispute_created", "WAITING_FOR_SELLER_RESPONSE", "CHARGEBACK", iso(-1),
+            seller_response_due_date=f"{end_of_week.isoformat()}T12:00:00.000Z")
+    order(store, "ORDER00000551845")  # refund request, the auto policy said no: open
+    store.add("ORDER00000551845", "buyer_request", {"request_id": "R1", "type": "refund", "reason": "changed_mind"})
+    store.add("ORDER00000551845", "auto_policy_skipped", {"request_id": "R1", "reason": "not allowed"})
+    order(store, "ORDER0000040493N")  # shipped, asked for a refund and got it: answered
+    store.add("ORDER0000040493N", "tracking_added", {"carrier": "DHL", "tracking_number": "1"})
+    store.add("ORDER0000040493N", "buyer_request", {"request_id": "R2", "type": "refund", "reason": "not_received"})
+    store.add("ORDER0000040493N", "refund_sent", {"request_id": "R2", "mode": "partial", "amount": "20.00",
+                                                  "currency": "USD", "status": "COMPLETED", "trigger": "seller"})
+    order(store, "ORDER00WAITBUYER")  # shipped, dispute waiting on the buyer
+    store.add("ORDER00WAITBUYER", "tracking_added", {"carrier": "DHL", "tracking_number": "2"})
+    dispute(store, "ORDER00WAITBUYER", "dispute_created", "WAITING_FOR_BUYER_RESPONSE", "INQUIRY", iso(-1))
+
+    rows = rows_by_ref(client.get("/api/dashboard").json())
+    assert {ref: (rows[ref]["act_by"], rows[ref]["deadline"]) for ref in ("…53815W", "…551845", "…40493N", "…TBUYER")} == {
+        "…53815W": (end_of_week.isoformat(), end_of_week.isoformat()),  # the respond-by date
+        "…551845": (today.isoformat(), None),                            # waiting on the seller now
+        "…40493N": (None, None),                                         # answered by the refund
+        "…TBUYER": (None, None),                                         # the buyer's turn
+    }
+    # The filter a model writes for "this week" returns exactly the two that need the seller.
+    this_week = sorted(ref for ref, r in rows.items() if r["act_by"] and r["act_by"] <= end_of_week.isoformat())
+    assert this_week == ["…53815W", "…551845"]

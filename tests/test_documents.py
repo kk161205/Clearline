@@ -195,7 +195,7 @@ def test_types_are_detected_by_content():
 @respx.mock
 def test_facts_and_prompt_cover_the_claim_stage(tmp_path):
     client, settings, _ = claim_stage(tmp_path)
-    facts = build_facts(TimelineStore(settings.database_path), "ORDER1", DISPUTE_ID)
+    facts = build_facts(TimelineStore(settings.database_target), "ORDER1", DISPUTE_ID)
     assert facts["dispute.stage"] == "CHARGEBACK"
     assert facts["dispute.requested_evidence"] == ["PROOF_OF_FULFILLMENT", "PROOF_OF_REFUND",
                                                    "PROOF_OF_DELIVERY_SIGNATURE"]

@@ -1,9 +1,9 @@
 """Seller accounts: /setup, login, lockout, DB sessions, Origin check, password changes, the
 users CLI and the retired env settings. Protected vs public routes. No network."""
 
+import io
 import logging
 import re
-import sqlite3
 
 import pytest
 import respx
@@ -15,8 +15,9 @@ from app.auth import PUBLIC_ROUTES, is_public
 from app.config import Settings
 from app.store import TimelineStore
 from app.users import main as users_cli
-from tests.support import (DISPUTE_ID, SELLER_EMAIL, TEST_PASSWORD, DisputeOnPayPal, login_as,
-                           make_client, open_dispute, setup_paypal, shipped_order)
+from tests.support import (DISPUTE_ID, SELLER_EMAIL, TEST_PASSWORD, DisputeOnPayPal, db_settings,
+                           db_target, login_as, make_client, open_dispute, query, setup_paypal,
+                           shipped_order)
 
 GENERIC = "Email or password is incorrect."
 DAY = 86400
@@ -57,7 +58,7 @@ def new_client(tmp_path, caplog=None, **overrides):
 
 def with_account(tmp_path, email=SELLER_EMAIL, password=TEST_PASSWORD, **overrides):
     client, settings = new_client(tmp_path, **overrides)
-    user_id = Accounts(TimelineStore(settings.database_path)).create_user(email, password)
+    user_id = Accounts(TimelineStore(settings.database_target)).create_user(email, password)
     return client, settings, user_id
 
 
@@ -89,12 +90,12 @@ def test_pages_send_you_to_setup_while_there_is_no_account(tmp_path):
 
 
 def test_public_routes_are_exactly_the_agreed_ones():
-    assert len(PUBLIC_ROUTES) == 19  # adding a public route should be a deliberate change
+    assert len(PUBLIC_ROUTES) == 20  # adding a public route should be a deliberate change
     for method, path in [("GET", "/"), ("GET", "/api/config"), ("POST", "/api/orders"),
                          ("POST", "/api/orders/X/capture"), ("GET", "/o/abc"), ("GET", "/api/o/abc"),
                          ("GET", "/api/o/abc/status"), ("POST", "/api/o/abc/requests"),
                          ("POST", "/webhooks/paypal"), ("GET", "/login"), ("POST", "/api/login"), ("POST", "/api/logout"),
-                         ("GET", "/setup"), ("POST", "/api/setup"), ("HEAD", "/"),
+                         ("GET", "/setup"), ("POST", "/api/setup"), ("HEAD", "/"), ("GET", "/healthz"),
                          ("POST", "/mcp")]:  # MCP: scoped by order link / agent key
         assert is_public(method, path), (method, path)
     for method, path in SELLER_ROUTES + [("GET", "/api/orders/X"), ("POST", "/api/o/abc"),
@@ -137,7 +138,7 @@ def test_setup_needs_the_logged_code_and_works_once(tmp_path, caplog):
     weak = client.post("/api/setup", json={**body, "code": code, "password": "password1234",
                                            "confirm": "password1234"})
     assert weak.status_code == 422
-    assert TimelineStore(settings.database_path).count_users() == 0
+    assert TimelineStore(settings.database_target).count_users() == 0
 
     caplog.clear()
     made = client.post("/api/setup", json={**body, "code": code.lower()})  # case doesn't matter
@@ -150,7 +151,7 @@ def test_setup_needs_the_logged_code_and_works_once(tmp_path, caplog):
     assert client.get("/setup").status_code == 404 and other.get("/setup").status_code == 404
     again = other.post("/api/setup", json={**body, "code": code, "email": "second@example.com"})
     assert again.status_code == 404
-    assert TimelineStore(settings.database_path).count_users() == 1
+    assert TimelineStore(settings.database_target).count_users() == 1
 
 
 def test_setup_code_is_new_each_start_and_not_logged_once_an_account_exists(tmp_path, caplog):
@@ -160,7 +161,7 @@ def test_setup_code_is_new_each_start_and_not_logged_once_an_account_exists(tmp_
     new_client(tmp_path, caplog)
     assert setup_code(caplog) != first
 
-    Accounts(TimelineStore(str(tmp_path / "test.db"))).create_user(SELLER_EMAIL, TEST_PASSWORD)
+    Accounts(TimelineStore(db_target(tmp_path))).create_user(SELLER_EMAIL, TEST_PASSWORD)
     caplog.clear()
     client, _ = new_client(tmp_path, caplog)
     assert "setup code" not in caplog.text
@@ -170,7 +171,7 @@ def test_setup_code_is_new_each_start_and_not_logged_once_an_account_exists(tmp_
 def test_setup_code_dies_when_an_account_appears_another_way(tmp_path, caplog):
     client, settings = new_client(tmp_path, caplog)
     code = setup_code(caplog)
-    Accounts(TimelineStore(settings.database_path)).create_user(SELLER_EMAIL, TEST_PASSWORD)  # CLI
+    Accounts(TimelineStore(settings.database_target)).create_user(SELLER_EMAIL, TEST_PASSWORD)  # CLI
     res = client.post("/api/setup", json={"code": code, "email": "x@example.com",
                                           "password": "another long passphrase",
                                           "confirm": "another long passphrase"})
@@ -207,7 +208,7 @@ def test_password_policy():
 
 def test_passwords_are_argon2id_and_rehashed_when_params_change(tmp_path, monkeypatch):
     client, settings, user_id = with_account(tmp_path)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     before = store.user_by_id(user_id)["password_hash"]
     assert before.startswith("$argon2id$") and TEST_PASSWORD not in before
 
@@ -247,7 +248,7 @@ def test_login_ok_bad_and_unknown_email_look_the_same(tmp_path, monkeypatch, cap
 
     ok = login(client, email="  SELLER@example.COM ")  # emails are matched lowercased
     assert ok.status_code == 200 and client.get("/api/orders").status_code == 200
-    assert TimelineStore(settings.database_path).user_by_id(user_id)["last_login_at"]
+    assert TimelineStore(settings.database_target).user_by_id(user_id)["last_login_at"]
 
     assert f"Login ok: user {user_id} from testclient" in caplog.text
     assert f"Login failed: user {user_id} (bad) from testclient" in caplog.text
@@ -270,7 +271,7 @@ def test_five_failures_lock_the_account_for_15_minutes(tmp_path, monkeypatch, ca
     assert login(client).status_code == 401
     clock.advance(61)
     assert login(client).status_code == 200  # unlocked after 15 minutes
-    user = TimelineStore(settings.database_path).user_by_id(user_id)
+    user = TimelineStore(settings.database_target).user_by_id(user_id)
     assert user["failed_logins"] == 0 and user["locked_until"] is None
 
 
@@ -284,7 +285,7 @@ def test_login_is_rate_limited_per_ip(tmp_path):
 
 def test_disabled_account_cannot_log_in(tmp_path):
     client, settings, user_id = with_account(tmp_path)
-    Accounts(TimelineStore(settings.database_path)).set_disabled(user_id, True)
+    Accounts(TimelineStore(settings.database_target)).set_disabled(user_id, True)
     assert login(client).json() == {"detail": GENERIC}
 
 
@@ -297,8 +298,8 @@ def test_session_cookie_flags_and_only_a_hash_is_stored(tmp_path):
     assert f"{SESSION_COOKIE}=" in cookie and "httponly" in cookie and "samesite=lax" in cookie
     assert "path=/" in cookie and "secure" not in cookie  # plain http
     token = client.cookies.get(SESSION_COOKIE)
-    with sqlite3.connect(settings.database_path) as db:
-        [(sid, owner)] = db.execute("SELECT id, user_id FROM sessions").fetchall()
+    [row] = query(settings.database_target, "SELECT id, user_id FROM sessions")
+    sid, owner = row["id"], row["user_id"]
     assert owner == user_id and sid == Accounts.session_id(token) and token not in sid
 
 
@@ -321,8 +322,7 @@ def test_logout_deletes_the_session(tmp_path):
     client.cookies.clear()
     client.cookies.set(SESSION_COOKIE, stolen)  # an old copy of the cookie is dead too
     assert client.get("/api/orders").status_code == 401
-    with sqlite3.connect(settings.database_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+    assert query(settings.database_target, "SELECT COUNT(*) AS n FROM sessions") == [{"n": 0}]
 
 
 def test_logging_in_again_rotates_the_session(tmp_path):
@@ -358,7 +358,7 @@ def test_cleanup_removes_expired_sessions(tmp_path, monkeypatch):
     client, settings, _ = with_account(tmp_path)
     login(client)
     login(new_client(tmp_path)[0])
-    accounts = Accounts(TimelineStore(settings.database_path))
+    accounts = Accounts(TimelineStore(settings.database_target))
     assert accounts.cleanup() == 0
     clock.advance(8 * DAY)
     assert accounts.cleanup() == 2
@@ -420,7 +420,7 @@ def test_sign_out_everywhere_and_the_account_email(tmp_path):
 def cli(tmp_path, monkeypatch, argv, passwords=()):
     answers = iter(passwords)
     monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
-    return users_cli(argv, settings=Settings(database_path=str(tmp_path / "test.db")))
+    return users_cli(argv, settings=Settings(**db_settings(tmp_path)))
 
 
 def test_cli_create_reset_disable_enable_and_list(tmp_path, monkeypatch, capsys):
@@ -429,7 +429,7 @@ def test_cli_create_reset_disable_enable_and_list(tmp_path, monkeypatch, capsys)
                ["mismatch passphrase", "other passphrase!", "short", "short", pw, pw]) == 0
     out = capsys.readouterr().out
     assert "don't match" in out and "Created seller account" in out and pw not in out
-    store = TimelineStore(str(tmp_path / "test.db"))
+    store = TimelineStore(db_target(tmp_path))
     user = store.user_by_email("shop.owner@example.com")
     assert user["password_hash"].startswith("$argon2id$")
     with pytest.raises(SystemExit, match="already exists"):
@@ -453,6 +453,34 @@ def test_cli_create_reset_disable_enable_and_list(tmp_path, monkeypatch, capsys)
     assert login(client, "shop.owner@example.com", pw2).status_code == 200
     with pytest.raises(SystemExit, match="No account"):
         cli(tmp_path, monkeypatch, ["disable", "--email", "nobody@example.com"])
+
+
+def test_cli_password_stdin_for_scripts(tmp_path, monkeypatch, capsys):
+    def no_prompt(prompt=""):
+        raise AssertionError("prompted although --password-stdin was given")
+
+    monkeypatch.setattr("getpass.getpass", no_prompt)
+    settings = Settings(**db_settings(tmp_path))
+    first, second = "  spaced stdin passphrase  ", "second stdin passphrase"
+    monkeypatch.setattr("sys.stdin", io.StringIO(first + "\r\nignored second line\n"))
+    assert users_cli(["create", "--email", "script@example.com", "--password-stdin"], settings=settings) == 0
+    client, _ = new_client(tmp_path)
+    assert login(client, "script@example.com", first).status_code == 200  # spaces kept, CRLF dropped
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(second + "\n"))
+    assert users_cli(["reset-password", "--email", "script@example.com", "--password-stdin"], settings=settings) == 0
+    assert client.get("/api/orders").status_code == 401  # signed out everywhere
+    assert login(client, "script@example.com", second).status_code == 200
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("short\n"))
+    with pytest.raises(SystemExit, match="12"):
+        users_cli(["create", "--email", "weak@example.com", "--password-stdin"], settings=settings)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    with pytest.raises(SystemExit):
+        users_cli(["create", "--email", "empty@example.com", "--password-stdin"], settings=settings)
+    assert [u["email"] for u in TimelineStore(settings.database_target).list_users()] == ["script@example.com"]
+    out = capsys.readouterr().out
+    assert first.strip() not in out and second not in out
 
 
 # ---- The retired SELLER_PASSWORD / MERCHANT_API_KEY ------------------------------------------

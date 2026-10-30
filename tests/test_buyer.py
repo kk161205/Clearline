@@ -119,7 +119,7 @@ def test_ai_summary_is_cached_per_order_state(tmp_path):
     client.post("/api/orders/ORDER1/tracking", json={"tracking_number": "1234567890", "carrier": "DHL"})
     assert client.get(api_of(link)).json()["summary"]["source"] == "template"
     assert gemini.call_count == 2
-    assert TimelineStore(settings.database_path).buyer_summary("ORDER1")["provider"] == "gemini"
+    assert TimelineStore(settings.database_target).buyer_summary("ORDER1")["provider"] == "gemini"
 
 
 @respx.mock
@@ -145,7 +145,7 @@ def test_summary_failure_never_switches_the_ai_provider(tmp_path):
     page = client.get(api_of(link)).json()
     assert page["summary"]["source"] == "template"  # shown at once, failure only logged
     assert gemini.call_count == 1 and not groq.called
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
     assert client.get("/api/orders/other/timeline").status_code == 404  # no ai_provider_switched
 
 
@@ -301,7 +301,7 @@ def test_questions_answered_before_dispute_counter(tmp_path):
     setup_paypal()
     DisputeOnPayPal()
     client, settings = make_client(tmp_path, gemini_key=None, groq_key=None)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     assert client.get("/api/stats").json() == {"questions_answered_before_dispute": 0,
                                                "auto_resolved": 0}
 

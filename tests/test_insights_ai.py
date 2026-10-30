@@ -128,7 +128,7 @@ def test_groq_answers_this_request_only_and_the_sticky_switch_is_untouched(tmp_p
     gemini = respx.post(GEMINI).mock(return_value=httpx.Response(400, json={"error": {"message": "bad schema"}}))
     groq = respx.post(GROQ).mock(return_value=answer("From Groq."))
     client, settings = make_client(tmp_path)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     before = store.ai_state()
     assert client.post("/api/insights/ai", json=question()).json()["provider"] == "groq"
     gemini.mock(return_value=answer("From Gemini."))
@@ -143,7 +143,7 @@ def test_an_insights_failure_leaves_ai_state_unchanged_even_when_on_groq(tmp_pat
     respx.post(GEMINI).mock(return_value=httpx.Response(503))
     respx.post(GROQ).mock(return_value=httpx.Response(503))
     client, settings = make_client(tmp_path)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     store.set_ai_provider("groq", "dispute assistant switched earlier")
     before = store.ai_state()
     res = client.post("/api/insights/ai", json=question())

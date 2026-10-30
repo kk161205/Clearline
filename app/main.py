@@ -358,7 +358,7 @@ def create_app(settings: Settings | None = None,
     settings = settings or get_settings()
     configure_logging(settings.log_level)
     paypal = PayPalClient(settings, http)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     ai = AIClient(settings, store, ai_http)
     assistant = Assistant(store, ai)
     secret = settings.app_secret
@@ -593,6 +593,17 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(404, "No such key")
         log.info("Agent key %s revoked by user %s", key_id, user["id"])
         return {"ok": True}
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz():
+        """For the host's health check: one cheap query. No versions, hosts or details."""
+        try:
+            await asyncio.to_thread(store.ping)
+        except Exception as err:  # any database failure is "down"
+            log.warning("Health check: database unreachable (%s)", type(err).__name__)
+            return JSONResponse({"ok": False, "db": "down"}, status_code=503,
+                                headers={"Cache-Control": "no-store"})
+        return JSONResponse({"ok": True, "db": "ok"}, headers={"Cache-Control": "no-store"})
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.
     @app.get("/", include_in_schema=False)

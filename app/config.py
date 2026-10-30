@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     paypal_client_secret: str
     paypal_env: str = "sandbox"
     database_path: str = "clearline.db"
+    # Postgres (e.g. Neon's connection string, with sslmode=require) instead of the SQLite file above.
+    # Unset = SQLite at database_path (local dev). Never logged.
+    database_url: str | None = Field(default=None, repr=False)
     # Webhooks (Day 2). The ID comes from Developer Dashboard -> your app -> Webhooks.
     paypal_webhook_id: str | None = None
     # Dev only: accept webhooks that fail signature verification (e.g. Webhook Simulator).
@@ -44,6 +47,11 @@ class Settings(BaseSettings):
     # them. Not shown in repr.
     legacy_seller_password: str | None = Field(default=None, validation_alias="SELLER_PASSWORD", repr=False)
     legacy_merchant_api_key: str | None = Field(default=None, validation_alias="MERCHANT_API_KEY", repr=False)
+
+    @property
+    def database_target(self) -> str:
+        """What TimelineStore opens: the Postgres URL if set, else the SQLite file."""
+        return self.database_url or self.database_path
 
     @property
     def api_base(self) -> str:

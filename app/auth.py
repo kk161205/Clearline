@@ -25,6 +25,7 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/logout"),
     ("GET", r"/setup"),                          # first account only (404 once one exists)
     ("POST", r"/api/setup"),
+    ("GET", r"/healthz"),                         # load balancer health check: {"ok", "db"} only
     ("GET", r"/favicon\.ico"),
     ("GET", r"/static/(?:ui\.(?:css|js)|fonts/instrument-sans-latin(?:-ext)?\.woff2)"),  # design system + font
     # MCP server for AI agents (Day 6). Not a seller session: buyer tools are scoped by the

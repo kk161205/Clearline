@@ -61,7 +61,7 @@ def test_gemini_429_switches_to_groq_and_persists(tmp_path):
     assert gemini.call_count == 1 and groq.call_count == 1
 
     # Survives a restart: a fresh store on the same file still says groq.
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "groq"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "groq"
     [switch] = events(client, "other", "ai_provider_switched")
     assert switch["payload"] == {"from": "gemini", "to": "groq", "reason": "HTTP 429 rate_limited"}
     status = client.get("/api/ai/status").json()
@@ -86,7 +86,7 @@ def test_groq_failure_while_active_records_ai_failed(tmp_path):
     result = regenerate(client)
     assert result["kind"] == "ai_failed" and "groq" in result["payload"]["error"]
     assert gemini.call_count == 1  # only the original failure, no fallback back to Gemini
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "groq"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "groq"
 
 
 @respx.mock
@@ -129,7 +129,7 @@ def test_gemini_400_is_a_bug_not_an_outage(tmp_path):
     assert "HTTP 400" in failed["payload"]["error"]
     assert "Unknown name" in failed["payload"]["error"]
     assert not groq.called
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
     assert events(client, "other", "ai_provider_switched") == []
 
 

@@ -5,14 +5,13 @@ import json
 import logging
 import re
 import shutil
-import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.store import TimelineStore
-from tests.support import make_client
+from tests.support import db_target, make_client, query
 from tests.test_dashboard import CLIENT, EMAIL, NOTE, mixed  # noqa: F401  (fixture)
 
 ROOT = Path(__file__).parent.parent
@@ -36,10 +35,9 @@ def test_layout_is_saved_per_seller_in_its_own_table(tmp_path):
     assert saved.status_code == 200
     got = client.get("/api/insights/layout").json()
     assert got["state"] == state and got["updated_at"] == saved.json()["updated_at"]
-    with sqlite3.connect(settings.database_path) as db:  # a proper table, not app_settings
-        user_id = client.get("/api/account").json()["id"]
-        assert db.execute("SELECT user_key FROM insights_layouts").fetchall() == [(str(user_id),)]
-        assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 0
+    user_id = client.get("/api/account").json()["id"]  # a proper table, not app_settings
+    assert query(settings.database_target, "SELECT user_key FROM insights_layouts") == [{"user_key": str(user_id)}]
+    assert query(settings.database_target, "SELECT COUNT(*) AS n FROM app_settings") == [{"n": 0}]
     client.put("/api/insights/layout", json={**state, "selectedPageId": "other"})  # overwrites
     assert client.get("/api/insights/layout").json()["state"]["selectedPageId"] == "other"
     assert client.delete("/api/insights/layout").json() == {"ok": True}  # Reset to default
@@ -59,7 +57,7 @@ def test_two_sellers_get_separate_layouts(tmp_path):
 
 
 def test_the_old_single_seller_layout_moves_to_the_first_account(tmp_path):
-    store = TimelineStore(str(tmp_path / "test.db"))
+    store = TimelineStore(db_target(tmp_path))
     old = {"pages": [{"id": "from-before-accounts"}], "selectedPageId": "from-before-accounts"}
     store.set_insights_layout("seller", old)  # saved under the shared password
     first, settings = make_client(tmp_path)  # creates and logs in the first account

@@ -35,7 +35,7 @@ def make_client(tmp_path, *, webhook_id="WH-1", allow_unverified=False):
     http = httpx.AsyncClient(base_url=settings.api_base)
     client = TestClient(create_app(settings, http))
     # Seller APIs need a session: a test-only account, signed in through the real login.
-    Accounts(TimelineStore(settings.database_path)).create_user("seller@example.com", "test-only-password-1")
+    Accounts(TimelineStore(settings.database_target)).create_user("seller@example.com", "test-only-password-1")
     client.post("/api/login", json={"email": "seller@example.com", "password": "test-only-password-1"})
     return client
 

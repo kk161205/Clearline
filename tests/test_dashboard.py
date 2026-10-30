@@ -56,7 +56,7 @@ def mixed(tmp_path):
     """Captured, shipped; partial refund; inquiry and claim disputes (one with rows out of
     order); a resolved dispute; auto-resolved refund; paid, overdue and not-yet-due invoices."""
     client, settings = make_client(tmp_path)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     order(store, "ORDER0000000PLAIN")
     store.add("ORDER0000000PLAIN", "tracking_added", {"carrier": "DHL", "tracking_number": "999"})
     order(store, "ORDER00000PARTIAL", country="GB")
@@ -271,7 +271,7 @@ def test_act_by_is_the_date_to_filter_needs_me_questions_on(tmp_path):
     """The live case: a dispute due this week, an open buyer request with no deadline, a
     refunded request and a dispute waiting for the buyer."""
     client, settings = make_client(tmp_path)
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     today = datetime.now(timezone.utc).date()
     end_of_week = today + timedelta(days=6 - today.weekday())
     order(store, "ORDER0000053815W")

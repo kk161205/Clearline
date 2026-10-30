@@ -4,6 +4,7 @@ import pytest
 from argon2 import PasswordHasher
 
 import app.accounts
+from tests import pg
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +21,16 @@ def no_real_ai_keys(monkeypatch):
     monkeypatch.delenv("SELLER_PASSWORD", raising=False)
     monkeypatch.delenv("MERCHANT_API_KEY", raising=False)
     monkeypatch.setenv("AG_STUDIO_LICENSE_KEY", "")
+    # Tests pick their own database (SQLite in tmp_path, or a Postgres schema with
+    # TEST_DATABASE_URL); a DATABASE_URL in the environment must never reach them.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def drop_postgres_test_schemas():
+    """With TEST_DATABASE_URL: drop the schemas this test created (nothing else)."""
+    yield
+    pg.cleanup()
 
 
 @pytest.fixture(autouse=True)

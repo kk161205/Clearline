@@ -7,7 +7,6 @@ own Client. PayPal is mocked with respx; nothing leaves the machine."""
 import asyncio
 import json
 import shutil
-import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -19,8 +18,8 @@ from mcp import Client
 from app.accounts import Accounts
 from app.buyer import buyer_token
 from app.store import TimelineStore
-from tests.support import (API, DisputeOnPayPal, make_client, open_dispute, setup_paypal,
-                           shipped_order)
+from tests.support import (API, DisputeOnPayPal, db_target, make_client, open_dispute, query,
+                           setup_paypal, shipped_order)
 from tests.test_buyer import PAYER_EMAIL, REFUND_URL, captured_with_pii
 from tests.test_webhooks import capture_order
 
@@ -246,8 +245,7 @@ def test_agent_call_log_keeps_no_personal_data(tmp_path):
                                           "message_seller", "get_order_status"]
     assert calls[1]["outcome"] == "refused: unknown link" and calls[1]["order_ref"] is None
     assert calls[2]["outcome"] == "refund request sent to seller" and calls[2]["order_ref"] == "ORDER1"
-    with sqlite3.connect(tmp_path / "test.db") as db:
-        dump = json.dumps(db.execute("SELECT * FROM agent_calls").fetchall())
+    dump = json.dumps(query(db_target(tmp_path), "SELECT * FROM agent_calls"))
     for secret in (PAYER_EMAIL, "Jane", "secret note", token, key, "forged-link"):
         assert secret not in dump
 
@@ -276,8 +274,7 @@ def test_merchant_tools_need_the_right_key(tmp_path):
 def test_agent_keys_are_shown_once_stored_hashed_and_revocable(tmp_path):
     client, key = agent_client(tmp_path)
     assert key.startswith("cl_live_") and len(key) > 40
-    with sqlite3.connect(tmp_path / "test.db") as db:
-        assert key not in json.dumps(db.execute("SELECT * FROM api_keys").fetchall())  # SHA-256 only
+    assert key not in json.dumps(query(db_target(tmp_path), "SELECT * FROM api_keys"))  # SHA-256 only
     [listed] = client.get("/api/agent-keys").json()
     assert listed["name"] == "Test agent" and listed["prefix"] == key[:12] and not listed["revoked"]
     assert listed["last_used_at"] is None and "key" not in listed and "key_hash" not in listed
@@ -300,7 +297,7 @@ def test_agent_keys_are_shown_once_stored_hashed_and_revocable(tmp_path):
         second = client.post("/api/agent-keys", json={"name": "Second"}).json()["key"]
         assert call(client, "money_in_flight", key=second).status_code == 200
         user_id = client.get("/api/account").json()["id"]
-        Accounts(TimelineStore(str(tmp_path / "test.db"))).set_disabled(user_id, True)
+        Accounts(TimelineStore(db_target(tmp_path))).set_disabled(user_id, True)
         assert call(client, "money_in_flight", key=second).status_code == 401
 
 

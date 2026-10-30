@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from app.accounts import Accounts
 from app.config import Settings
 from app.main import create_app
+from app.db import Database
 from app.store import TimelineStore
+from tests import pg
 from tests.test_webhooks import API, capture_order, mock_token, mock_verify, post_event
 
 GEMINI = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -24,11 +26,29 @@ SELLER_EMAIL = "seller@example.com"
 TEST_PASSWORD = "test-only-password-1"
 
 
+def db_target(tmp_path) -> str:
+    """This test's database: a SQLite file in tmp_path, or with TEST_DATABASE_URL set, its own
+    Postgres schema (see tests/pg.py)."""
+    return pg.target(tmp_path) if pg.TEST_DATABASE_URL else str(tmp_path / "test.db")
+
+
+def db_settings(tmp_path) -> dict:
+    """Settings(...) arguments for this test's database."""
+    return {"database_path": str(tmp_path / "test.db"),
+            "database_url": pg.target(tmp_path) if pg.TEST_DATABASE_URL else None}
+
+
+def query(target: str, sql: str, params=()) -> list[dict]:
+    """Rows straight from the test database (SQLite or Postgres)."""
+    with Database(target).connect() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
 def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env="sandbox",
                 auto_sync_minutes=0, login=True, email=SELLER_EMAIL, **overrides):
     # Every AI setting is explicit so a real .env can't change the result.
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
-                        database_path=str(tmp_path / "test.db"), paypal_webhook_id="WH-1",
+                        **db_settings(tmp_path), paypal_webhook_id="WH-1",
                         gemini_api_key=gemini_key, gemini_model="gemini-test-lite",
                         groq_api_key=groq_key, groq_model="openai/gpt-oss-120b",
                         ai_timeout_seconds=5, paypal_env=paypal_env,
@@ -43,7 +63,7 @@ def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env=
 
 def login_as(client, settings, email=SELLER_EMAIL, password=TEST_PASSWORD):
     """Sign `client` in as `email`, creating that test account first if it doesn't exist."""
-    store = TimelineStore(settings.database_path)
+    store = TimelineStore(settings.database_target)
     if not store.user_by_email(email):
         Accounts(store).create_user(email, password)
     res = client.post("/api/login", json={"email": email, "password": password})

@@ -70,7 +70,7 @@ def test_guardrail_rejection_retries_once_then_ai_failed(tmp_path):
     assert "broke these rules" in json.loads(gemini.calls[1].request.content)["messages"][-1]["content"]
     # Guardrail failures are about the answer, not an outage: no provider switch.
     assert not groq.called
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
 
 
 @respx.mock

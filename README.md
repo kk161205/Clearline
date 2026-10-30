@@ -37,6 +37,14 @@ API docs: http://localhost:8000/docs
 python -m pytest -q
 ```
 
+The database tests can also run against Postgres: set `TEST_DATABASE_URL` and each test gets
+its own throwaway schema there (dropped when the test ends; nothing else is touched):
+
+```powershell
+$env:TEST_DATABASE_URL = "<a dev database URL>"
+python -m pytest -q tests/test_db.py tests/test_migrate.py tests/test_auth.py tests/test_insights.py tests/test_agents.py
+```
+
 ## Day 2: webhooks and disputes
 
 PayPal tells Clearline about disputes and capture changes by webhook. The app
@@ -598,6 +606,37 @@ Grid's:
 
 ## Deployment notes
 
+### Database: SQLite locally, Postgres (Neon) in production
+
+- `DATABASE_URL` unset: SQLite at `DATABASE_PATH` (default `clearline.db`), as before.
+- `DATABASE_URL` set (a Postgres connection string with `sslmode=require`): Postgres via psycopg 3 with a pool of at most
+  5 connections. A connection that sat idle is checked before use, so Neon suspending the
+  compute doesn't break requests. Neon's `-pooler` host works (no server-side prepared
+  statements are used).
+- The schema is created and upgraded at startup (`schema_version` table, one migration path
+  for both databases, an advisory lock on Postgres so two instances don't race).
+- **Moving existing data:** with `DATABASE_URL` set,
+  `python -m app.migrate_sqlite --from clearline.db --dry-run` shows the row counts per table,
+  then the same without `--dry-run` copies everything in one transaction. A target that already
+  has rows is refused unless `--force` (which replaces them). The URL is never printed.
+- **Accounts on a server without a terminal prompt:**
+  `python -m app.users create --email you@example.com --password-stdin` reads the password from
+  the first line of stdin (`reset-password` too). `/setup` only exists while there are no
+  accounts.
+- **Health check:** `GET /healthz` returns `{"ok": true, "db": "ok"}` after one cheap query, or
+  503 `{"ok": false, "db": "down"}`. No versions or hosts.
+
+### Render (web service)
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
+- Health check path: `/healthz`
+- Environment: `DATABASE_URL` (Neon main branch, pooled), `TRUST_PROXY=true`, `APP_SECRET`,
+  the PayPal, webhook and AI keys from `.env.example`. Don't set `SELLER_PASSWORD` or
+  `MERCHANT_API_KEY`.
+
+### Content-Security-Policy
+
 - Content-Security-Policy: `/insights` is the only page with a third-party script, so allow
   `script-src https://cdn.jsdelivr.net` on that route only.
 
@@ -606,7 +645,9 @@ Grid's:
 | File | Purpose |
 |---|---|
 | `app/paypal.py` | REST client: token caching, orders, capture, tracking, webhook verification, disputes and dispute actions |
-| `app/store.py` | SQLite timeline of events per order, processed webhook IDs, active AI provider |
+| `app/store.py` | Timeline of events per order, processed webhook IDs, active AI provider, accounts, layouts |
+| `app/db.py` | SQLite or Postgres connections (pool), dialect helpers, schema migrations |
+| `app/migrate_sqlite.py` | `python -m app.migrate_sqlite`: copy a SQLite file into `DATABASE_URL` |
 | `app/ai.py` | OpenAI-compatible AI client with sticky Gemini → Groq fallback |
 | `app/assistant.py` | Facts, prompt, schema and guardrails for dispute recommendations |
 | `app/main.py` | FastAPI routes, server-side price catalogue, `/webhooks/paypal`, dispute actions and sync |
@@ -616,7 +657,7 @@ Grid's:
 | `app/static/login.html` | Seller login (email and password) |
 | `app/static/setup.html` | `/setup`: the first seller account, with the setup code from the log |
 | `app/accounts.py` | Seller accounts: Argon2id passwords, policy, lockout, DB sessions, agent keys, setup code |
-| `app/users.py` | `python -m app.users`: create, reset-password, disable, enable, list |
+| `app/users.py` | `python -m app.users`: create, reset-password, disable, enable, list (`--password-stdin` for scripts) |
 | `app/buyer.py` | Buyer links, buyer page facts, cached AI summary, refund totals |
 | `app/auth.py` | The public-route list and the rate limiter |
 | `app/evidence.py` | Checks for seller-provided dispute documents |

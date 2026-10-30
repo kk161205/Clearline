@@ -143,7 +143,7 @@ def under_review(tmp_path, **settings):
 def test_sandbox_helper_is_404_in_live_mode(tmp_path):
     client, settings = make_client(tmp_path, paypal_env="live")
     # A real, known UNDER_REVIEW dispute, so only the live-mode guard can produce the 404.
-    TimelineStore(settings.database_path).add("ORDER1", "dispute_created", {
+    TimelineStore(settings.database_target).add("ORDER1", "dispute_created", {
         "dispute_id": DISPUTE_ID, "status": "UNDER_REVIEW", "update_time": "2026-10-27T00:00:00Z"})
     paypal_live = respx.route(host="api-m.paypal.com").mock(return_value=httpx.Response(200, json={}))
     resp = client.post(f"/api/disputes/{DISPUTE_ID}/sandbox/require-seller-evidence")

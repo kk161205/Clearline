@@ -102,7 +102,7 @@ def test_extraction_guardrails_reject_and_never_switch(tmp_path, bad):
     resp = client.post("/api/invoices/extract", json={"text": TEXT})
     assert resp.status_code == 422 and "Fill in the form yourself" in resp.json()["detail"]
     assert gemini.call_count == 2 and not groq.called  # one corrective retry, same provider
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
 
 
 @respx.mock
@@ -113,7 +113,7 @@ def test_extraction_ai_outage_does_not_switch_provider(tmp_path):
     client, settings = make_client(tmp_path)
     assert client.post("/api/invoices/extract", json={"text": TEXT}).status_code == 502
     assert not groq.called
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
 
 
 def test_extract_problems_unit():
@@ -239,7 +239,7 @@ def test_threatening_or_invented_reminder_falls_back_to_template(tmp_path):
         "note": "Pay 1200.00 USD now or a late fee of 50 USD applies and we will take legal action."}))
     d = client.post(f"/api/invoices/{INV}/reminder-draft").json()
     assert d["source"] == "template" and "legal" not in d["note"] and gemini.call_count == 2
-    assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "gemini"
+    assert TimelineStore(settings.database_target).ai_state()["active_provider"] == "gemini"
 
 
 def test_reminder_guardrail_unit():

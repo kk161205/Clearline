@@ -128,6 +128,13 @@
     .policy legend { font-weight: 600; padding: 0 8px 0 0; }
     .policy .switch { margin-top: 8px; }
     .policy .grid { align-items: start; }
+    .pw-form { margin-top: 16px; max-width: 420px; }
+    .pw-form input { width: 100%; }
+    .key-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
+    .key-form .field { margin: 0; flex: 1 1 220px; }
+    .key-form input { width: 100%; }
+    .new-key { border: 1px solid var(--settled); background: var(--settled-tint); color: var(--ink); border-radius: var(--r); padding: 12px; margin: 8px 0 12px; }
+    .new-key code { word-break: break-all; }
     .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 12px; padding: 16px 20px; }
     #other h2 { font-size: var(--t-sm); color: var(--muted); margin: 24px 0 8px; }
   </style>
@@ -206,8 +213,41 @@
       </details>
       <div class="panel setting"><div><strong>Appearance</strong><div class="muted small">Follows your device until you choose.</div></div>
         <button class="secondary" data-theme-toggle aria-pressed="false">Theme</button></div>
-      <div class="panel setting"><div><strong>Seller session</strong><div class="muted small">You stay logged in for 12 hours on this device.</div></div>
-        <button id="logout" class="secondary">Log out</button></div>
+      <details class="panel disclose" id="account"><summary><span class="d-title">Account</span>
+          <span class="d-line" id="account-email">Signed in</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
+        <div class="d-body">
+          <dl class="kv"><dt>Signed in as</dt><dd id="account-email-full">…</dd></dl>
+          <form id="password-form" class="pw-form" novalidate>
+            <h3>Change password</h3>
+            <label class="field">Current password <input type="password" name="current" autocomplete="current-password" maxlength="128" required /></label>
+            <label class="field">New password <input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+              <span class="hint">12 to 128 characters. Changing it signs out your other devices.</span></label>
+            <label class="field">Confirm new password <input type="password" name="confirm" autocomplete="new-password" maxlength="128" required /></label>
+            <div class="actions"><button type="submit">Change password</button></div><div class="msg"></div>
+          </form>
+          <div class="actions">
+            <button id="logout" class="secondary">Log out</button>
+            <button id="signout-all" class="secondary">Sign out everywhere</button>
+          </div>
+        </div>
+      </details>
+      <details class="panel disclose" id="agent-access"><summary><span class="d-title">Agent access</span>
+          <span class="d-line">Keys for your own AI agent's read-only tools (MCP)</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
+        <div class="d-body">
+          <p class="muted small">An agent sends a key as <code>Authorization: Bearer &lt;key&gt;</code> to <span class="mono" id="mcp-url">/mcp</span>.
+            Keys can only read: refunds and dispute answers stay your click here.</p>
+          <form id="key-form" class="key-form" novalidate>
+            <label class="field">Key name <input name="name" maxlength="60" placeholder="e.g. Claude Desktop" required /></label>
+            <button type="submit">Create key</button>
+          </form>
+          <div class="new-key" id="new-key" hidden>
+            <strong>Copy your new key now. It won't be shown again.</strong>
+            <div class="linkrow"><code id="new-key-value"></code><button class="secondary small" id="new-key-copy">Copy</button></div>
+          </div>
+          <div id="key-list"></div>
+          <div class="msg"></div>
+        </div>
+      </details>
     </section>
   </main>
 </div>
@@ -979,6 +1019,82 @@
     await fetch("/api/logout", { method: "POST" }).catch(() => {});
     location.href = "/login";
   });
+
+  // ---- Account: who's signed in, change password, sign out everywhere -----------------------
+
+  async function loadAccount() {
+    const res = await fetch("/api/account");
+    if (!res.ok) return;
+    const me = await res.json();
+    $("account-email").textContent = me.email;
+    $("account-email-full").textContent = me.email;
+  }
+
+  $("password-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.currentTarget, msg = f.querySelector(".msg"), button = f.querySelector("button[type=submit]");
+    const body = { current: f.current.value, password: f.password.value, confirm: f.confirm.value };
+    msg.className = "msg bad";
+    if (!body.current || !body.password) { msg.textContent = "Fill in every field."; return; }
+    if (body.password.length < 12) { msg.textContent = "Use at least 12 characters."; return; }
+    if (body.password !== body.confirm) { msg.textContent = "The new passwords don't match."; return; }
+    button.disabled = true; msg.textContent = "";
+    try {
+      const res = await fetch("/api/account/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) { msg.textContent = typeof out.detail === "string" ? out.detail : "Couldn't change the password."; return; }
+      f.reset(); msg.className = "msg"; msg.textContent = "Password changed. Your other devices are signed out.";
+      UI.toast("Password changed");
+    } finally { button.disabled = false; }
+  });
+
+  $("signout-all").addEventListener("click", async () => {
+    if (!await UI.confirm({ title: "Sign out everywhere?", confirm: "Sign out everywhere",
+      what: ["Every device signed in to this account is signed out, including this one."] })) return;
+    await fetch("/api/account/sign-out-everywhere", { method: "POST" }).catch(() => {});
+    location.href = "/login";
+  });
+
+  // ---- Agent access: API keys for the merchant MCP tools ----------------------------------
+
+  const keyRow = (k) => `<tr><td data-label="Name">${esc(k.name)}</td><td data-label="Key" class="mono">${esc(k.prefix)}…</td>
+      <td data-label="Created">${esc(UI.date(k.created_at))}</td>
+      <td data-label="Last used">${k.last_used_at ? esc(UI.dateTime(k.last_used_at)) : "Never"}</td>
+      <td data-label="Status">${k.revoked ? '<span class="pill">Revoked</span>' : '<span class="pill settled">Active</span>'}</td>
+      <td data-label="">${k.revoked ? "" : `<button class="secondary small" data-revoke="${esc(k.id)}" data-name="${esc(k.name)}">Revoke</button>`}</td></tr>`;
+
+  async function loadKeys() {
+    const res = await fetch("/api/agent-keys");
+    if (!res.ok) return;
+    const keys = await res.json(), list = $("key-list");
+    list.innerHTML = keys.length
+      ? `<table class="tbl"><thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Status</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${keys.map(keyRow).join("")}</tbody></table>`
+      : '<div class="empty"><strong>No agent keys yet</strong>Create one to connect your own AI agent.</div>';
+    list.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+      if (!await UI.confirm({ title: `Revoke "${b.dataset.name}"?`, confirm: "Revoke key", tone: "danger",
+        what: ["Agents using this key lose access right away. This can't be undone."] })) return;
+      const r = await fetch(`/api/agent-keys/${encodeURIComponent(b.dataset.revoke)}`, { method: "DELETE" });
+      if (r.ok) { UI.toast("Key revoked"); loadKeys(); }
+    }));
+  }
+
+  $("key-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.currentTarget, name = f.name.value.trim(), msg = $("agent-access").querySelector(".d-body > .msg");
+    if (!name) { f.name.focus(); return; }
+    const res = await fetch("/api/agent-keys", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    if (!res.ok) { msg.className = "msg bad"; msg.textContent = "Couldn't create the key."; return; }
+    const created = await res.json();
+    $("new-key-value").textContent = created.key; // shown once, never stored in the page again
+    $("new-key").hidden = false;
+    f.reset();
+    loadKeys();
+  });
+  $("new-key-copy").addEventListener("click", () => UI.copy($("new-key-value").textContent));
+  $("mcp-url").textContent = `${location.origin}/mcp`;
+
+  loadAccount();
+  loadKeys();
 
   document.getElementById("sync").addEventListener("click", async (ev) => {
     const button = ev.currentTarget, msg = document.getElementById("sync-msg");

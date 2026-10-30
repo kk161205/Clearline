@@ -59,7 +59,7 @@
           <dt>Merchant tools</dt><dd id="merchant"><span class="skeleton" style="width:8em"></span></dd></dl>
         <div class="who">
           <div><strong>Buyer agents</strong><p>Use the buyer's private order link and only ever see that one order.</p></div>
-          <div class="merchant"><strong>Your merchant agent</strong><p>Sends <code>Authorization: Bearer &lt;MERCHANT_API_KEY&gt;</code>
+          <div class="merchant"><strong>Your merchant agent</strong><p>Sends <code>Authorization: Bearer &lt;agent key&gt;</code> (create one in <a href="/seller#settings">Settings, Agent access</a>)
             and can only read. Refunds and dispute answers stay your click in Clearline.</p></div>
         </div>
       </div>
@@ -98,7 +98,7 @@
     $("transport").textContent = d.transport;
     $("sdk").textContent = `Official MCP Python SDK (${d.sdk.replace(/^mcp /, "version ")})`;
     $("merchant").innerHTML = d.merchant_enabled ? '<span class="pill settled">On</span>'
-      : '<span class="pill">Off</span> <span class="muted small">Set MERCHANT_API_KEY in .env and restart the app to turn them on.</span>';
+      : '<span class="pill">Off</span> <span class="muted small">Create an agent key in <a href="/seller#settings">Settings, Agent access</a> to turn them on.</span>';
     $("tools").innerHTML = d.tools.map((t) => `<tr><td data-label="Tool"><code>${esc(t.name)}</code></td>
       <td data-label="For">${ROLE[t.role] || esc(t.role)}</td><td data-label="" class="desc wide">${esc(t.description)}</td></tr>`).join("");
     $("calls").innerHTML = d.calls.length ? d.calls.map((c) => `<tr><td data-label="Time" class="num">${esc(time(c.at))}</td>

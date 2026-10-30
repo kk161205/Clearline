@@ -16,13 +16,14 @@ import pytest
 import respx
 from mcp import Client
 
+from app.accounts import Accounts
 from app.buyer import buyer_token
+from app.store import TimelineStore
 from tests.support import (API, DisputeOnPayPal, make_client, open_dispute, setup_paypal,
                            shipped_order)
 from tests.test_buyer import PAYER_EMAIL, REFUND_URL, captured_with_pii
 from tests.test_webhooks import capture_order
 
-KEY = "merchant-test-key"
 HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientInfo": {"name": "test-agent", "version": "1"},
@@ -48,6 +49,14 @@ def rpc(client, method, params=None, *, key=None, origin=None, request_id=1):
     return client.post("/mcp", headers=headers, json={
         "jsonrpc": "2.0", "id": request_id, "method": method,
         "params": {**(params or {}), "_meta": META}})
+
+
+def agent_client(tmp_path, **overrides):
+    """A logged-in seller client plus a fresh agent key made in Settings -> Agent access."""
+    client, _ = make_client(tmp_path, **overrides)
+    created = client.post("/api/agent-keys", json={"name": "Test agent"})
+    assert created.status_code == 200, created.text
+    return client, created.json()["key"]
 
 
 def call(client, tool, key=None, **arguments):
@@ -86,7 +95,7 @@ def timeline(client, order_id="ORDER1", kind=None):
 
 @respx.mock
 def test_mcp_endpoint_lists_the_tools_over_http_and_in_process(tmp_path):
-    client, _ = make_client(tmp_path, merchant_api_key=KEY)
+    client, _ = agent_client(tmp_path)
     with client:
         listed = rpc(client, "tools/list")
         assert listed.status_code == 200 and listed.headers["content-type"].startswith("application/json")
@@ -117,13 +126,16 @@ def test_mcp_endpoint_lists_the_tools_over_http_and_in_process(tmp_path):
     assert all(read_only[t] for t in MERCHANT_TOOLS)  # every merchant tool is read-only
 
 
-def test_merchant_tools_do_not_exist_without_a_key(tmp_path):
-    client, _ = make_client(tmp_path)  # MERCHANT_API_KEY unset
+def test_merchant_tools_refuse_every_call_until_a_key_exists(tmp_path):
+    client, _ = make_client(tmp_path)  # no agent key created yet
     with client:
-        assert {t["name"] for t in rpc(client, "tools/list").json()["result"]["tools"]} == BUYER_TOOLS
-        assert "Unknown tool" in refused(call(client, "money_in_flight"))
-        # Any Bearer token is refused when no key is configured (never accepted or passed on).
+        listed = {t["name"] for t in rpc(client, "tools/list").json()["result"]["tools"]}
+        assert listed == BUYER_TOOLS | MERCHANT_TOOLS
+        assert call(client, "money_in_flight").status_code == 401
+        # Any Bearer token is refused unless it's a live key (never accepted or passed on).
         assert rpc(client, "tools/list", key="anything").status_code == 401
+        assert call(client, "money_in_flight", key="cl_live_made-up").status_code == 401
+        assert client.get("/api/agents").json()["merchant_enabled"] is False
 
 
 def test_origin_is_checked(tmp_path):
@@ -219,7 +231,7 @@ def test_agent_messages_are_pii_stripped_escaped_limited_and_rate_limited(tmp_pa
 @respx.mock
 def test_agent_call_log_keeps_no_personal_data(tmp_path):
     setup_paypal()
-    client, _ = make_client(tmp_path, merchant_api_key=KEY)
+    client, key = agent_client(tmp_path)
     captured_with_pii(client)
     link = link_for(client)
     token = link.rsplit("/", 1)[1]
@@ -228,7 +240,7 @@ def test_agent_call_log_keeps_no_personal_data(tmp_path):
         call(client, "message_seller", order_link=link, message=f"I am Jane, {PAYER_EMAIL}")
         call(client, "request_refund", order_link=link, reason="damaged", message="secret note")
         call(client, "get_order_status", order_link="forged-link")
-        call(client, "money_in_flight", key=KEY)
+        call(client, "money_in_flight", key=key)
         calls = client.get("/api/agents").json()["calls"]
     assert [c["tool"] for c in calls] == ["money_in_flight", "get_order_status", "request_refund",
                                           "message_seller", "get_order_status"]
@@ -236,14 +248,14 @@ def test_agent_call_log_keeps_no_personal_data(tmp_path):
     assert calls[2]["outcome"] == "refund request sent to seller" and calls[2]["order_ref"] == "ORDER1"
     with sqlite3.connect(tmp_path / "test.db") as db:
         dump = json.dumps(db.execute("SELECT * FROM agent_calls").fetchall())
-    for secret in (PAYER_EMAIL, "Jane", "secret note", token, KEY, "forged-link"):
+    for secret in (PAYER_EMAIL, "Jane", "secret note", token, key, "forged-link"):
         assert secret not in dump
 
 
 # ---- Merchant tools: Bearer key, read-only --------------------------------------------------
 
 def test_merchant_tools_need_the_right_key(tmp_path):
-    client, _ = make_client(tmp_path, merchant_api_key=KEY)
+    client, key = agent_client(tmp_path)
     with client:
         for tool in MERCHANT_TOOLS:
             args = {"dispute_id": "PP-D-1"} if tool == "get_dispute_brief" else {}
@@ -251,7 +263,7 @@ def test_merchant_tools_need_the_right_key(tmp_path):
             assert missing.status_code == 401 and missing.headers["www-authenticate"].startswith("Bearer")
             assert call(client, tool, key="wrong-key", **args).status_code == 401
         assert rpc(client, "tools/list", key="wrong-key").status_code == 401
-        assert ok(call(client, "money_in_flight", key=KEY))["totals"] == {}
+        assert ok(call(client, "money_in_flight", key=key))["totals"] == {}
 
     async def in_process():  # no HTTP headers at all: the tool's own check refuses
         async with Client(client.app.state.mcp) as mcp_client:
@@ -261,11 +273,42 @@ def test_merchant_tools_need_the_right_key(tmp_path):
     assert result.is_error and "401 Unauthorized" in result.content[0].text
 
 
+def test_agent_keys_are_shown_once_stored_hashed_and_revocable(tmp_path):
+    client, key = agent_client(tmp_path)
+    assert key.startswith("cl_live_") and len(key) > 40
+    with sqlite3.connect(tmp_path / "test.db") as db:
+        assert key not in json.dumps(db.execute("SELECT * FROM api_keys").fetchall())  # SHA-256 only
+    [listed] = client.get("/api/agent-keys").json()
+    assert listed["name"] == "Test agent" and listed["prefix"] == key[:12] and not listed["revoked"]
+    assert listed["last_used_at"] is None and "key" not in listed and "key_hash" not in listed
+    with client:
+        assert ok(call(client, "money_in_flight", key=key))["totals"] == {}
+        assert client.get("/api/agent-keys").json()[0]["last_used_at"]
+        assert client.get("/api/agents").json()["merchant_enabled"] is True
+
+        # Another seller can't revoke it; the owner can, and then it stops working at once.
+        other, _ = make_client(tmp_path, email="other-seller@example.com")
+        assert other.delete(f"/api/agent-keys/{listed['id']}").status_code == 404
+        assert other.get("/api/agent-keys").json() == []
+        assert client.delete(f"/api/agent-keys/{listed['id']}").status_code == 200
+        assert client.delete(f"/api/agent-keys/{listed['id']}").status_code == 404  # already revoked
+        assert call(client, "money_in_flight", key=key).status_code == 401
+        assert client.get("/api/agent-keys").json()[0]["revoked"] is True
+        assert client.get("/api/agents").json()["merchant_enabled"] is False
+
+        # A key whose owner is disabled stops working too.
+        second = client.post("/api/agent-keys", json={"name": "Second"}).json()["key"]
+        assert call(client, "money_in_flight", key=second).status_code == 200
+        user_id = client.get("/api/account").json()["id"]
+        Accounts(TimelineStore(str(tmp_path / "test.db"))).set_disabled(user_id, True)
+        assert call(client, "money_in_flight", key=second).status_code == 401
+
+
 @respx.mock
 def test_merchant_tools_read_everything_and_never_move_money(tmp_path):
     setup_paypal()
     dispute = DisputeOnPayPal()
-    client, _ = make_client(tmp_path, merchant_api_key=KEY, gemini_key=None, groq_key=None)
+    client, key = agent_client(tmp_path, gemini_key=None, groq_key=None)
     shipped_order(client)
     open_dispute(client)
     capture_order(client, "ORDER2", "CAP2")
@@ -273,10 +316,10 @@ def test_merchant_tools_read_everything_and_never_move_money(tmp_path):
                 json={"type": "not_arrived", "message": "Where is it? Email me a@b.co"})
     before = len(respx.calls)
     with client:
-        attention = ok(call(client, "list_attention_items", key=KEY))
-        brief = ok(call(client, "get_dispute_brief", key=KEY, dispute_id="PP-D-1"))
-        money = ok(call(client, "money_in_flight", key=KEY))
-        assert "Unknown dispute" in refused(call(client, "get_dispute_brief", key=KEY,
+        attention = ok(call(client, "list_attention_items", key=key))
+        brief = ok(call(client, "get_dispute_brief", key=key, dispute_id="PP-D-1"))
+        money = ok(call(client, "money_in_flight", key=key))
+        assert "Unknown dispute" in refused(call(client, "get_dispute_brief", key=key,
                                                  dispute_id="PP-D-404"))
         tools = {t["name"]: t for t in rpc(client, "tools/list").json()["result"]["tools"]}
     assert len(respx.calls) == before  # read from Clearline's records: no PayPal call at all

@@ -42,6 +42,34 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    last_login_at REAL,
+    failed_logins INTEGER NOT NULL DEFAULT 0,
+    locked_until REAL,
+    disabled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    last_used_at REAL,
+    revoked_at REAL
+);
 CREATE TABLE IF NOT EXISTS insights_layouts (
     user_key TEXT PRIMARY KEY,
     state TEXT NOT NULL,
@@ -220,6 +248,116 @@ class TimelineStore:
                    WHERE kind = ? AND created_at >= ? ORDER BY id""", (kind, since)).fetchall()
         return [{"order_id": r["order_id"], "payload": json.loads(r["payload"]),
                  "created_at": r["created_at"]} for r in rows]
+
+    # ---- Seller accounts: users, sessions, agent API keys ------------------------
+    # Plain SQL and the same column types as everything else (INTEGER, TEXT, REAL epoch
+    # seconds), so the planned Postgres move copies these tables like the rest.
+
+    _USER_COLUMNS = ("id, email, password_hash, created_at, last_login_at, failed_logins, "
+                     "locked_until, disabled")
+
+    def count_users(self) -> int:
+        with closing(self._conn()) as conn:
+            return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def create_user(self, email: str, password_hash: str, now: float) -> int:
+        """A new user (email already lowercased). The first account also takes over the Insights
+        layout saved before accounts existed (key "seller")."""
+        with closing(self._conn()) as conn, conn:
+            first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+            cur = conn.execute("INSERT INTO users (email, password_hash, created_at, failed_logins, disabled) "
+                               "VALUES (?, ?, ?, 0, 0)", (email, password_hash, now))
+            user_id = cur.lastrowid
+            if first:
+                conn.execute("UPDATE insights_layouts SET user_key = ? WHERE user_key = 'seller'",
+                             (str(user_id),))
+        return user_id
+
+    def _user(self, where: str, value) -> dict | None:
+        with closing(self._conn()) as conn:
+            row = conn.execute(f"SELECT {self._USER_COLUMNS} FROM users WHERE {where} = ?", (value,)).fetchone()
+        return dict(row) if row else None
+
+    def user_by_email(self, email: str) -> dict | None:
+        return self._user("email", email)
+
+    def user_by_id(self, user_id: int) -> dict | None:
+        return self._user("id", user_id)
+
+    def list_users(self) -> list[dict]:
+        with closing(self._conn()) as conn:
+            rows = conn.execute("SELECT id, email, created_at, last_login_at, disabled FROM users ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def update_user(self, user_id: int, **fields) -> None:
+        allowed = {"password_hash", "last_login_at", "failed_logins", "locked_until", "disabled"}
+        assert fields and set(fields) <= allowed, fields
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with closing(self._conn()) as conn, conn:
+            conn.execute(f"UPDATE users SET {sets} WHERE id = ?", (*fields.values(), user_id))
+
+    def create_session(self, session_id: str, user_id: int, now: float, expires_at: float) -> None:
+        with closing(self._conn()) as conn, conn:
+            conn.execute("INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (session_id, user_id, now, now, expires_at))
+
+    def session(self, session_id: str) -> dict | None:
+        with closing(self._conn()) as conn:
+            row = conn.execute("SELECT id, user_id, created_at, last_seen_at, expires_at FROM sessions "
+                               "WHERE id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+
+    def touch_session(self, session_id: str, now: float) -> None:
+        with closing(self._conn()) as conn, conn:
+            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?", (now, session_id))
+
+    def delete_session(self, session_id: str) -> None:
+        with closing(self._conn()) as conn, conn:
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def delete_user_sessions(self, user_id: int, keep: str | None = None) -> int:
+        with closing(self._conn()) as conn, conn:
+            cur = conn.execute("DELETE FROM sessions WHERE user_id = ? AND id != ?", (user_id, keep or ""))
+        return cur.rowcount
+
+    def delete_expired_sessions(self, now: float, idle_seconds: float) -> int:
+        with closing(self._conn()) as conn, conn:
+            cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ? OR last_seen_at <= ?",
+                               (now, now - idle_seconds))
+        return cur.rowcount
+
+    def create_api_key(self, user_id: int, name: str, key_hash: str, prefix: str, now: float) -> int:
+        with closing(self._conn()) as conn, conn:
+            cur = conn.execute("INSERT INTO api_keys (user_id, name, key_hash, prefix, created_at) "
+                               "VALUES (?, ?, ?, ?, ?)", (user_id, name, key_hash, prefix, now))
+        return cur.lastrowid
+
+    def api_keys(self, user_id: int) -> list[dict]:
+        with closing(self._conn()) as conn:
+            rows = conn.execute("SELECT id, name, prefix, created_at, last_used_at, revoked_at FROM api_keys "
+                                "WHERE user_id = ? ORDER BY id DESC", (user_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_api_key(self, user_id: int, key_id: int, now: float) -> bool:
+        with closing(self._conn()) as conn, conn:
+            cur = conn.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? "
+                               "AND revoked_at IS NULL", (now, key_id, user_id))
+        return cur.rowcount == 1
+
+    def use_api_key(self, key_hash: str, now: float) -> int | None:
+        """The key's id if it exists and isn't revoked (and its owner isn't disabled), noting
+        when it was last used; else None."""
+        with closing(self._conn()) as conn, conn:
+            row = conn.execute("SELECT k.id FROM api_keys k JOIN users u ON u.id = k.user_id "
+                               "WHERE k.key_hash = ? AND k.revoked_at IS NULL AND u.disabled = 0",
+                               (key_hash,)).fetchone()
+            if row:
+                conn.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (now, row["id"]))
+        return row["id"] if row else None
+
+    def active_api_keys(self) -> int:
+        with closing(self._conn()) as conn:
+            return conn.execute("SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL").fetchone()[0]
 
     # ---- Insights layouts (Day 8): the seller's own AG Studio report ------------
 

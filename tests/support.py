@@ -7,8 +7,10 @@ import httpx
 import respx
 from fastapi.testclient import TestClient
 
+from app.accounts import Accounts
 from app.config import Settings
 from app.main import create_app
+from app.store import TimelineStore
 from tests.test_webhooks import API, capture_order, mock_token, mock_verify, post_event
 
 GEMINI = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -17,11 +19,13 @@ DISPUTE_ID = "PP-D-1"
 PAYER_EMAIL = "buyer@us.example.com"
 
 
-SELLER_PASSWORD = "test-pass"
+# A test-only account (never used outside the test suite).
+SELLER_EMAIL = "seller@example.com"
+TEST_PASSWORD = "test-only-password-1"
 
 
 def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env="sandbox",
-                auto_sync_minutes=0, login=True, seller_password=SELLER_PASSWORD, **overrides):
+                auto_sync_minutes=0, login=True, email=SELLER_EMAIL, **overrides):
     # Every AI setting is explicit so a real .env can't change the result.
     settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
                         database_path=str(tmp_path / "test.db"), paypal_webhook_id="WH-1",
@@ -29,13 +33,22 @@ def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env=
                         groq_api_key=groq_key, groq_model="openai/gpt-oss-120b",
                         ai_timeout_seconds=5, paypal_env=paypal_env,
                         auto_sync_minutes=auto_sync_minutes, app_secret="test-secret",
-                        seller_password=seller_password,
                         **{"seller_country": "IN", **overrides})
     http = httpx.AsyncClient(base_url=settings.api_base)
     client = TestClient(create_app(settings, http))
-    if login and seller_password:
-        assert client.post("/api/login", json={"password": seller_password}).status_code == 200
+    if login:
+        login_as(client, settings, email)
     return client, settings
+
+
+def login_as(client, settings, email=SELLER_EMAIL, password=TEST_PASSWORD):
+    """Sign `client` in as `email`, creating that test account first if it doesn't exist."""
+    store = TimelineStore(settings.database_path)
+    if not store.user_by_email(email):
+        Accounts(store).create_user(email, password)
+    res = client.post("/api/login", json={"email": email, "password": password})
+    assert res.status_code == 200, res.text
+    return store.user_by_email(email)
 
 
 def full_dispute(**overrides) -> dict:

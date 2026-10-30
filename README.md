@@ -279,29 +279,58 @@ is checked first (more than 0, at most the captured amount minus earlier refunds
 nothing is retried if PayPal refuses. At the top, **"Questions answered before a dispute: N"**
 counts orders whose buyer asked a question and never opened a dispute.
 
-### Seller login (set this up first)
+### Seller accounts (set this up first)
 
-Everything except checkout, the buyer page and its API, and PayPal webhooks needs the seller
-login: `/seller`, orders, timelines, tracking, disputes, AI, sync, refunds and `/docs`. Add to
-`.env`, then restart uvicorn (it doesn't reload on `.env` changes):
+Everything except checkout, the buyer page and its API, and PayPal webhooks needs a seller
+account: `/seller`, orders, timelines, tracking, disputes, AI, sync, refunds and `/docs`.
+Accounts live in the database (`users` table); there is no shared password and no public
+sign-up.
+
+**First account: `/setup`.** While there's no account, every start logs one line at WARNING:
 
 ```
-APP_SECRET=<long random value>     # python -c "import secrets; print(secrets.token_urlsafe(32))"
-SELLER_PASSWORD=<your password>
+No seller account yet. Open /setup and use setup code: XXXX-XXXX-XXXX
 ```
 
-- Without `SELLER_PASSWORD`, `/seller` shows "set SELLER_PASSWORD in .env" and seller APIs
-  return 503.
-- Without `APP_SECRET`, a random one is used and the app logs a warning: buyer links and
-  logins then stop working after each restart.
-- Log in at `/login`. The session cookie is HttpOnly, SameSite=Lax, Secure over https (ngrok),
-  and lasts 12 hours. **Log out** ends it. After 5 wrong passwords, logins from that client
-  pause for 15 minutes. Webhooks and the auto-sync keep working without anyone logged in.
+Open `/setup`, enter that code, your email and a password (twice). The account is created,
+you're logged in and sent to `/seller`. The code is new on every start, kept only in memory,
+and dead once an account exists; after that `/setup` returns 404.
+
+**More accounts, resets: the CLI** (same database settings as the app):
+
+```powershell
+.venv\Scripts\python -m app.users create --email you@example.com    # asks for the password twice
+.venv\Scripts\python -m app.users reset-password --email you@example.com
+.venv\Scripts\python -m app.users disable --email you@example.com   # enable to undo
+.venv\Scripts\python -m app.users list
+```
+
+- **Passwords:** 12 to 128 characters, not a common password, not containing the part of your
+  email before the @. No other rules. Stored as Argon2id (argon2-cffi defaults), rehashed at
+  login if those defaults change.
+- **Login** at `/login` with email and password. Wrong email or wrong password get the same
+  answer. 5 wrong passwords lock that account for 15 minutes; one IP gets 20 tries per 15
+  minutes.
+- **Sessions** are rows in the database; the cookie holds a random token whose SHA-256 is the
+  row id. Cookie: HttpOnly, SameSite=Lax, Secure over https. A session ends after 7 days
+  unused or 30 days in all, on **Log out**, or on a password change (other devices).
+  Requests from another site's page (wrong `Origin`) are refused.
+- **Behind a proxy** (Render, ngrok): set `TRUST_PROXY=true` so `X-Forwarded-Proto` /
+  `X-Forwarded-For` count (Secure cookie, client IP for rate limits). Leave it `false` when
+  uvicorn faces the internet directly.
+- **Settings → Account:** your email, change password (needs the current one; signs out your
+  other devices) and **Sign out everywhere**.
+- `APP_SECRET` signs buyer order links. Without it a random one is used and the app logs a
+  warning: buyer links then stop working after each restart.
+- `SELLER_PASSWORD` and `MERCHANT_API_KEY` are no longer used. If they're still in your
+  environment the app starts, ignores them and logs a warning naming each one.
+
+Webhooks and the auto-sync keep working without anyone logged in.
 
 ### Test it
 
-1. Set `APP_SECRET` and `SELLER_PASSWORD`, restart uvicorn, and log in at
-   http://localhost:8000/login.
+1. Start uvicorn, copy the setup code from its log, create your account at
+   http://localhost:8000/setup.
 2. Pay an order on http://localhost:8000, then click **Questions about this order?** (or
    **Copy link** on `/seller`).
 3. On the buyer page, click **I want a refund**, pick a reason and send.
@@ -400,32 +429,34 @@ tools and the last 20 agent calls (tool, time, result, order ref; no personal da
 
 - **Buyer tools** take the buyer's private link (`https://…/o/<token>`) as `order_link`. It
   scopes the call to that one order; forged or unknown links get "Unknown order link".
-- **Merchant tools** need `Authorization: Bearer <MERCHANT_API_KEY>` (new `.env` setting, then
-  restart). Without the key set they don't exist. They are **read-only**: refunds and dispute
-  answers stay your click in `/seller`, and the tools return that link.
+- **Merchant tools** need `Authorization: Bearer <agent key>`. Create keys in `/seller` →
+  Settings → **Agent access**: name it, copy it (`cl_live_…`, shown once; only its SHA-256 is
+  stored), and revoke it there when an agent shouldn't have access any more. Any live key
+  works; calls without one get 401. They are **read-only**: refunds and dispute answers stay
+  your click in `/seller`, and the tools return that link.
 - Buyer-written text is treated as data, never instructions: PII-stripped, length- and
   rate-limited, shown escaped, and marked `buyer_text` for merchant agents.
 
 ### Connect an agent
 
-Generate a key and add it to `.env` as `MERCHANT_API_KEY=` (only for merchant tools):
-`.venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(32))"`
+For the merchant tools, create an agent key in Settings → **Agent access** first and use it
+in place of `<agent key>` below. Buyer tools need no key.
 
 - **Claude Code** (buyer tools / merchant tools):
   ```powershell
   claude mcp add --transport http clearline-buyer https://<your-domain>/mcp
-  claude mcp add --transport http clearline-seller https://<your-domain>/mcp --header "Authorization: Bearer <MERCHANT_API_KEY>"
+  claude mcp add --transport http clearline-seller https://<your-domain>/mcp --header "Authorization: Bearer <agent key>"
   ```
 - **Claude Desktop**: Settings → Connectors → *Add custom connector* → URL
   `https://<your-domain>/mcp` (buyer tools; custom connectors don't send custom headers). For the
   merchant tools, add to `claude_desktop_config.json`:
   ```json
   {"mcpServers": {"clearline-seller": {"command": "npx", "args": ["-y", "mcp-remote",
-    "https://<your-domain>/mcp", "--header", "Authorization: Bearer <MERCHANT_API_KEY>"]}}}
+    "https://<your-domain>/mcp", "--header", "Authorization: Bearer <agent key>"]}}}
   ```
 - **MCP Inspector**: `npx @modelcontextprotocol/inspector`, Transport *Streamable HTTP*, URL
   `https://<your-domain>/mcp`, connection *Via Proxy*; for merchant tools add the header
-  `Authorization: Bearer <MERCHANT_API_KEY>`. Then *List Tools* and call one.
+  `Authorization: Bearer <agent key>`. Then *List Tools* and call one.
 
 ### Example prompts
 
@@ -500,14 +531,16 @@ from `/api/dashboard`, and the key would go in `.env`.
 Never demo on your real database. Make a separate one:
 
 ```powershell
-.venv\Scripts\python -m app.seed_demo --orders 40         # writes clearline-demo.db
+.venv\Scripts\python -m app.seed_demo --orders 40         # writes clearline-demo.db, prints a demo login
 $env:DATABASE_PATH = "clearline-demo.db"; .venv\Scripts\uvicorn app.main:create_app --factory --port 8000
 ```
 
 `DATABASE_PATH` picks the file the app uses (default `clearline.db`). The seeder refuses to
 write to `clearline.db`, or to any existing file it didn't create. The records are clearly
 fake and sandbox-style: `@example.com` buyers, "Demo" messages, and no PayPal calls. Remove
-the variable (or open a new terminal) to go back to your real data.
+the variable (or open a new terminal) to go back to your real data. The seeder also creates a
+demo seller (`demo-seller@example.com`) with a random password it prints once; log in with
+that.
 
 ### Demo script
 
@@ -531,7 +564,7 @@ answers stay on `/seller`.
 - **Money state** is Clearline's own AG Studio widget: one line split into settled, waiting,
   disputed and unpaid, with each amount and share. It's under *Clearline* in the widget list.
 - **Editing:** *Edit layout* (screens 1024px and wider) to move, resize and add widgets. Changes
-  save automatically to the `insights_layouts` table; *Reset to default* restores Clearline's
+  save automatically to the `insights_layouts` table, one layout per seller account; *Reset to default* restores Clearline's
   report. Phones are view-only and show the same report stacked.
 
 **Licence.** AG Studio is a commercial product of AG Grid Ltd under its own licence; it's loaded
@@ -580,9 +613,12 @@ Grid's:
 | `app/static/buyer.html` | Checkout page using PayPal JS SDK v6 |
 | `app/static/seller.html` | Seller's orders, dispute alerts, AI recommendation card with Approve, buyer requests and refunds |
 | `app/static/order.html` | Buyer clarity page (`/o/<token>`) |
-| `app/static/login.html` | Seller login |
+| `app/static/login.html` | Seller login (email and password) |
+| `app/static/setup.html` | `/setup`: the first seller account, with the setup code from the log |
+| `app/accounts.py` | Seller accounts: Argon2id passwords, policy, lockout, DB sessions, agent keys, setup code |
+| `app/users.py` | `python -m app.users`: create, reset-password, disable, enable, list |
 | `app/buyer.py` | Buyer links, buyer page facts, cached AI summary, refund totals |
-| `app/auth.py` | Seller login, sessions, rate limits, the public-route list |
+| `app/auth.py` | The public-route list and the rate limiter |
 | `app/evidence.py` | Checks for seller-provided dispute documents |
 | `app/invoicing.py` | Invoice drafts, statuses, reminder drafts, verified purpose codes |
 | `app/agents.py` | MCP server (`/mcp`): buyer and merchant tools, call log, Origin/Bearer guard |

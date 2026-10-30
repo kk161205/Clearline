@@ -7,6 +7,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from app.accounts import Accounts
 from app.config import Settings
 from app.main import create_app
 from app.store import TimelineStore
@@ -30,10 +31,12 @@ def make_client(tmp_path, *, webhook_id="WH-1", allow_unverified=False):
                         database_path=str(tmp_path / "test.db"),
                         paypal_webhook_id=webhook_id,
                         allow_unverified_webhooks=allow_unverified,
-                        app_secret="test-secret", seller_password="test-pass")
+                        app_secret="test-secret")
     http = httpx.AsyncClient(base_url=settings.api_base)
     client = TestClient(create_app(settings, http))
-    client.post("/api/login", json={"password": "test-pass"})  # seller APIs need a session
+    # Seller APIs need a session: a test-only account, signed in through the real login.
+    Accounts(TimelineStore(settings.database_path)).create_user("seller@example.com", "test-only-password-1")
+    client.post("/api/login", json={"email": "seller@example.com", "password": "test-only-password-1"})
     return client
 
 

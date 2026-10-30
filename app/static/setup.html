@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex" />
+  <title>Clearline · Set up</title>
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
+  <style>
+    main { min-height: 100vh; display: grid; place-items: center; padding: 24px var(--gutter); }
+    .wrap { width: min(420px, 100%); }
+    .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    form { padding: 28px 24px; }
+    h1 { font-size: var(--t-xl); margin-bottom: 4px; }
+    .sub { color: var(--muted); margin: 0 0 4px; }
+    input { width: 100%; }
+    #code { font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    button[type="submit"] { width: 100%; margin-top: 18px; }
+    #msg { color: var(--disputed-ink); font-size: var(--t-sm); min-height: 1.5em; margin-top: 10px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="wrap">
+    <div class="top"><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span>
+      <button class="ghost small" type="button" data-theme-toggle aria-pressed="false">Theme</button></div>
+    <form class="panel" id="setup" novalidate>
+      <h1>Create the seller account</h1>
+      <p class="sub">This page works once, while Clearline has no account yet.</p>
+      <label class="field" for="code">Setup code
+        <input id="code" name="code" autocomplete="one-time-code" required maxlength="20" placeholder="XXXX-XXXX-XXXX" autofocus />
+        <span class="hint">It's in the server log: "No seller account yet. Open /setup and use setup code: …"</span></label>
+      <label class="field" for="email">Email
+        <input id="email" name="email" type="email" autocomplete="username" required maxlength="254" /></label>
+      <label class="field" for="password">Password
+        <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="128" />
+        <span class="hint">12 to 128 characters. Not a common password, and not containing your email.</span></label>
+      <label class="field" for="confirm">Confirm password
+        <input id="confirm" name="confirm" type="password" autocomplete="new-password" required maxlength="128" /></label>
+      <button type="submit">Create account</button>
+      <div id="msg" role="alert"></div>
+    </form>
+  </div>
+</main>
+<script>
+  document.getElementById("setup").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.currentTarget, button = f.querySelector("button[type=submit]"), msg = document.getElementById("msg");
+    const body = { code: f.code.value.trim(), email: f.email.value.trim(), password: f.password.value, confirm: f.confirm.value };
+    if (!body.code || !body.email || !body.password) { msg.textContent = "Fill in every field."; return; }
+    if (body.password.length < 12) { msg.textContent = "Use at least 12 characters."; return; }
+    if (body.password !== body.confirm) { msg.textContent = "The passwords don't match."; return; }
+    button.disabled = true; button.textContent = "Creating…"; msg.textContent = "";
+    try {
+      const res = await fetch("/api/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (res.ok) { location.href = "/seller"; return; }
+      if (res.status === 404) { location.href = "/login"; return; } // an account exists now
+      const out = await res.json().catch(() => ({}));
+      msg.textContent = res.status === 429 ? "Too many attempts, try again later."
+        : typeof out.detail === "string" ? out.detail : "Couldn't create the account.";
+    } catch { msg.textContent = "Could not reach the server."; }
+    finally { button.disabled = false; button.textContent = "Create account"; }
+  });
+</script>
+</body>
+</html>

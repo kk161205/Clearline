@@ -7,9 +7,10 @@ headers) alike, behind ngrok, with no separate process.
 Two kinds of agent, two kinds of credential:
 - Buyer agents pass the buyer's private order link (/o/<token>). It scopes every buyer tool to
   that one order; unknown, forged and stale links all get the same "unknown order link" answer.
-- Merchant agents send MERCHANT_API_KEY as `Authorization: Bearer ...`. Merchant tools are
-  read-only: anything that moves money or answers PayPal stays a click in /seller, and the tools
-  hand back that link instead. If the key isn't set, merchant tools don't exist at all.
+- Merchant agents send an agent key (Settings -> Agent access, "cl_live_...") as
+  `Authorization: Bearer ...`; any key that isn't revoked works. Merchant tools are read-only:
+  anything that moves money or answers PayPal stays a click in /seller, and the tools hand back
+  that link instead.
 
 Buyer-written text is untrusted data: it is length-limited, rate-limited per link, stored
 PII-stripped, rendered escaped, and never treated as instructions by Clearline. The call log
@@ -17,8 +18,6 @@ keeps only tool, role, time, a short outcome and the order's last 6 characters.
 """
 
 import functools
-import hashlib
-import hmac
 import json
 import logging
 import re
@@ -82,6 +81,8 @@ class AgentDeps:
     # (order_id, token=, type=, reason=, message=, amount=, via=) -> {request_id, status, ...};
     # the same path the buyer page uses, including the auto-resolve policy.
     submit_request: Callable[..., Awaitable[dict]]
+    # key -> True if it's a live agent key (checked against the database, noting its use).
+    check_key: Callable[[str | None], bool]
 
 
 def token_from_link(link: str) -> str | None:
@@ -101,15 +102,11 @@ def clean_message(text: str) -> str:
     return CONTROL.sub("", text or "").strip()
 
 
-def _digest(value: str) -> bytes:
-    return hashlib.sha256(value.encode()).digest()
-
-
-def bearer_ok(authorization: str | None, key: str | None) -> bool:
-    """Constant-time check of an `Authorization: Bearer <key>` header."""
-    if not key or not authorization or not authorization.startswith("Bearer "):
-        return False
-    return hmac.compare_digest(_digest(authorization[7:].strip()), _digest(key))
+def bearer_token(authorization: str | None) -> str | None:
+    """The token from an `Authorization: Bearer <token>` header, or None."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return authorization[7:].strip() or None
 
 
 def build_mcp(deps: AgentDeps) -> MCPServer:
@@ -281,18 +278,15 @@ def build_mcp(deps: AgentDeps) -> MCPServer:
                              "status": x["status"], "at": iso(x["at"])} for x in page["refunds"]],
                 "note": UNTRUSTED, "_order": order_id}
 
-    if not settings.merchant_api_key:
-        return mcp  # merchant tools are disabled without a key
-
-    # ---- Merchant-agent tools: read-only, Bearer MERCHANT_API_KEY ----------------------
+    # ---- Merchant-agent tools: read-only, Bearer agent key -----------------------------
 
     def merchant(ctx: Context) -> str:
         """The seller dashboard URL, after checking the Bearer key (the HTTP guard has
         already answered 401; this is the second check, also for in-process clients)."""
         headers = ctx.headers or {}
-        if not bearer_ok(headers.get("authorization"), settings.merchant_api_key):
+        if not deps.check_key(bearer_token(headers.get("authorization"))):
             raise AgentError("401 Unauthorized: merchant tools need "
-                             "'Authorization: Bearer <MERCHANT_API_KEY>'.", "unauthorized")
+                             "'Authorization: Bearer <agent key>' (Settings -> Agent access).", "unauthorized")
         request = ctx.request_context.request
         host = headers.get("x-forwarded-host") or headers.get("host")
         proto = ((headers.get("x-forwarded-proto") or "").split(",")[0].strip()
@@ -435,8 +429,8 @@ class McpGuard:
       with a wrong Bearer key, and any merchant tools/call without one.
     The tools check the key again themselves."""
 
-    def __init__(self, app, merchant_key: str | None):
-        self.app, self.key = app, merchant_key
+    def __init__(self, app, check_key: Callable[[str | None], bool]):
+        self.app, self.check_key = app, check_key
 
     @staticmethod
     def origin_ok(origin: str, headers: Headers) -> bool:
@@ -461,8 +455,8 @@ class McpGuard:
             return await JSONResponse({"jsonrpc": "2.0", "error": {
                 "code": -32600, "message": "Origin not allowed"}}, status_code=403)(scope, receive, send)
         authorization = headers.get("authorization")
-        if authorization is not None and not bearer_ok(authorization, self.key):
-            return await self.unauthorized("Wrong or unknown merchant key.")(scope, receive, send)
+        if authorization is not None and not self.check_key(bearer_token(authorization)):
+            return await self.unauthorized("Wrong, revoked or unknown agent key.")(scope, receive, send)
         if scope["method"] != "POST":
             return await self.app(scope, receive, send)
 
@@ -475,9 +469,9 @@ class McpGuard:
             more = message.get("more_body", False)
             if len(body) > MAX_BODY:
                 return await JSONResponse({"error": "too large"}, status_code=413)(scope, receive, send)
-        if self.key and authorization is None and self.merchant_call(body):
+        if authorization is None and self.merchant_call(body):
             return await self.unauthorized("Merchant tools need 'Authorization: Bearer "
-                                           "<MERCHANT_API_KEY>'.")(scope, receive, send)
+                                           "<agent key>' (Settings -> Agent access).")(scope, receive, send)
         replayed = False
 
         async def replay():

@@ -163,12 +163,12 @@ def test_dashboard_payload_has_no_pii(mixed):
 
 
 def test_dashboard_needs_the_seller_login(tmp_path):
+    seller, _ = make_client(tmp_path)  # an account exists, so logged-out pages go to /login
     client, _ = make_client(tmp_path, login=False)
     assert client.get("/api/dashboard").status_code == 401
     page = client.get("/dashboard", follow_redirects=False)
     assert page.status_code == 303 and page.headers["location"] == "/login"
     assert client.get("/static/history.js", follow_redirects=False).status_code == 303  # seller-only script
-    seller, _ = make_client(tmp_path)
     assert seller.get("/dashboard").status_code == 200
     lib = seller.get("/static/vendor/ag-grid-community-36.2.0.min.js")
     assert lib.status_code == 200 and "max-age" in lib.headers["cache-control"]

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from app.store import TimelineStore
 from tests.support import make_client
 from tests.test_dashboard import CLIENT, EMAIL, NOTE, mixed  # noqa: F401  (fixture)
 
@@ -36,12 +37,36 @@ def test_layout_is_saved_per_seller_in_its_own_table(tmp_path):
     got = client.get("/api/insights/layout").json()
     assert got["state"] == state and got["updated_at"] == saved.json()["updated_at"]
     with sqlite3.connect(settings.database_path) as db:  # a proper table, not app_settings
-        assert db.execute("SELECT user_key FROM insights_layouts").fetchall() == [("seller",)]
+        user_id = client.get("/api/account").json()["id"]
+        assert db.execute("SELECT user_key FROM insights_layouts").fetchall() == [(str(user_id),)]
         assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 0
     client.put("/api/insights/layout", json={**state, "selectedPageId": "other"})  # overwrites
     assert client.get("/api/insights/layout").json()["state"]["selectedPageId"] == "other"
     assert client.delete("/api/insights/layout").json() == {"ok": True}  # Reset to default
     assert client.get("/api/insights/layout").json()["state"] is None
+
+
+def test_two_sellers_get_separate_layouts(tmp_path):
+    first, settings = make_client(tmp_path)
+    second, _ = make_client(tmp_path, email="second-seller@example.com")
+    mine = {"pages": [{"id": "mine"}], "selectedPageId": "mine"}
+    assert first.put("/api/insights/layout", json=mine).status_code == 200
+    assert second.get("/api/insights/layout").json()["state"] is None  # not the other account's
+    second.put("/api/insights/layout", json={"pages": [], "selectedPageId": "theirs"})
+    second.delete("/api/insights/layout")
+    assert first.get("/api/insights/layout").json()["state"] == mine  # untouched by the other
+    assert second.get("/api/insights/layout").json()["state"] is None
+
+
+def test_the_old_single_seller_layout_moves_to_the_first_account(tmp_path):
+    store = TimelineStore(str(tmp_path / "test.db"))
+    old = {"pages": [{"id": "from-before-accounts"}], "selectedPageId": "from-before-accounts"}
+    store.set_insights_layout("seller", old)  # saved under the shared password
+    first, settings = make_client(tmp_path)  # creates and logs in the first account
+    assert first.get("/api/insights/layout").json()["state"] == old
+    second, _ = make_client(tmp_path, email="second-seller@example.com")
+    assert second.get("/api/insights/layout").json()["state"] is None  # only the first gets it
+    assert store.insights_layout("seller") is None
 
 
 @pytest.mark.parametrize("body", [

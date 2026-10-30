@@ -11,20 +11,23 @@ didn't create itself, so the real timeline can't be touched. Nothing here calls 
 import argparse
 import json
 import random
+import secrets
 import sqlite3
 import sys
 import time
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .accounts import Accounts, password_problem
 from .config import Settings
 from .main import CATALOGUE
 from .policy import TRIGGER
 from .store import TimelineStore
 
 DEFAULT_OUT = "clearline-demo.db"
-MARKER = "demo_database"  # app_settings key: this file was made by the seeder
+MARKER = "demo_database"
+DEMO_EMAIL = "demo-seller@example.com"  # a reserved, clearly fake domain  # app_settings key: this file was made by the seeder
 DAY = 86400
 COUNTRIES = ["US", "GB", "DE", "CA", "AU", "FR", "NL", "SG", "AE", "JP", "IE", "SE"]
 CARRIERS = ["DHL", "FEDEX", "UPS", "USPS"]
@@ -114,7 +117,7 @@ def build_rows(n_orders: int, rng: random.Random, now: float) -> list[tuple]:
                 via=rng.choice(["page", "agent"]), message="Demo: still waiting.", amount=amount)
             add(oid, "refund_sent", ask_t + 5, request_id=rid, mode="partial" if amount != price else "full",
                 amount=amount, currency="USD", status="COMPLETED", trigger=TRIGGER,
-                rule=f"Item not received, up to 40.00 USD per order")
+                rule="Item not received, up to 40.00 USD per order")
             add(oid, "seller_reply", ask_t + 6, request_id=rid, auto=True,
                 message=f"Demo: a refund of {amount} USD was sent automatically.")
         elif scenario in ("inquiry_seller", "claim_seller", "under_review", "waiting_buyer", "won", "lost"):
@@ -175,7 +178,9 @@ def build_rows(n_orders: int, rng: random.Random, now: float) -> list[tuple]:
     return rows
 
 
-def seed(path: Path, n_orders: int, seed_value: int = 7, now: float | None = None) -> int:
+def seed(path: Path, n_orders: int, seed_value: int = 7, now: float | None = None) -> dict:
+    """Write the demo database: {"events": count, "email": ..., "password": ...}. The demo
+    seller's password is random every time and exists only in this return value."""
     check_target(path)
     path.unlink(missing_ok=True)
     store = TimelineStore(str(path))
@@ -184,7 +189,11 @@ def seed(path: Path, n_orders: int, seed_value: int = 7, now: float | None = Non
     rows.sort(key=lambda r: r[3])  # insert in time order, like real events
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.executemany("INSERT INTO events (order_id, kind, payload, created_at) VALUES (?, ?, ?, ?)", rows)
-    return len(rows)
+    password = secrets.token_urlsafe(18)
+    while password_problem(password, DEMO_EMAIL):
+        password = secrets.token_urlsafe(18)
+    Accounts(store).create_user(DEMO_EMAIL, password)
+    return {"events": len(rows), "email": DEMO_EMAIL, "password": password}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -196,9 +205,11 @@ def main(argv: list[str] | None = None) -> None:
     if not 1 <= args.orders <= 5000:
         raise SystemExit("--orders must be between 1 and 5000")
     path = Path(args.db)
-    count = seed(path, args.orders, args.seed)
-    print(f"Wrote {count} demo events ({args.orders} orders plus invoices) to {path.resolve()}")
+    result = seed(path, args.orders, args.seed)
+    print(f"Wrote {result['events']} demo events ({args.orders} orders plus invoices) to {path.resolve()}")
     print(f"Run the app on it with DATABASE_PATH={args.db}")
+    # Shown once: it isn't stored anywhere but as a hash in the demo database.
+    print(f"Demo seller login: {result['email']} / {result['password']}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import re
 import secrets
 import time
 import uuid
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager, suppress
 from importlib.metadata import version as package_version
 from datetime import date, datetime, timezone
@@ -14,7 +15,7 @@ from typing import Literal
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
 from starlette.routing import Route
@@ -22,7 +23,9 @@ from starlette.routing import Route
 from .agents import BUYER_TOOLS, AgentDeps, McpGuard, build_mcp
 from .ai import AIClient, AIError
 from .assistant import Assistant, strip_pii
-from .auth import SESSION_COOKIE, SESSION_SECONDS, RateLimiter, SellerAuth, is_public
+from .accounts import (GENERIC_LOGIN_ERROR, SESSION_ABSOLUTE, SESSION_COOKIE, Accounts,
+                       new_setup_code, setup_code_matches)
+from .auth import RateLimiter, is_public
 from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer_token,
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
@@ -68,10 +71,7 @@ CATALOGUE = {
 }
 
 
-# Insights layouts are keyed per seller account.
-# TODO(accounts): key by the logged-in seller's account id once DB accounts land; until then
-# there is one seller, so every layout belongs to this constant.
-INSIGHTS_OWNER = "seller"
+# Insights layouts are kept per seller account (insights_layouts.user_key = the user's id).
 MAX_LAYOUT_BYTES = 256 * 1024
 MAX_AI_TURN_BYTES = 1024 * 1024
 
@@ -138,7 +138,25 @@ class RefundIn(BaseModel):
 
 
 class LoginIn(BaseModel):
+    email: str = Field(max_length=254)
     password: str = Field(max_length=200)
+
+
+class SetupIn(BaseModel):
+    code: str = Field(max_length=40)
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=200)
+    confirm: str = Field(max_length=200)
+
+
+class PasswordChangeIn(BaseModel):
+    current: str = Field(max_length=200)
+    password: str = Field(max_length=200)
+    confirm: str = Field(max_length=200)
+
+
+class ApiKeyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
 
 
 class ExtractIn(BaseModel):
@@ -189,16 +207,6 @@ class ActionNotAllowed(Exception):
 
 
 PAYPAL_TEXT_LIMIT = 2000  # maxLength of message/note fields in the Disputes schema
-
-LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Clearline · Seller</title>
-<link rel="stylesheet" href="/static/ui.css"><script src="/static/ui.js"></script>
-<style>main{max-width:520px;margin:64px auto;padding:0 16px}h1{margin:20px 0 12px}</style>
-</head><body><main><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span>
-<div class="panel" style="margin-top:20px"><h1>Seller login isn't set up</h1>
-<p>Set <code>SELLER_PASSWORD</code> in <code>.env</code> (and <code>APP_SECRET</code>), then restart
-the app. Until then the seller pages and APIs stay locked.</p></div></main></body></html>"""
-
 
 STATE_CHANGED_ISSUE = "ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE"
 
@@ -357,8 +365,28 @@ def create_app(settings: Settings | None = None,
     if not secret:
         secret = secrets.token_urlsafe(32)
         log.warning("APP_SECRET is not set: using a random one for now. Buyer links (/o/...) "
-                    "and seller logins will stop working after a restart. Set APP_SECRET in .env.")
-    auth = SellerAuth(secret, settings.seller_password)
+                    "will stop working after a restart. Set APP_SECRET in .env.")
+    for name, value in (("SELLER_PASSWORD", settings.legacy_seller_password),
+                        ("MERCHANT_API_KEY", settings.legacy_merchant_api_key)):
+        if value is not None:  # by name only, never the value
+            log.warning("%s is no longer used; remove it from your environment.", name)
+    accounts = Accounts(store)
+    # The first account is made at /setup with a one-time code from this log line. Memory only,
+    # new on every start, useless once an account exists.
+    setup = {"code": None}
+    if store.count_users() == 0:
+        setup["code"] = new_setup_code()
+        log.warning("No seller account yet. Open /setup and use setup code: %s", setup["code"])
+    setup_lock = asyncio.Lock()
+
+    def needs_setup() -> bool:
+        """True while there's no account yet. An account made any other way (the CLI) ends
+        setup too: the code is dropped and never valid again."""
+        if setup["code"] and store.count_users():
+            setup["code"] = None
+        return bool(setup["code"])
+    login_limit = RateLimiter(limit=20, window=15 * 60)  # login attempts per IP
+    setup_limit = RateLimiter(limit=10, window=15 * 60)  # setup attempts per IP
     summaries = SummaryCache(store, ai)
     buyer_limits = RateLimiter(limit=5, window=3600)  # buyer submissions per link per hour
     policy_lock = asyncio.Lock()  # one auto-resolve decision at a time, so caps hold
@@ -375,14 +403,22 @@ def create_app(settings: Settings | None = None,
         if settings.auto_sync_minutes > 0:
             task = asyncio.create_task(run_every(settings.auto_sync_minutes * 60, auto_sync))
         app.state.auto_sync_task = task
+
+        async def clean_sessions():
+            removed = accounts.cleanup()
+            if removed:
+                log.info("Removed %d expired seller sessions", removed)
+
+        cleanup = asyncio.create_task(run_every(3600, clean_sessions))  # hourly
         try:
             async with mcp_server.session_manager.run():  # the MCP endpoint needs this running
                 yield
         finally:
-            if task:
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+            for t in (task, cleanup):
+                if t:
+                    t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
 
     app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan)
 
@@ -390,59 +426,172 @@ def create_app(settings: Settings | None = None,
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
                                                        "paypal_error": err.body})
 
-    # ---- Seller login (Day 4): everything not public needs a session --------
+    # ---- Seller accounts: everything not public needs a signed-in seller ------------
+
+    def client_ip(request: Request) -> str:
+        """The client's IP: the first X-Forwarded-For hop only behind a trusted proxy."""
+        if settings.trust_proxy:
+            forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+        return request.client.host if request.client else "unknown"
+
+    def is_https(request: Request) -> bool:
+        if request.url.scheme == "https":
+            return True
+        return settings.trust_proxy and request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+
+    def request_host(request: Request) -> str:
+        if settings.trust_proxy and request.headers.get("x-forwarded-host"):
+            return request.headers["x-forwarded-host"].split(",")[0].strip()
+        return request.headers.get("host", "")
+
+    def foreign_origin(request: Request) -> bool:
+        """A state-changing request whose Origin names another site (the browser always sends
+        Origin on cross-site POST/PUT/PATCH/DELETE). No Origin header: not a browser, allowed."""
+        origin = request.headers.get("origin")
+        if request.method not in ("POST", "PUT", "PATCH", "DELETE") or not origin:
+            return False
+        return urlparse(origin).netloc.lower() != request_host(request).lower()
+
+    def start_session(response: Response, request: Request, user_id: int) -> None:
+        accounts.end_session(request.cookies.get(SESSION_COOKIE))  # rotate: the old one ends
+        response.set_cookie(SESSION_COOKIE, accounts.start_session(user_id), max_age=SESSION_ABSOLUTE,
+                            httponly=True, samesite="lax", secure=is_https(request), path="/")
 
     @app.middleware("http")
     async def require_seller(request: Request, call_next):
-        """Deny by default. Public: checkout, buyer page + API, webhooks, login."""
-        if is_public(request.method, request.url.path):
+        """Deny by default. Public: checkout, buyer page + API, webhooks, login, setup, the MCP
+        endpoint (its own Bearer and order-link checks). Everything else needs a live session."""
+        path = request.url.path
+        if is_public(request.method, path):
+            if path in ("/api/login", "/api/setup", "/api/logout") and foreign_origin(request):
+                return JSONResponse({"detail": "Request blocked: wrong origin."}, status_code=403)
             return await call_next(request)
-        wants_page = request.method == "GET" and not request.url.path.startswith("/api/")
-        if not auth.enabled:
-            if wants_page:
-                return HTMLResponse(LOCKED_PAGE, status_code=503)
-            return JSONResponse({"detail": "Seller login isn't set up: set SELLER_PASSWORD in "
-                                           ".env and restart the app."}, status_code=503)
-        if not auth.valid(request.cookies.get(SESSION_COOKIE)):
-            if wants_page:
-                return RedirectResponse("/login", status_code=303)
+        found = accounts.session_user(request.cookies.get(SESSION_COOKIE))
+        if not found:
+            if request.method == "GET" and not path.startswith("/api/"):
+                return RedirectResponse("/setup" if needs_setup() else "/login", status_code=303)
             return JSONResponse({"detail": "Log in as the seller first."}, status_code=401)
+        if foreign_origin(request):
+            return JSONResponse({"detail": "Request blocked: wrong origin."}, status_code=403)
+        request.state.user, request.state.session_id = found
         return await call_next(request)
 
-    def client_key(request: Request) -> str:
-        """Who is trying to log in. Behind ngrok every request comes from localhost, so use the
-        first X-Forwarded-For hop; the global limit below caps spoofed keys too."""
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        return forwarded or (request.client.host if request.client else "unknown")
+    def current_user(request: Request) -> dict:
+        return request.state.user
 
     @app.get("/login", include_in_schema=False)
     async def login_page():
-        if not auth.enabled:
-            return HTMLResponse(LOCKED_PAGE, status_code=503)
+        if needs_setup():
+            return RedirectResponse("/setup", status_code=303)
         return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/login")
     async def login(body: LoginIn, request: Request, response: Response):
-        if not auth.enabled:
-            raise HTTPException(503, "Seller login isn't set up: set SELLER_PASSWORD in .env "
-                                     "and restart the app.")
-        key = client_key(request)
-        if auth.failures.blocked(key) or auth.all_failures.blocked("all"):
-            raise HTTPException(429, "Too many failed logins. Wait 15 minutes and try again.")
-        if not auth.check_password(body.password):
-            auth.failures.hit(key)
-            auth.all_failures.hit("all")
-            raise HTTPException(401, "Wrong password.")
-        https = (request.url.scheme == "https"
-                 or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
-        response.set_cookie(SESSION_COOKIE, auth.new_session(), max_age=SESSION_SECONDS,
-                            httponly=True, samesite="lax", secure=https, path="/")
+        ip = client_ip(request)
+        if login_limit.blocked(ip):
+            log.warning("Login blocked: too many attempts from %s", ip)
+            raise HTTPException(429, "Too many attempts, try again later.")
+        login_limit.hit(ip)
+        user, outcome = accounts.authenticate(body.email, body.password)
+        who = user["id"] if user else "unknown"
+        if outcome != "ok":
+            if outcome == "locked":
+                log.warning("Login failed: user %s is locked (from %s)", who, ip)
+            else:
+                log.warning("Login failed: user %s (%s) from %s", who, outcome, ip)
+            raise HTTPException(401, GENERIC_LOGIN_ERROR)
+        start_session(response, request, user["id"])
+        log.info("Login ok: user %s from %s", who, ip)
         return {"ok": True}
 
     @app.post("/api/logout")
     async def logout(request: Request, response: Response):
-        auth.end(request.cookies.get(SESSION_COOKIE))
+        accounts.end_session(request.cookies.get(SESSION_COOKIE))
         response.delete_cookie(SESSION_COOKIE, path="/")
+        return {"ok": True}
+
+    @app.get("/setup", include_in_schema=False)
+    async def setup_page():
+        if not needs_setup():
+            raise HTTPException(404, "Not Found")
+        return FileResponse(STATIC / "setup.html", headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/setup")
+    async def create_first_account(body: SetupIn, request: Request, response: Response):
+        """The first seller account, with the setup code from the server log. Only while there
+        are no accounts; afterwards this doesn't exist (404)."""
+        ip = client_ip(request)
+        async with setup_lock:
+            if not needs_setup():
+                raise HTTPException(404, "Not Found")
+            if setup_limit.blocked(ip):
+                raise HTTPException(429, "Too many attempts, try again later.")
+            setup_limit.hit(ip)
+            if not setup_code_matches(body.code, setup["code"]):
+                log.warning("Setup failed: wrong setup code from %s", ip)
+                raise HTTPException(403, "That setup code isn't right. Check the server log.")
+            if body.password != body.confirm:
+                raise HTTPException(422, "The passwords don't match.")
+            try:
+                user_id = accounts.create_user(body.email, body.password)
+            except ValueError as err:
+                raise HTTPException(422, str(err))
+            setup["code"] = None  # used: never valid again, never logged again
+        start_session(response, request, user_id)
+        log.info("Setup: first seller account created, user %s from %s", user_id, ip)
+        return {"ok": True}
+
+    @app.get("/api/account")
+    async def account(request: Request):
+        user = current_user(request)
+        return {"id": user["id"], "email": user["email"]}
+
+    @app.post("/api/account/password")
+    async def change_password(body: PasswordChangeIn, request: Request):
+        """New password, with the current one. Every other session of this account ends."""
+        user = current_user(request)
+        if not accounts.check_password(user, body.current):
+            log.warning("Password change refused: wrong current password, user %s", user["id"])
+            raise HTTPException(403, "Your current password isn't right.")
+        if body.password != body.confirm:
+            raise HTTPException(422, "The new passwords don't match.")
+        try:
+            accounts.set_password(user["id"], body.password, keep_session=request.state.session_id)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        log.info("Password changed: user %s; other sessions ended", user["id"])
+        return {"ok": True}
+
+    @app.post("/api/account/sign-out-everywhere")
+    async def sign_out_everywhere(request: Request, response: Response):
+        user = current_user(request)
+        ended = store.delete_user_sessions(user["id"])
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        log.info("Signed out everywhere: user %s, %d sessions ended", user["id"], ended)
+        return {"ok": True}
+
+    # ---- Agent access: API keys for the read-only merchant MCP tools ----------------
+
+    @app.get("/api/agent-keys")
+    async def list_agent_keys(request: Request):
+        return [{**k, "revoked": bool(k["revoked_at"])} for k in store.api_keys(current_user(request)["id"])]
+
+    @app.post("/api/agent-keys")
+    async def create_agent_key(body: ApiKeyIn, request: Request):
+        """A new key, shown once: only its SHA-256 is stored."""
+        user = current_user(request)
+        created = accounts.create_api_key(user["id"], body.name)
+        log.info("Agent key %s created by user %s", created["id"], user["id"])
+        return created
+
+    @app.delete("/api/agent-keys/{key_id}")
+    async def revoke_agent_key(key_id: int, request: Request):
+        user = current_user(request)
+        if not store.revoke_api_key(user["id"], key_id, time.time()):
+            raise HTTPException(404, "No such key")
+        log.info("Agent key %s revoked by user %s", key_id, user["id"])
         return {"ok": True}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.
@@ -1397,7 +1546,8 @@ def create_app(settings: Settings | None = None,
 
     mcp_server = build_mcp(AgentDeps(settings=settings, store=store, secret=secret,
                                      summaries=summaries, assistant=assistant,
-                                     item_names=item_names, submit_request=submit_request))
+                                     item_names=item_names, submit_request=submit_request,
+                                     check_key=accounts.api_key_ok))
     app.state.mcp = mcp_server
     # Stateless + JSON replies: one POST in, one JSON reply out, for 2026-07-28 and older
     # clients alike. The SDK's localhost-only Host check is off because the app is reached
@@ -1405,7 +1555,7 @@ def create_app(settings: Settings | None = None,
     mcp_http = mcp_server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
-    app.router.routes.append(Route("/mcp", McpGuard(mcp_http, settings.merchant_api_key)))
+    app.router.routes.append(Route("/mcp", McpGuard(mcp_http, accounts.api_key_ok)))
 
     @app.get("/agents", include_in_schema=False)
     async def agents_page():
@@ -1420,7 +1570,7 @@ def create_app(settings: Settings | None = None,
                  for t in await mcp_server.list_tools()]
         return {"mcp_path": "/mcp", "transport": "Streamable HTTP (stateless, JSON replies)",
                 "sdk": f"mcp {package_version('mcp')}",
-                "merchant_enabled": bool(settings.merchant_api_key), "tools": tools,
+                "merchant_enabled": store.active_api_keys() > 0, "tools": tools,
                 "calls": store.agent_calls(20)}
 
     # ---- Insights (Day 8): the seller's own AG Studio report over the same data ----
@@ -1436,9 +1586,13 @@ def create_app(settings: Settings | None = None,
         return JSONResponse({"key": settings.ag_studio_license_key or None},
                             headers={"Cache-Control": "no-store"})
 
+    def owner(request: Request) -> str:
+        """Whose layout (and AI quota) this is: the signed-in seller's account id."""
+        return str(request.state.user["id"])
+
     @app.get("/api/insights/layout")
-    async def get_insights_layout():
-        saved = store.insights_layout(INSIGHTS_OWNER)
+    async def get_insights_layout(request: Request):
+        saved = store.insights_layout(owner(request))
         return saved or {"state": None, "updated_at": None}
 
     @app.put("/api/insights/layout")
@@ -1453,11 +1607,11 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(422, "Layout must be JSON.")
         if not isinstance(state, dict):
             raise HTTPException(422, "Layout must be a JSON object.")
-        return {"ok": True, "updated_at": store.set_insights_layout(INSIGHTS_OWNER, state)}
+        return {"ok": True, "updated_at": store.set_insights_layout(owner(request), state)}
 
     @app.delete("/api/insights/layout")
-    async def reset_insights_layout():
-        store.delete_insights_layout(INSIGHTS_OWNER)
+    async def reset_insights_layout(request: Request):
+        store.delete_insights_layout(owner(request))
         return {"ok": True}
 
     insights_ai_limit = RateLimiter(60, 3600)  # model turns per seller per hour
@@ -1475,9 +1629,9 @@ def create_app(settings: Settings | None = None,
             turn = InsightsTurn.model_validate_json(raw)
         except ValidationError:
             raise HTTPException(422, "Not an Insights assistant turn.")
-        if insights_ai_limit.blocked(INSIGHTS_OWNER):
+        if insights_ai_limit.blocked(owner(request)):
             raise HTTPException(429, "That's a lot of questions this hour. Try again later.")
-        insights_ai_limit.hit(INSIGHTS_OWNER)
+        insights_ai_limit.hit(owner(request))
         if not ai.configured:
             raise HTTPException(503, "No AI key configured, so the Insights assistant is off.")
         rounds, cap = turns_used(turn), turn_cap(turn)

@@ -118,9 +118,10 @@ function orderTone(events, state) {
   return "none";
 }
 
-// Buyer requests with no reply and no automatic refund yet.
+// Buyer requests still open: not replied to and not refunded (a refund answers a request too).
 function openRequests(events) {
-  const answered = new Set(events.filter((e) => e.kind === "seller_reply").map((e) => e.payload.request_id));
+  const answered = new Set(events.filter((e) => (e.kind === "seller_reply" || e.kind === "refund_sent") && e.payload.request_id)
+    .map((e) => e.payload.request_id));
   return events.filter((e) => e.kind === "buyer_request" && !answered.has(e.payload.request_id));
 }
 
@@ -139,7 +140,7 @@ function segments(events) {
     if (e.kind === "dispute_created" || e.kind === "dispute_updated") dispute = p.status !== "RESOLVED";
     if (e.kind === "dispute_resolved") dispute = false;
     if (e.kind === "buyer_request") asked.add(p.request_id);
-    if (e.kind === "seller_reply") asked.delete(p.request_id);
+    if (e.kind === "seller_reply" || e.kind === "refund_sent") asked.delete(p.request_id);
     if (e.kind === "invoice_status") invoiceDue = !["Paid", "Cancelled", "Draft", "Refunded"].includes(UI.word("invoice", p.status));
     return dispute || reversed ? "disputed" : pending || asked.size || (invoiceDue && !paid) ? "held" : paid ? "settled" : "none";
   });

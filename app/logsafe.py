@@ -19,14 +19,32 @@ SAFE_AI_REASON = re.compile(r"HTTP \d{3}|timeout|network error: \w+|invalid JSON
 
 def configure_logging(level: str = "INFO") -> None:
     """INFO (or LOG_LEVEL) for the "clearline" loggers, printed to the console. Uvicorn's own
-    loggers are left alone. Records still propagate, so pytest's caplog sees them."""
+    loggers are left alone. Records still propagate (pytest's caplog sees them); the console
+    handler is only added when nothing at the root already prints them, so no line appears twice."""
     logger = logging.getLogger("clearline")
     logger.setLevel(getattr(logging, str(level).upper(), logging.INFO))
-    if not any(h.get_name() == HANDLER_NAME for h in logger.handlers):
+    if not logging.getLogger().handlers and not any(h.get_name() == HANDLER_NAME for h in logger.handlers):
         handler = logging.StreamHandler()
         handler.set_name(HANDLER_NAME)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logger.addHandler(handler)
+
+
+def short_reason(err) -> str:
+    """An AI provider failure as an HTTP status and a short error class, e.g. "HTTP 429
+    rate_limited", for what gets stored (the provider-switch timeline event). No provider text."""
+    m = re.match(r"HTTP (\d{3})", err.reason or "")
+    if m:
+        code = int(m.group(1))
+        kind = ("rate_limited" if code == 429 else "auth_error" if code in (401, 403)
+                else "server_error" if code >= 500 else "bad_request")
+        return f"HTTP {code} {kind}"
+    reason = err.reason or ""
+    for prefix, kind in (("timeout", "timeout"), ("network error", "network_error"),
+                         ("invalid JSON", "invalid_reply"), ("unreadable", "invalid_reply")):
+        if reason.startswith(prefix):
+            return kind
+    return "missing_key" if "is not set" in reason or "no AI key" in reason else "error"
 
 
 def safe(err: BaseException) -> str:

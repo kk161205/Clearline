@@ -28,10 +28,9 @@ from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
 from .logsafe import configure_logging, safe
-from .insights_ai import MAX_TURNS as INSIGHTS_MAX_TURNS
 from .insights_ai import (ALREADY_HAVE, TOO_MANY_TURNS, InsightsTurn, SignatureCache,
                           canonical_call, chat_messages, chat_tools, earlier_results,
-                          for_provider, turns_used)
+                          for_provider, turn_cap, turn_summary, turns_used)
 from .insights_ai import reply as insights_reply
 from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
@@ -1481,7 +1480,8 @@ def create_app(settings: Settings | None = None,
         insights_ai_limit.hit(INSIGHTS_OWNER)
         if not ai.configured:
             raise HTTPException(503, "No AI key configured, so the Insights assistant is off.")
-        rounds = turns_used(turn)
+        rounds, cap = turns_used(turn), turn_cap(turn)
+        called, issues = turn_summary(turn)
         messages = chat_messages(turn)
         known = earlier_results(turn)
 
@@ -1491,7 +1491,9 @@ def create_app(settings: Settings | None = None,
             return for_provider(messages, provider, signatures), chat_tools(turn.tools, provider)
 
         while True:
-            if rounds >= INSIGHTS_MAX_TURNS:
+            if rounds >= cap:
+                log.info("Insights assistant: turn cap reached (%d of %d); tools so far: %s",
+                         rounds, cap, ", ".join(called) or "none")
                 return insights_reply(TOO_MANY_TURNS, [], None, None)
             try:
                 out = await ai.chat_tools(prepare, turn.tool_choice)
@@ -1500,6 +1502,10 @@ def create_app(settings: Settings | None = None,
                     raise HTTPException(503, "The assistant is busy, try again in a minute.")
                 raise HTTPException(502, "The assistant couldn't answer just now. Try again in a moment.")
             rounds += 1
+            # Names and counts only: never arguments, results or text.
+            log.info("Insights assistant: turn %d of %d on %s; tools so far: %s; issues in the "
+                     "last results: %d; next: %s", rounds, cap, out["provider"], ", ".join(called) or "none",
+                     issues, ", ".join(c["name"] for c in out["tool_calls"]) or "answer")
             if out["tool_calls"]:
                 signatures.put(out["provider"], out["raw"])  # stays on the server, never sent to the browser
             repeats = [known.get(canonical_call(c["name"], c["arguments"])) for c in out["tool_calls"]]

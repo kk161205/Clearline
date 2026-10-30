@@ -102,10 +102,7 @@
     { id: "next", name: "Next action", format: "textFormat" },
     { id: "needs_you", name: "Needs you", format: "booleanFormat" },
     { id: "deadline", name: "Deadline", format: "dateFormat", formatOptions: { format: "d mmm" } },
-    { id: "amount", name: "Amount value", format: "currencyFormat", formatOptions: MONEY },
-    // The same amount as text ("900.00 USD", as everywhere in Clearline): grids format summed
-    // numbers their own way ("900.0"), so the grid shows this one.
-    { id: "amount_label", name: "Amount", format: "textFormat" },
+    { id: "amount", name: "Amount", format: "currencyFormat", formatOptions: MONEY },
     { id: "refunded", name: "Refunded", format: "currencyFormat", formatOptions: MONEY },
     { id: "net", name: "Net of refunds", format: "currencyFormat", formatOptions: MONEY },
   ];
@@ -122,6 +119,10 @@
     ...["settled", "waiting", "disputed", "unpaid"].map((s) => ({ id: s, name: s[0].toUpperCase() + s.slice(1), format: "currencyFormat", formatOptions: MONEY })),
   ];
 
+  // Pure: "900.00 USD" for a number (blank stays blank).
+  const moneyText = (value, cur) => (value == null || value === "" || isNaN(Number(value)) ? "" : `${Number(value).toFixed(2)} ${cur}`);
+  const moneyFormatter = (cur) => () => (value) => moneyText(value, cur);
+
   // Pure: Studio sources from an /api/dashboard payload (the page harness tests this).
   function toSources(d) {
     const cur = d.charts.currency;
@@ -129,7 +130,6 @@
       ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.date, item: r.item,
       country: r.country || "Unknown", state: STATE_LABEL[r.state], status: r.status, next: r.next,
       needs_you: Boolean(r.needs_you), deadline: r.deadline || null, amount: Number(r.amount), refunded: Number(r.refunded),
-      amount_label: `${r.amount} ${r.currency}`,
       net: Number(r.amount) - Number(r.refunded),
     }));
     const disputes = d.rows.filter((r) => r.dispute && r.currency === cur).map((r) => ({
@@ -137,8 +137,11 @@
       outcome: r.dispute.open ? "Open" : r.dispute.outcome, amount: Number(r.dispute.amount),
     }));
     const daily = d.charts.per_day.map((p) => ({ day: p.day, settled: p.settled, waiting: p.held, disputed: p.disputed, unpaid: p.unpaid }));
-    return [{ id: "money", data: money, fields: MONEY_FIELDS }, { id: "daily", data: daily, fields: DAILY_FIELDS },
-            { id: "disputes", data: disputes, fields: DISPUTE_FIELDS }];
+    // Money fields stay numbers (so they sort and sum) and display as "900.00 USD", the app's
+    // format, wherever Studio shows them: cells, totals, values, tooltips.
+    const shown = (fields) => fields.map((fd) => (fd.format === "currencyFormat" ? { ...fd, createValueFormatter: moneyFormatter(cur) } : fd));
+    return [{ id: "money", data: money, fields: shown(MONEY_FIELDS) }, { id: "daily", data: daily, fields: shown(DAILY_FIELDS) },
+            { id: "disputes", data: disputes, fields: shown(DISPUTE_FIELDS) }];
   }
 
   // ---- The default report: what a seller sees before arranging their own ----------------------
@@ -152,15 +155,16 @@
     pages: [{
       id: "money",
       widgets: {
-        "kpi-amount": kpi("money.amount", "sum", `Amount, ${cur}`),
-        "kpi-refunded": kpi("money.refunded", "sum", `Refunded, ${cur}`),
-        "kpi-net": kpi("money.net", "sum", `Net, ${cur}`),
+        "kpi-amount": kpi("money.amount", "sum", "Amount"),
+        "kpi-refunded": kpi("money.refunded", "sum", "Refunded"),
+        "kpi-net": kpi("money.net", "sum", "Net of refunds"),
         "money-state": { type: "money-state", dataMapping: { state: [f("money.state")], value: [f("money.net", "sum")] },
                          format: title("Money state") },
         "per-day": { type: "column-chart-stacked",
                      dataMapping: { categoryKey: [f("daily.day")], valueKey: ["settled", "waiting", "disputed", "unpaid"].map((s) => f(`daily.${s}`, "sum")) },
                      format: title(`Per day, ${cur}`) },
-        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.next"), f("money.amount_label")] },
+        "items": { type: "grid", dataMapping: { cols: [f("money.ref"), f("money.amount", "sum"), f("money.next")] },
+                   sort: [{ field: f("money.amount", "sum"), direction: "desc" }],
                    format: title("Orders and invoices") },
         "state-filter": { type: "list-filter", dataMapping: { value: [f("money.state")] }, format: title("Show") },
         "reasons": { type: "bar-chart-grouped", dataMapping: { categoryKey: [f("disputes.reason")], valueKey: [f("disputes.ref", "countd")] },
@@ -336,7 +340,7 @@
     return agStudio.createAiHarness(api, ({ tools: { studio } }) => ({
       agents: [agStudio.directLlmRunner({
         id: "analyst", description: "Answers questions about the seller's money and arranges the report.",
-        maxTurns: 6, adapter: insightsAdapter,
+        maxTurns: 8, adapter: insightsAdapter, // the server keeps plain questions to 6 and widget building to 8
         instructions: () => "Answer from the report's data. Amounts are in the report's currency. Keep answers short.",
         tools: () => {
           const target = configureTarget(api.getState());
@@ -424,7 +428,9 @@
       ]);
       if (licence.key) agStudio.AgStudioLicenseManager.setLicenseKey(licence.key); // no key: AG Studio shows its watermark
       agStudio.AgStudioModuleRegistry.registerModules([agStudio.AgStudioAiModule]);
-      const widgets = agStudio.createWidgets({
+      // Studio's own widgets (charts, grids, values, filters) plus ours, appended to its menu:
+      // replacing the menu would leave sellers and the assistant with Money state only.
+      const widgets = (config) => agStudio.createWidgets({
         additionalTypes: [{
           id: "money-state", label: "Money state", icon: { url: "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="10" width="9" height="4" rx="2" fill="#0E8C7E"/><rect x="12" y="10" width="5" height="4" rx="2" fill="#B7791F"/><rect x="18" y="10" width="4" height="4" rx="2" fill="#C2364A"/></svg>') },
           dataMapping: {
@@ -436,7 +442,7 @@
           defaultSize: { width: 420, height: 320 }, minSize: { width: 240, height: 200 },
           ai: { description: "Clearline's money state: one line split into settled, waiting, disputed and unpaid amounts, in Clearline's status colours, with each state's amount and share." },
         }],
-        menu: [{ label: "Clearline", widgetIds: ["money-state"] }],
+        menu: [...config.menu, { label: "Clearline", widgetIds: ["money-state"] }],
       });
       report = layout.state || defaultState(data.charts.currency);
       $("studio").innerHTML = "";

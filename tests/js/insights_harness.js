@@ -14,8 +14,12 @@ const view = new Function(script + "; return { toSources, defaultState, stackFor
 
 const data = JSON.parse(fs.readFileSync(0, "utf8"));
 const state = view.defaultState(data.charts.currency);
+const sources = view.toSources(data);
+// What each money field's display formatter shows (functions don't survive JSON).
+const formatted = Object.fromEntries(sources.flatMap((src) => src.fields.filter((fd) => fd.createValueFormatter)
+  .map((fd) => [`${src.id}.${fd.id}`, [1140, 900, 0.5, null].map((v) => fd.createValueFormatter()(v))])));
 process.stdout.write(JSON.stringify({
-  sources: view.toSources(data), defaultState: state, phoneState: view.stackForPhone(state),
+  sources, formatted, defaultState: state, phoneState: view.stackForPhone(state),
   moneyState: view.moneyStateHtml([{ state: "Settled", amount: 300 }, { state: "Disputed", amount: 100 }, { state: "Waiting", amount: 0 }]),
   assistant: data.assistant && {
     events: view.turnEvents(data.assistant.reply), response: view.turnResponse(data.assistant.reply),

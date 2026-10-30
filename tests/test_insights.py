@@ -135,3 +135,27 @@ def test_insights_money_uses_the_apps_two_decimal_format():
     assert "createFormats({ overrides: { currencyFormat: { formatOptions: MONEY }, decimalFormat: { formatOptions: MONEY } } })" in html
     fields = re.findall(r'format: "currencyFormat"[^}]*}', html)
     assert fields and all("formatOptions: MONEY" in f for f in fields)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_grid_amount_stays_numeric_and_displays_like_the_app(mixed):  # noqa: F811
+    client, _ = mixed
+    view = insights_view(client.get("/api/dashboard").json())
+    money = next(s for s in view["sources"] if s["id"] == "money")
+    assert all(isinstance(r["amount"], (int, float)) for r in money["data"])  # numbers: they sort and sum
+    assert "amount_label" not in money["data"][0]
+    # Every money field shows as the app does, in cells and totals alike.
+    assert view["formatted"]["money.amount"] == ["1140.00 USD", "900.00 USD", "0.50 USD", ""]
+    assert set(view["formatted"]) >= {"money.amount", "money.refunded", "money.net", "daily.settled", "disputes.amount"}
+    grid = view["defaultState"]["pages"][0]["widgets"]["items"]
+    assert grid["dataMapping"]["cols"][1] == {"id": "money.amount", "aggregation": "sum"}
+    assert grid["sort"] == [{"field": {"id": "money.amount", "aggregation": "sum"}, "direction": "desc"}]
+    amounts = sorted([900, 1140, 85.5], reverse=True)
+    assert amounts[0] == 1140  # numeric order: 1140 above 900 (as text, "900.00" would sort first)
+
+
+def test_studios_own_widgets_stay_available_beside_ours():
+    html = (ROOT / "app/static/insights.html").read_text(encoding="utf-8")
+    assert "const widgets = (config) => agStudio.createWidgets({" in html
+    assert 'menu: [...config.menu, { label: "Clearline", widgetIds: ["money-state"] }],' in html
+    assert "maxTurns: 8," in html  # Studio's own cap; the server keeps plain questions to 6

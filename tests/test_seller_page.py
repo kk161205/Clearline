@@ -337,3 +337,15 @@ def test_sandbox_helper_failure_stores_full_error(tmp_path):
     assert len(failed["payload"]["paypal_error"]["details"]) == 2
     [page] = render({"env": "sandbox", "events": client.get("/api/orders/ORDER1/timeline").json()})
     assert all(line in html_lines(page["timeline"]) for line in EXPECTED_LINES)
+
+
+def test_seller_page_line_and_attention_treat_a_refund_as_an_answer():
+    events = [
+        {"kind": "order_created", "created_at": 1, "payload": {"amount": "120.00", "currency": "USD"}},
+        {"kind": "payment_captured", "created_at": 2, "payload": {"status": "COMPLETED"}},
+        {"kind": "buyer_request", "created_at": 3, "payload": {"request_id": "R1", "type": "refund"}},
+        {"kind": "refund_sent", "created_at": 4, "payload": {"request_id": "R1", "amount": "20.00", "currency": "USD", "mode": "partial"}},
+    ]
+    [out] = render({"env": "sandbox", "events": events})
+    segs = re.findall(r'<li class="cl-stop[^"]*"[^>]*data-seg="(\w+)"', out["timeline"])
+    assert segs == ["none", "settled", "held", "settled"]  # amber while asked, teal once refunded

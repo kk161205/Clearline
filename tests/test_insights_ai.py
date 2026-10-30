@@ -16,8 +16,10 @@ import respx
 from app.ai import AIError
 from app.assistant import strip_pii
 from app.insights_ai import (ALLOWED_TOOLS, ALREADY_HAVE, MAX_TURNS, SKIP_SIGNATURE, TOO_MANY_TURNS,
-                             TRUNCATED, canonical_call, chat_tools, clean, estimate_tokens,
-                             simplify_schema)
+                             TRUNCATED, InsightsTurn, SignatureCache, canonical_call, chat_messages,
+                             chat_tools, clean, estimate_tokens, for_provider, simplify_schema,
+                             tool_result, turn_cap)
+from app.logsafe import short_reason
 from app.logsafe import safe
 from app.paypal import PayPalError
 from app.store import TimelineStore
@@ -362,7 +364,7 @@ def test_needs_you_guidance_and_today_are_sent_with_the_question(tmp_path):
     system = body["messages"][0]["content"]
     assert "only rows where Needs you is true" in system
     assert "Waiting for the buyer, PayPal is reviewing and settled items do not need the seller" in system
-    assert "filter on Deadline (respond-by or due date)" in system and "If nothing matches, say so plainly" in system
+    assert "its Deadline (respond-by or due date)" in system and "say so plainly" in system
     assert '"120.00 USD"' in system and "its next action and its deadline" in system
     assert f"Today is {date.today().isoformat()}." in system
     tool = next(m for m in body["messages"] if m["role"] == "tool")
@@ -450,7 +452,7 @@ def test_logging_is_configured_once_at_the_chosen_level(tmp_path):
     assert logger.level == logging.WARNING
     make_client(tmp_path, log_level="INFO")
     assert logger.level == logging.INFO
-    assert sum(h.get_name() == "clearline-console" for h in logger.handlers) == 1  # no duplicates
+    assert sum(h.get_name() == "clearline-console" for h in logger.handlers) <= 1  # never added twice
     assert logger.propagate  # pytest's caplog (and any root handler) still sees the records
     assert (uvicorn.level, list(uvicorn.handlers)) == before  # uvicorn's loggers are untouched
 
@@ -481,3 +483,84 @@ def test_strip_pii_on_both_ai_paths(path):
     if path == "insights":
         assert "2026-10-29" in out  # dates are data, kept on the Insights path
     assert clean(PII_TEXT, tool_output=True).count("2026-10-29") == 1
+
+
+# ---- This round: needs-you wording, widget building, turn caps, issues, per-turn logs -------
+
+def test_this_week_counts_rows_without_a_deadline_that_need_the_seller():
+    system = chat_messages(InsightsTurn(**question()))[0]["content"]
+    assert "OR it has no Deadline and Needs you is true" in system
+    assert "Never drop a row just because its Deadline is empty" in system
+
+
+def test_widget_guide_with_the_bar_chart_example_goes_to_gemini_only():
+    messages = chat_messages(InsightsTurn(**question("Add a bar chart of refunded amount by buyer country")))
+    gemini = for_provider(messages, "gemini", SignatureCache())[0]["content"]
+    groq = for_provider(messages, "groq", SignatureCache())[0]["content"]
+    assert "Use money-state only when" in gemini and '"type":"bar-chart-grouped"' in gemini
+    assert '"valueKey":[{"id":"money.refunded","aggregation":"sum"}]' in gemini
+    assert "Health notes on a" in gemini
+    assert "bar-chart-grouped" not in groq  # Groq has no widget tools: no tokens spent on it
+
+
+def widget_rounds(n, text="Add a bar chart of refunded amount by buyer country"):
+    turn = question(text)
+    for i in range(n):
+        turn["items"] += [
+            {"kind": "output", "type": "function_call", "callId": f"w{i}", "name": "view_widget",
+             "arguments": json.dumps({"widgetId": f"w{i}"}), "status": "completed"},
+            {"kind": "input", "type": "function_call_output", "callId": f"w{i}", "output": "ok"}]
+    return turn
+
+
+@respx.mock
+def test_widget_questions_get_eight_turns_plain_ones_six(tmp_path):
+    gemini = respx.post(GEMINI).mock(return_value=answer("ok"))
+    client, _ = make_client(tmp_path)
+    assert client.post("/api/insights/ai", json=widget_rounds(7)).json()["text"] == "ok"  # turn 8 of 8
+    assert client.post("/api/insights/ai", json=widget_rounds(8)).json()["text"] == TOO_MANY_TURNS
+    plain = widget_rounds(6, text="Which orders need me this week?")
+    assert client.post("/api/insights/ai", json=plain).json()["text"] == TOO_MANY_TURNS  # still 6
+    assert turn_cap(InsightsTurn(**widget_rounds(0, "Which orders need me?"))) == 6
+    assert gemini.call_count == 1
+
+
+@respx.mock
+def test_studio_issues_reach_the_model_first_and_labelled(tmp_path):
+    gemini = respx.post(GEMINI).mock(return_value=answer("ok"))
+    client, _ = make_client(tmp_path)
+    failed = json.dumps({"success": False, "response": "x" * 6000, "issues": [
+        {"code": "unknown_field", "description": "Field money.cntry does not exist"}]})
+    turn = then_result({"tool_calls": [{"id": "c1", "name": "configure_widget", "arguments": "{}"}]}, output=failed)
+    client.post("/api/insights/ai", json=turn)
+    tool = next(m for m in sent(gemini)["messages"] if m["role"] == "tool")["content"]
+    assert tool.startswith("Errors to fix: unknown_field: Field money.cntry does not exist")
+    assert tool.endswith(TRUNCATED)  # long, yet the issue survived the cap
+    advice = tool_result(json.dumps({"success": True, "data": {"issues": [
+        {"code": "data_mapping_complete", "description": "One or more required data fields are not mapped"}]}}))
+    assert advice.startswith("Health notes (advice only, nothing to fix unless the user asks): data_mapping_complete")
+
+
+@respx.mock
+def test_each_turn_logs_tool_names_and_issue_counts_only(tmp_path, caplog):
+    respx.post(GEMINI).mock(return_value=answer(calls=[("configure_widget", '{"secretArg": "money.refunded"}')]))
+    client, _ = make_client(tmp_path)
+    caplog.set_level("INFO")
+    issue = json.dumps({"success": False, "issues": [{"code": "bad", "description": "private detail"}]})
+    turn = then_result({"tool_calls": [{"id": "c1", "name": "add_widget", "arguments": '{"widgetId": "w"}'}]}, output=issue)
+    turn["items"][0]["content"] = [{"type": "text", "text": "Add a chart"}]
+    client.post("/api/insights/ai", json=turn)
+    line = next(r.getMessage() for r in caplog.records if "Insights assistant: turn" in r.getMessage())
+    assert line == ("Insights assistant: turn 2 of 8 on gemini; tools so far: add_widget; "
+                    "issues in the last results: 1; next: configure_widget")
+    assert "secretArg" not in caplog.text and "private detail" not in caplog.text and "Add a chart" not in caplog.text
+
+
+def test_provider_switch_reason_is_a_status_and_class_only():
+    def reason(text):
+        return short_reason(AIError("gemini", text, switch=True))
+    assert reason("HTTP 429: Resource exhausted for project 123 key AIza...") == "HTTP 429 rate_limited"
+    assert reason("HTTP 401 (bad or missing API key)") == "HTTP 401 auth_error"
+    assert reason("HTTP 503: upstream text") == "HTTP 503 server_error"
+    assert reason("timeout") == "timeout" and reason("invalid JSON after retry: 3 errors") == "invalid_reply"
+    assert reason("GEMINI_API_KEY is not set") == "missing_key"

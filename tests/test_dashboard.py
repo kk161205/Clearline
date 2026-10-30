@@ -249,3 +249,19 @@ def test_needs_you_means_the_seller_has_something_to_do(mixed):
         "Invoice 0001": (False, None),           # paid
     }
     assert {ref: (rows[ref]["needs_you"], rows[ref]["deadline"]) for ref in expected} == expected
+
+
+def test_a_refund_answers_a_buyer_request_too(mixed):
+    client, store = mixed
+    order(store, "ORDER0000REFUNDED")  # shipped, asked for a refund, got it, no written reply
+    store.add("ORDER0000REFUNDED", "tracking_added", {"carrier": "DHL", "tracking_number": "1"})
+    store.add("ORDER0000REFUNDED", "buyer_request", {"request_id": "R9", "type": "refund", "reason": "not_received"})
+    store.add("ORDER0000REFUNDED", "refund_sent", {"request_id": "R9", "mode": "partial", "amount": "20.00",
+                                                   "currency": "USD", "status": "COMPLETED", "trigger": "seller"})
+    order(store, "ORDER000STILLOPEN")  # asked, the auto policy said no: still the seller's turn
+    store.add("ORDER000STILLOPEN", "buyer_request", {"request_id": "R10", "type": "refund", "reason": "changed_mind"})
+    store.add("ORDER000STILLOPEN", "auto_policy_skipped", {"request_id": "R10", "reason": "not allowed"})
+    rows = rows_by_ref(client.get("/api/dashboard").json())
+    assert rows["…FUNDED"]["needs_you"] is False and rows["…FUNDED"]["next"] != "Buyer asked for a refund"
+    assert rows["…LLOPEN"]["needs_you"] is True and rows["…LLOPEN"]["next"] == "Buyer asked for a refund"
+    assert rows["…LLOPEN"]["deadline"] is None  # no deadline, still needs the seller

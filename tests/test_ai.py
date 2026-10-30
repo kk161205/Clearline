@@ -63,9 +63,9 @@ def test_gemini_429_switches_to_groq_and_persists(tmp_path):
     # Survives a restart: a fresh store on the same file still says groq.
     assert TimelineStore(settings.database_path).ai_state()["active_provider"] == "groq"
     [switch] = events(client, "other", "ai_provider_switched")
-    assert switch["payload"] == {"from": "gemini", "to": "groq", "reason": "HTTP 429"}
+    assert switch["payload"] == {"from": "gemini", "to": "groq", "reason": "HTTP 429 rate_limited"}
     status = client.get("/api/ai/status").json()
-    assert status["active_provider"] == "groq" and status["reason"] == "HTTP 429"
+    assert status["active_provider"] == "groq" and status["reason"] == "HTTP 429 rate_limited"
     assert "q-test" not in json.dumps(status) and "g-test" not in json.dumps(status)
 
 
@@ -110,7 +110,7 @@ def test_invalid_json_retries_once_then_falls_back(tmp_path):
     retry_messages = json.loads(gemini.calls[1].request.content)["messages"]
     assert "not valid for the schema" in retry_messages[-1]["content"]
     [switch] = events(client, "other", "ai_provider_switched")
-    assert switch["payload"]["reason"].startswith("invalid JSON after retry")
+    assert switch["payload"]["reason"] == "invalid_reply"
 
 
 @respx.mock

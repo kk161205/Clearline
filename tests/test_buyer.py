@@ -126,7 +126,7 @@ def test_ai_summary_is_cached_per_order_state(tmp_path):
 def test_ai_failure_or_invented_date_falls_back_to_template(tmp_path):
     setup_paypal()
     gemini = respx.post(GEMINI).mock(return_value=summary_reply(
-        "Your brand kit will arrive on 30 Oct 2026."))  # invented delivery date
+        "Your brand kit will arrive on 17 Feb 2099."))  # invented delivery date (never today's paid-on date)
     client, _ = make_client(tmp_path)
     link = captured_with_pii(client)["buyerLink"]
     for _ in range(3):

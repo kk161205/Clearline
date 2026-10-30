@@ -41,7 +41,11 @@ from .assistant import strip_pii
 
 log = logging.getLogger("clearline.insights")
 
-MAX_TURNS = 6
+MAX_TURNS = 6          # model turns for a question that only reads the data
+MAX_WIDGET_TURNS = 8   # ...and for one that adds or changes widgets
+WIDGET_TOOLS = {"add_widget", "position_widget", "configure_widget"}
+WIDGET_WORDS = re.compile(r"\b(add|chart|graph|plot|widget|table|pie|bar|line|column|donut|"
+                          r"visuali[sz]e|move|resize|rename|change)\b", re.IGNORECASE)
 TOO_MANY_TURNS = ("That needs more steps than I can take for one question. Try a narrower "
                   "question, for example \"Which orders need me this week?\"")
 ALLOWED_TOOLS = {"view_schema", "view_report", "view_page", "view_widget", "execute_query",
@@ -57,8 +61,10 @@ Rules:
 - "Needs me", "needs my attention", "what should I do": only rows where Needs you is true.
   Waiting for the buyer, PayPal is reviewing and settled items do not need the seller: never
   list them as needing attention.
-- "This week", "today", "overdue": filter on Deadline (respond-by or due date) when a row has
-  one, otherwise on Date. Today is {today}. If nothing matches, say so plainly.
+- "This week", "today", "overdue": a row counts when its Deadline (respond-by or due date) is
+  in that period, OR it has no Deadline and Needs you is true: items waiting on the seller always
+  count. Never drop a row just because its Deadline is empty. Today is {today}. If nothing
+  matches, say so plainly.
 - Money always has 2 decimals and the currency: "120.00 USD".
 - For each item, give its next action and its deadline when there is one."""
 
@@ -68,6 +74,18 @@ MAX_STUDIO_GUIDANCE = 1200   # characters of Studio's per-turn instructions
 MAX_TOOL_DESCRIPTION = 300   # characters of a tool's own description
 GROQ_SCHEMA_DEPTH = 5        # Groq's query schema is pruned below this depth
 TRUNCATED = "\n[truncated: the result was longer; ask a narrower question or add a limit]"
+# Widget building: Gemini gets every tool, so it gets this too (Groq has no widget tools).
+WIDGET_GUIDE = """Widgets: for charts and tables use Studio's built-in types (bar-chart-grouped,
+column-chart-grouped, line-chart, pie-chart, donut-chart, grid, value). Use money-state only when
+the user asks for money state or the clear line. Add the widget, then configure it once; put new
+widgets below the report (yTrack 60). Example, "bar chart of refunded amount by buyer country":
+1. view_schema {}
+2. add_widget {"widgetId":"refunds-by-country","type":"bar-chart-grouped","xTrack":0,"yTrack":60,"xSpan":24,"ySpan":12}
+3. configure_widget {"widgetId":"refunds-by-country","op":"patch","value":{"dataMapping":{"categoryKey":[{"id":"money.country"}],"valueKey":[{"id":"money.refunded","aggregation":"sum"}]},"format":{"title":{"enabled":true,"text":"Refunded by buyer country"}}}}
+4. Answer in one sentence.
+A step that fails lists "Errors to fix": fix exactly those and try once more. Health notes on a
+step that worked (category_density, title_configured, data_mapping_complete right after you
+configure) are advice: don't repeat steps for them."""
 # Google's documented placeholder for a tool call whose signature was lost (as LiteLLM sends it).
 SKIP_SIGNATURE = base64.b64encode(b"skip_thought_signature_validator").decode()
 QUERY_EXAMPLES = """Examples (field ids come from view_schema):
@@ -288,12 +306,75 @@ def chat_messages(turn: InsightsTurn) -> list[dict]:
             else:
                 messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
         elif typ == "function_call_output":
-            output = clean(item.get("output"), tool_output=True)
-            if len(output) > MAX_TOOL_RESULT:
-                output = output[:MAX_TOOL_RESULT] + TRUNCATED
-            messages.append({"role": "tool", "tool_call_id": str(item.get("callId")), "content": output})
+            messages.append({"role": "tool", "tool_call_id": str(item.get("callId")),
+                             "content": tool_result(item.get("output"))})
         # reasoning items aren't replayed
     return messages
+
+
+def _parsed(output: Any) -> dict:
+    try:
+        data = json.loads(output) if isinstance(output, str) else output
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def issue_messages(output: Any) -> list[str]:
+    """The issues in a Studio tool result as "code: description" text. Studio puts them at the
+    top level or under data; they name what is wrong (a field, a missing mapping), not data."""
+    data = _parsed(output)
+    nested = data.get("data") if isinstance(data.get("data"), dict) else {}
+    out = []
+    for i in data.get("issues") or nested.get("issues") or []:
+        if isinstance(i, dict):
+            text = ": ".join(filter(None, [i.get("code"), i.get("description") or i.get("message")]))
+        else:
+            text = str(i)
+        out.append(text[:300])
+    return out
+
+
+def tool_result(output: Any) -> str:
+    """A tool result for the model: PII-stripped, Studio's issues first (so truncation can't
+    drop them), capped at MAX_TOOL_RESULT. A failed step's issues are errors to fix; on a step
+    that worked they are Studio's health notes, advice the model shouldn't chase."""
+    issues = issue_messages(output)
+    text = clean(output, tool_output=True)
+    if issues:
+        failed = _parsed(output).get("success") is False
+        label = ("Errors to fix: " if failed
+                 else "Health notes (advice only, nothing to fix unless the user asks): ")
+        text = label + clean("; ".join(issues)) + "\n" + text
+    return text[:MAX_TOOL_RESULT] + TRUNCATED if len(text) > MAX_TOOL_RESULT else text
+
+
+def turn_cap(turn: InsightsTurn) -> int:
+    """8 model turns for a question that adds or changes widgets (asked for in words, or
+    already using widget tools), 6 for one that only reads the data."""
+    items = turn.items
+    asked = [i for i, it in enumerate(items)
+             if it.get("type") == "message" and it.get("kind") == "input" and it.get("role") == "user"]
+    current = items[asked[-1]:] if asked else items
+    question = _text(current[0].get("content")) if asked else ""
+    builds = any(it.get("type") == "function_call" and it.get("name") in WIDGET_TOOLS for it in current)
+    return MAX_WIDGET_TURNS if builds or WIDGET_WORDS.search(question) else MAX_TURNS
+
+
+def turn_summary(turn: InsightsTurn) -> tuple[list[str], int]:
+    """For the logs: the tools called since the question (names only) and how many issues
+    the latest results reported (a count, no text)."""
+    items = turn.items
+    asked = [i for i, it in enumerate(items)
+             if it.get("type") == "message" and it.get("kind") == "input" and it.get("role") == "user"]
+    current = items[asked[-1]:] if asked else items
+    names = [str(it.get("name")) for it in current if it.get("type") == "function_call"]
+    last_results = []
+    for it in reversed(current):
+        if it.get("type") != "function_call_output":
+            break
+        last_results.append(it)
+    return names, sum(len(issue_messages(it.get("output"))) for it in last_results)
 
 
 def standard_call(call: dict) -> dict:
@@ -306,9 +387,13 @@ def standard_call(call: dict) -> dict:
 def for_provider(messages: list[dict], provider: str, cache: SignatureCache) -> list[dict]:
     """The history as `provider` must see it. For Gemini, each assistant tool-call message is
     replaced by the raw message Gemini sent (its thought signatures intact); on a cache miss,
-    Google's skip value goes on the first call. Anything else gets standard fields only."""
+    Google's skip value goes on the first call. Anything else gets standard fields only.
+    Gemini also gets the widget guide, since only Gemini gets the widget tools."""
     out = []
     for m in messages:
+        if m["role"] == "system" and provider == "gemini" and not out:
+            out.append({**m, "content": m["content"] + "\n" + WIDGET_GUIDE})
+            continue
         if not m.get("tool_calls"):
             out.append(dict(m))
             continue
@@ -352,8 +437,7 @@ def earlier_results(turn: InsightsTurn) -> dict[str, str]:
         if item.get("type") == "function_call":
             calls[str(item.get("callId"))] = canonical_call(str(item.get("name")), item.get("arguments"))
         elif item.get("type") == "function_call_output" and str(item.get("callId")) in calls:
-            output = clean(item.get("output"), tool_output=True)
-            results[calls[str(item.get("callId"))]] = output[:MAX_TOOL_RESULT] + (TRUNCATED if len(output) > MAX_TOOL_RESULT else "")
+            results[calls[str(item.get("callId"))]] = tool_result(item.get("output"))
     return results
 
 

@@ -21,7 +21,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from .config import Settings
-from .logsafe import safe
+from .logsafe import safe, short_reason
 from .store import TimelineStore
 
 log = logging.getLogger("clearline.ai")
@@ -198,9 +198,10 @@ class AIClient:
         else:
             log.warning("Gemini failed (%s); switching to Groq permanently until "
                         "POST /api/ai/reset.", safe(err))
-        self.store.set_ai_provider("groq", err.reason)
+        reason = short_reason(err)  # status and error class only, never the provider's text
+        self.store.set_ai_provider("groq", reason)
         self.store.add("other", "ai_provider_switched",
-                       {"from": "gemini", "to": "groq", "reason": err.reason})
+                       {"from": "gemini", "to": "groq", "reason": reason})
 
     async def _call_validated(self, provider: str, messages: list[dict], schema_name: str,
                               schema: dict, model_cls: type[BaseModel],

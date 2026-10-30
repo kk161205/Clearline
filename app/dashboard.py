@@ -94,8 +94,10 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
     dispute = latest_state(states)
     open_dispute = bool(dispute) and dispute["kind"] != "dispute_resolved" \
         and dispute["payload"].get("status") != "RESOLVED"
-    replied = {e["payload"].get("request_id") for e in events if e["kind"] == "seller_reply"}
-    asks = [e for e in events if e["kind"] == "buyer_request" and e["payload"].get("request_id") not in replied]
+    # A buyer request is open until the seller replies to it or refunds it.
+    handled = {e["payload"].get("request_id") for e in events
+               if e["kind"] in ("seller_reply", "refund_sent") and e["payload"].get("request_id")}
+    asks = [e for e in events if e["kind"] == "buyer_request" and e["payload"].get("request_id") not in handled]
     last_pending = max((e["created_at"] for e in events if e["kind"] == "webhook_payment_capture_pending"), default=None)
     last_done = max((e["created_at"] for e in events if e["kind"] == "webhook_payment_capture_completed"), default=None)
     pending = last_pending is not None and (last_done is None or last_done < last_pending)

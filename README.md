@@ -1,5 +1,9 @@
 # Clearline
 
+**Start here:** [System guide](docs/SYSTEM.md) (architecture, flows, data, security,
+configuration) · [Status and plan](docs/STATUS.md) (what works, live check, automation,
+dates to submission).
+
 ## Day 1: the money path
 
 Proves the money path end to end in the PayPal Sandbox: a US buyer pays an

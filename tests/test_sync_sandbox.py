@@ -140,8 +140,9 @@ def under_review(tmp_path, **settings):
 
 
 @respx.mock
-def test_sandbox_helper_is_404_in_live_mode(tmp_path):
-    client, settings = make_client(tmp_path, paypal_env="live")
+def test_sandbox_helper_is_404_in_live_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.PAYPAL_ENV", "live")
+    client, settings = make_client(tmp_path)
     # A real, known UNDER_REVIEW dispute, so only the live-mode guard can produce the 404.
     TimelineStore(settings.database_target).add("ORDER1", "dispute_created", {
         "dispute_id": DISPUTE_ID, "status": "UNDER_REVIEW", "update_time": "2026-10-27T00:00:00Z"})

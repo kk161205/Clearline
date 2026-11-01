@@ -202,6 +202,20 @@
 
     <section class="section" id="settings" aria-labelledby="settings-h">
       <div class="section-head"><h2 id="settings-h">Settings</h2></div>
+      <details class="panel disclose" id="business"><summary><span class="d-title">Business</span>
+          <span class="d-line" id="business-line">Your name, country and PayPal checks</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+        <div class="d-body">
+          <form id="business-form" novalidate>
+            <label class="field">Business name <input name="seller_name" maxlength="120" required />
+              <span class="hint">Buyers see this on their order page.</span></label>
+            <label class="field">Country code <input name="seller_country" maxlength="2" autocapitalize="characters" required />
+              <span class="hint">Two letters, like IN. IN shows the India export checklist.</span></label>
+            <label class="field">Check PayPal every (minutes) <input name="auto_sync_minutes" type="number" min="0" max="1440" step="1" inputmode="numeric" required />
+              <span class="hint">A safety net for missed webhooks. 0 turns it off.</span></label>
+            <div class="actions"><button type="submit">Save business details</button></div><div class="msg"></div>
+          </form>
+        </div>
+      </details>
       <details class="policy panel disclose" id="policy"><summary><span class="d-title">Auto-resolve policy</span>
           <span id="policy-state" class="pill"></span><span class="d-line">Refund small, clear-cut requests without waiting for you</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
         <div class="d-body">

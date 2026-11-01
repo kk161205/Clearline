@@ -26,6 +26,7 @@ from .assistant import Assistant, strip_pii
 from .accounts import (GENERIC_LOGIN_ERROR, SESSION_ABSOLUTE, SESSION_COOKIE, Accounts,
                        new_setup_code, setup_code_matches)
 from .auth import RateLimiter, is_public
+from .business import BUSINESS_KEY, Business, load_business
 from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer_token,
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
@@ -369,10 +370,13 @@ def create_app(settings: Settings | None = None,
         secret = secrets.token_urlsafe(32)
         log.warning("APP_SECRET is not set: using a random one for now. Buyer links (/o/...) "
                     "will stop working after a restart. Set APP_SECRET in .env.")
-    for name, value in (("SELLER_PASSWORD", settings.legacy_seller_password),
-                        ("MERCHANT_API_KEY", settings.legacy_merchant_api_key)):
-        if value is not None:  # by name only, never the value
-            log.warning("%s is no longer used; remove it from your environment.", name)
+    for name in settings.retired_variables:  # by name only, never the value
+        log.warning("%s is no longer used; remove it from your environment.", name)
+    shop = {"business": load_business(store, settings)}
+
+    def business() -> Business:
+        return shop["business"]
+
     accounts = Accounts(store)
     # The first account is made at /setup with a one-time code from this log line. Memory only,
     # new on every start, useless once an account exists.
@@ -397,15 +401,12 @@ def create_app(settings: Settings | None = None,
     tracking_lock = asyncio.Lock()  # one "Mark shipped" at a time, so repeats are caught
     sync_lock = asyncio.Lock()
     sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
-                  "error": None, "invoices": None, "auto_sync_minutes": settings.auto_sync_minutes}
+                  "error": None, "invoices": None, "auto_sync_minutes": business().auto_sync_minutes}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Start the auto-sync safety net with the app and stop it cleanly on shutdown."""
-        task = None
-        if settings.auto_sync_minutes > 0:
-            task = asyncio.create_task(run_every(settings.auto_sync_minutes * 60, auto_sync))
-        app.state.auto_sync_task = task
+        schedule_auto_sync()
 
         async def clean_sessions():
             removed = accounts.cleanup()
@@ -417,7 +418,8 @@ def create_app(settings: Settings | None = None,
             async with mcp_server.session_manager.run():  # the MCP endpoint needs this running
                 yield
         finally:
-            for t in (task, cleanup):
+            app.state.scheduling = False
+            for t in (app.state.auto_sync_task, cleanup):
                 if t:
                     t.cancel()
                     with suppress(asyncio.CancelledError):
@@ -427,6 +429,16 @@ def create_app(settings: Settings | None = None,
     api_pages = {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.production else {}
     app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan, **api_pages)
     app.add_middleware(SecurityHeaders, production=settings.production, sdk_url=settings.sdk_url)
+    app.state.auto_sync_task, app.state.scheduling = None, False
+
+    def schedule_auto_sync() -> None:
+        """(Re)start the auto-sync at the current interval, so a change on Settings applies now."""
+        app.state.scheduling = True
+        if app.state.auto_sync_task:
+            app.state.auto_sync_task.cancel()
+        minutes = business().auto_sync_minutes
+        app.state.auto_sync_task = (asyncio.create_task(run_every(minutes * 60, auto_sync))
+                                    if minutes > 0 else None)
 
     def fail(err: PayPalError) -> HTTPException:
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
@@ -723,7 +735,7 @@ def create_app(settings: Settings | None = None,
         at a given order state (so only orders whose buyers actually visit cost an AI call)."""
         order_id = order_from_token(token)
         page, facts = buyer_view(store, summaries, order_id,
-                                 seller_name=settings.seller_display_name, item_names=item_names)
+                                 seller_name=business().seller_name, item_names=item_names)
         if page["summary"]["source"] == "template" and summaries.needs_refresh(order_id, facts):
             background.add_task(summaries.refresh, order_id, facts)
         return page
@@ -764,6 +776,21 @@ def create_app(settings: Settings | None = None,
             if refund := await auto_resolve(order_id, request_id, reason, amount):
                 result.update(status="refunded", refund=refund)
         return result
+
+    # ---- Settings -> Business: the shop's name, country and sync interval -----------
+
+    @app.get("/api/business")
+    async def get_business():
+        return business()
+
+    @app.put("/api/business")
+    async def set_business(body: Business):
+        store.set_setting(BUSINESS_KEY, body.model_dump())
+        shop["business"] = body
+        sync_state["auto_sync_minutes"] = body.auto_sync_minutes
+        if app.state.scheduling:  # not in tests that run without the app's startup
+            schedule_auto_sync()
+        return body
 
     # ---- Auto-resolve policy (Day 6): off by default, set by the seller -------------
 
@@ -1031,7 +1058,7 @@ def create_app(settings: Settings | None = None,
         overdue = days_overdue(summary, today())
         if not overdue:
             raise HTTPException(409, "Reminders are only for overdue invoices.")
-        facts = reminder_facts(summary, settings.seller_display_name, today())
+        facts = reminder_facts(summary, business().seller_name, today())
         template = {"subject": f"Reminder: invoice {summary.get('number')} is overdue",
                     "note": (f"Hello {summary.get('client') or 'there'}, this is a friendly "
                              f"reminder that invoice {summary.get('number')} for "
@@ -1079,12 +1106,12 @@ def create_app(settings: Settings | None = None,
         if paid := next((e for e in reversed(events) if e["kind"] == "invoice_paid"), None):
             p = paid["payload"]
             country = p.get("recipient_country")
-            if country == settings.seller_country or (not country and p.get("currency") == "INR"):
+            if country == business().seller_country or (not country and p.get("currency") == "INR"):
                 return None
             return {"description": ", ".join(i.get("name") or "" for i in p.get("items") or []),
                     "amount": p.get("amount"), "currency": p.get("currency"), "country": country}
         captured = next((e for e in reversed(events) if e["kind"] == "payment_captured"), None)
-        if not captured or captured["payload"].get("payer_country") in (None, settings.seller_country):
+        if not captured or captured["payload"].get("payer_country") in (None, business().seller_country):
             return None
         created = next((e for e in events if e["kind"] == "order_created"), {"payload": {}})
         return {"description": item_names.get(created["payload"].get("item_id"), ""),
@@ -1095,7 +1122,7 @@ def create_app(settings: Settings | None = None,
     @app.get("/api/export/{order_id}")
     async def export_checklist(order_id: str):
         """The export paperwork checklist for one received international payment."""
-        if settings.seller_country != "IN":
+        if business().seller_country != "IN":
             raise HTTPException(404, "The export checklist is for India-based sellers.")
         payment = export_payment(order_id)
         if not payment:
@@ -1115,7 +1142,7 @@ def create_app(settings: Settings | None = None,
     async def suggest_purpose(order_id: str):
         """AI suggests a purpose code with a one-line reason. It's stored as a suggestion
         only; the code is never set until the seller picks it."""
-        if settings.seller_country != "IN" or not (payment := export_payment(order_id)):
+        if business().seller_country != "IN" or not (payment := export_payment(order_id)):
             raise HTTPException(404, "Not a received international payment")
         if not ai.configured:
             raise HTTPException(503, "No AI key configured: pick the code yourself.")
@@ -1136,7 +1163,7 @@ def create_app(settings: Settings | None = None,
     async def set_purpose(order_id: str, body: PurposeIn):
         """The seller's own choice of purpose code for this payment (a checklist record in
         Clearline; PayPal's API has no per-payment purpose code)."""
-        if settings.seller_country != "IN" or not export_payment(order_id):
+        if business().seller_country != "IN" or not export_payment(order_id):
             raise HTTPException(404, "Not a received international payment")
         store.add(order_id, "export_purpose_set", {"code": body.code,
                                                    "label": PURPOSE_CODES[body.code]})
@@ -1144,7 +1171,7 @@ def create_app(settings: Settings | None = None,
 
     @app.post("/api/export/{order_id}/fira")
     async def set_fira(order_id: str, body: FiraIn):
-        if settings.seller_country != "IN" or not export_payment(order_id):
+        if business().seller_country != "IN" or not export_payment(order_id):
             raise HTTPException(404, "Not a received international payment")
         store.add(order_id, "export_fira", {"downloaded": body.downloaded})
         return {"ok": True}
@@ -1156,7 +1183,7 @@ def create_app(settings: Settings | None = None,
         if not any(e["kind"] in ("payment_captured", "invoice_paid") for e in events):
             raise HTTPException(404, "Order has not been captured yet")
         page, _ = buyer_view(store, summaries, order_id,
-                             seller_name=settings.seller_display_name, item_names=item_names)
+                             seller_name=business().seller_name, item_names=item_names)
         captured, refunded, currency = refund_totals(events)
         auto = {e["payload"].get("request_id"): {k: e["payload"].get(k) for k in (
                     "amount", "currency", "rule")}
@@ -1564,7 +1591,8 @@ def create_app(settings: Settings | None = None,
 
     mcp_server = build_mcp(AgentDeps(settings=settings, store=store, secret=secret,
                                      summaries=summaries, assistant=assistant,
-                                     item_names=item_names, submit_request=submit_request,
+                                     item_names=item_names, seller_name=lambda: business().seller_name,
+                                     submit_request=submit_request,
                                      check_key=accounts.api_key_ok))
     app.state.mcp = mcp_server
     # Stateless + JSON replies: one POST in, one JSON reply out, for 2026-07-28 and older

@@ -13,13 +13,14 @@ def no_real_ai_keys(monkeypatch):
     # Tests that need AI pass keys explicitly to Settings(...), which beats both.
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GROQ_API_KEY", "")
-    # No background PayPal polling in tests unless a test turns it on explicitly.
-    monkeypatch.setenv("AUTO_SYNC_MINUTES", "0")
-    # Never use the real app secret; tests pass their own. The retired SELLER_PASSWORD and
-    # MERCHANT_API_KEY are unset (their own test sets them to check they're ignored).
+    # Never use the real app secret; tests pass their own. Retired variables are unset (their
+    # own tests set them to check they're ignored), and so are Render's.
     monkeypatch.setenv("APP_SECRET", "")
-    monkeypatch.delenv("SELLER_PASSWORD", raising=False)
-    monkeypatch.delenv("MERCHANT_API_KEY", raising=False)
+    for name in ("SELLER_PASSWORD", "MERCHANT_API_KEY", "TRUST_PROXY", "PAYPAL_ENV", "GEMINI_MODEL",
+                 "GROQ_MODEL", "AI_TIMEOUT_SECONDS", "SELLER_DISPLAY_NAME", "SELLER_COUNTRY",
+                 "AUTO_SYNC_MINUTES", "DATABASE_PATH", "RENDER", "RENDER_EXTERNAL_URL", "APP_ENV",
+                 "PUBLIC_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AG_STUDIO_LICENSE_KEY", "")
     # Tests pick their own database (SQLite in tmp_path, or a Postgres schema with
     # TEST_DATABASE_URL); a DATABASE_URL in the environment must never reach them.

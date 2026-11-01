@@ -22,7 +22,7 @@ def production(tmp_path, **overrides) -> dict:
     """Everything production mode asks for, as Settings(...) arguments."""
     return {"_env_file": None, "render": "true", "database_url": db_target(tmp_path),
             "app_secret": LONG_SECRET, "paypal_client_id": "cid", "paypal_client_secret": "shh",
-            "paypal_webhook_id": "WH-1", "trust_proxy": True, **overrides}
+            "paypal_webhook_id": "WH-1", **overrides}
 
 
 def csp(response) -> dict[str, str]:

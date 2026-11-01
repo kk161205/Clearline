@@ -215,8 +215,8 @@ curl.exe -X POST http://localhost:8000/api/ai/reset     # go back to Gemini
 ### 4. Auto-sync (safety net for missed webhooks)
 
 Quick tunnels die (sleep, network changes), and PayPal's webhooks then go nowhere. The app
-therefore also pulls disputes from PayPal every `AUTO_SYNC_MINUTES` (default 3; `0` turns it
-off). It only reads from PayPal. "Last synced: … (auto)" next to **Sync disputes** shows when
+therefore also pulls disputes from PayPal every few minutes (Settings → Business, default 3;
+`0` turns it off). It only reads from PayPal. "Last synced: … (auto)" next to **Sync disputes** shows when
 it last ran.
 
 ### 5. Sandbox test tool: "PayPal asks the seller for evidence"
@@ -267,7 +267,7 @@ After paying, the checkout page shows **"Questions about this order?"**, a priva
 `/o/<token>`. The token is an HMAC of the order ID with `APP_SECRET`, so it can't be guessed;
 unknown or forged links get a 404. No login is needed. The page shows:
 
-- seller name (`SELLER_DISPLAY_NAME`), item, amount, date, "Paid with PayPal", country, and
+- seller name (Settings → Business), item, amount, date, "Paid with PayPal", country, and
   only the last 6 characters of the order ID; never the buyer's email, name or address
 - shipping status: carrier, tracking number and ship date; **never an invented delivery date**
 - a one-line summary. An AI writes it in the background the first time a buyer opens a given
@@ -327,15 +327,21 @@ and dead once an account exists; after that `/setup` returns 404.
   row id. Cookie: HttpOnly, SameSite=Lax, Secure over https. A session ends after 7 days
   unused or 30 days in all, on **Log out**, or on a password change (other devices).
   Requests from another site's page (wrong `Origin`) are refused.
-- **Behind a proxy** (Render, ngrok): set `TRUST_PROXY=true` so `X-Forwarded-Proto` /
-  `X-Forwarded-For` count (Secure cookie, client IP for rate limits). Leave it `false` when
-  uvicorn faces the internet directly.
+- **Behind Render's proxy** `X-Forwarded-Proto` / `X-Forwarded-For` count (Secure cookie, client
+  IP for rate limits). That's automatic: Render sets `RENDER`, and anywhere else the headers are
+  ignored, so a direct client can't spoof them.
 - **Settings → Account:** your email, change password (needs the current one; signs out your
   other devices) and **Sign out everywhere**.
 - `APP_SECRET` signs buyer order links. Without it a random one is used and the app logs a
   warning: buyer links then stop working after each restart.
-- `SELLER_PASSWORD` and `MERCHANT_API_KEY` are no longer used. If they're still in your
-  environment the app starts, ignores them and logs a warning naming each one.
+- **Settings → Business:** the name buyers see, your country and how often to check PayPal.
+  Stored in the database. Saving applies at once, with no restart.
+- **Retired variables** (`SELLER_PASSWORD`, `MERCHANT_API_KEY`, `TRUST_PROXY`, `PAYPAL_ENV`,
+  `GEMINI_MODEL`, `GROQ_MODEL`, `AI_TIMEOUT_SECONDS`, `SELLER_DISPLAY_NAME`, `SELLER_COUNTRY`,
+  `AUTO_SYNC_MINUTES`, and `DATABASE_PATH` on Render): if one is still set the app starts, ignores
+  it and logs one warning naming it. On the first start `SELLER_DISPLAY_NAME`, `SELLER_COUNTRY` and
+  `AUTO_SYNC_MINUTES` are copied into Settings → Business if the database has none yet, so nothing
+  visibly changes.
 
 Webhooks and the auto-sync keep working without anyone logged in.
 
@@ -390,7 +396,7 @@ PayPal's usage-based billing product, not Invoicing.)
 
 ### India export paperwork checklist
 
-*Guidance, not legal or tax advice.* With `SELLER_COUNTRY=IN` (the default), every payment
+*Guidance, not legal or tax advice.* With country `IN` in Settings → Business (the default), every payment
 received from abroad gets an **Export paperwork** box:
 
 - **Purpose code:** pick one from the 14 codes PayPal accepts (PayPal's official
@@ -635,14 +641,21 @@ Grid's:
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
 - Health check path: `/healthz`
-- Environment: `DATABASE_URL` (Neon main branch, pooled), `TRUST_PROXY=true`, `APP_SECRET`,
-  the PayPal, webhook and AI keys from `.env.example`. Don't set `SELLER_PASSWORD` or
-  `MERCHANT_API_KEY`.
+- Environment: `DATABASE_URL` (Neon main branch, pooled), `APP_SECRET` (at least 32 characters),
+  `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `GEMINI_API_KEY`, `GROQ_API_KEY`,
+  and `AG_STUDIO_LICENSE_KEY` once there's a trial key. Optional: `PUBLIC_BASE_URL`, `LOG_LEVEL`.
+  Nothing else: see `.env.example`.
+- **Production mode** is automatic on Render (or `APP_ENV=production`): the app refuses to start if
+  a required setting is missing or `ALLOW_UNVERIFIED_WEBHOOKS` is on, naming the setting and never
+  its value, and `/docs`, `/redoc` and `/openapi.json` don't exist.
 
 ### Content-Security-Policy
 
-- Content-Security-Policy: `/insights` is the only page with a third-party script, so allow
-  `script-src https://cdn.jsdelivr.net` on that route only.
+Set by `app/security.py`, one policy per page type; the comment there lists what PayPal's SDK
+was measured to load. Every page's script is a file under `app/static/pages/`, so no policy allows
+`unsafe-inline` or `unsafe-eval` for scripts. Default: `'self'`. Checkout (`/`): adds PayPal's SDK
+host and `www.paypalobjects.com` for fonts. `/insights`: adds `cdn.jsdelivr.net`. `/dashboard` and
+`/insights`: `data:` fonts, which AG Grid builds into its script.
 
 ## Layout
 

@@ -37,7 +37,7 @@ def test_layout_is_saved_per_seller_in_its_own_table(tmp_path):
     assert got["state"] == state and got["updated_at"] == saved.json()["updated_at"]
     user_id = client.get("/api/account").json()["id"]  # a proper table, not app_settings
     assert query(settings.database_target, "SELECT user_key FROM insights_layouts") == [{"user_key": str(user_id)}]
-    assert query(settings.database_target, "SELECT COUNT(*) AS n FROM app_settings") == [{"n": 0}]
+    assert query(settings.database_target, "SELECT COUNT(*) AS n FROM app_settings WHERE key <> 'business'") == [{"n": 0}]
     client.put("/api/insights/layout", json={**state, "selectedPageId": "other"})  # overwrites
     assert client.get("/api/insights/layout").json()["state"]["selectedPageId"] == "other"
     assert client.delete("/api/insights/layout").json() == {"ok": True}  # Reset to default

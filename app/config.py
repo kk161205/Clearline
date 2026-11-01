@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 MIN_APP_SECRET = 32
+PAYPAL_ENV = "sandbox"  # "live" switches every PayPal URL below
 
 
 class Settings(BaseSettings):
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     # Required in production (see production_problems); blank locally is fine for UI checks.
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
-    paypal_env: str = "sandbox"
+    # Local only: Neon (DATABASE_URL) is the source of truth on Render.
     database_path: str = "clearline.db"
     # Postgres (e.g. Neon's connection string, with sslmode=require) instead of the SQLite file above.
     # Unset = SQLite at database_path (local dev). Never logged.
@@ -24,22 +25,10 @@ class Settings(BaseSettings):
     allow_unverified_webhooks: bool = False
     # AI dispute assistant (Day 3). Gemini is primary; Groq is the sticky fallback.
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.5-flash-lite"
     groq_api_key: str | None = None
-    groq_model: str = "openai/gpt-oss-120b"
-    ai_timeout_seconds: float = 20
-    # Pull disputes from PayPal every N minutes as a safety net for missed webhooks; 0 = off.
-    auto_sync_minutes: float = 3
     # Signs buyer links (/o/{token}). If empty, a random one is made at startup, so buyer links
     # stop working after a restart. (Seller logins are accounts in the database, not settings.)
     app_secret: str | None = None
-    # Behind a proxy that sets X-Forwarded-For / X-Forwarded-Proto (Render): trust those headers
-    # for the client IP and HTTPS. Off by default, so a direct client can't spoof them.
-    trust_proxy: bool = False
-    # Shown to buyers on their order page ("what is this charge?").
-    seller_display_name: str = "Demo Design Studio"
-    # Day 5: the seller's country (ISO code). "IN" shows the India export paperwork checklist.
-    seller_country: str = "IN"
     # Day 8: AG Studio licence key for /insights. Optional: without it AG Studio shows its
     # watermark. Sent only to the logged-in seller's browser at runtime; never commit it.
     ag_studio_license_key: str | None = None
@@ -58,6 +47,16 @@ class Settings(BaseSettings):
     # them. Not shown in repr.
     legacy_seller_password: str | None = Field(default=None, validation_alias="SELLER_PASSWORD", repr=False)
     legacy_merchant_api_key: str | None = Field(default=None, validation_alias="MERCHANT_API_KEY", repr=False)
+    # Retired the same way: code constants now, or Settings -> Business in the database. The
+    # three business ones are read once, by load_business, to fill the database on a first start.
+    legacy_trust_proxy: str | None = Field(default=None, validation_alias="TRUST_PROXY", repr=False)
+    legacy_paypal_env: str | None = Field(default=None, validation_alias="PAYPAL_ENV", repr=False)
+    legacy_gemini_model: str | None = Field(default=None, validation_alias="GEMINI_MODEL", repr=False)
+    legacy_groq_model: str | None = Field(default=None, validation_alias="GROQ_MODEL", repr=False)
+    legacy_ai_timeout: str | None = Field(default=None, validation_alias="AI_TIMEOUT_SECONDS", repr=False)
+    legacy_seller_display_name: str | None = Field(default=None, validation_alias="SELLER_DISPLAY_NAME", repr=False)
+    legacy_seller_country: str | None = Field(default=None, validation_alias="SELLER_COUNTRY", repr=False)
+    legacy_auto_sync_minutes: str | None = Field(default=None, validation_alias="AUTO_SYNC_MINUTES", repr=False)
 
     @property
     def database_target(self) -> str:
@@ -67,6 +66,26 @@ class Settings(BaseSettings):
     @property
     def production(self) -> bool:
         return bool(self.render) or self.app_env.lower() == "production"
+
+    @property
+    def paypal_env(self) -> str:
+        return PAYPAL_ENV
+
+    @property
+    def trust_proxy(self) -> bool:
+        """Trust X-Forwarded-For / -Proto / -Host: only behind Render's proxy, so that a direct
+        client can't spoof them anywhere else."""
+        return bool(self.render)
+
+    @property
+    def retired_variables(self) -> list[str]:
+        """The names of retired variables that are still set. DATABASE_PATH is retired on Render
+        only: locally it still picks the SQLite file."""
+        names = [info.validation_alias for name, info in Settings.model_fields.items()
+                 if name.startswith("legacy_") and getattr(self, name) is not None]
+        if self.render and "database_path" in self.model_fields_set:
+            names.append("DATABASE_PATH")
+        return names
 
     @property
     def base_url(self) -> str:

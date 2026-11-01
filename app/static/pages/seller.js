@@ -713,6 +713,29 @@ async function saveFira(checkbox) {
   });
 }
 
+// ---- Business: the shop's name, country and how often to check PayPal ---------------------
+
+async function loadBusiness() {
+  const res = await fetch("/api/business");
+  if (!res.ok) return;
+  const b = await res.json(), form = $("business-form");
+  for (const name of ["seller_name", "seller_country", "auto_sync_minutes"]) form.elements[name].value = b[name];
+  $("business-line").textContent = `${b.seller_name}, ${b.seller_country}`;
+}
+$("business-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const form = ev.currentTarget, msg = form.querySelector(".msg");
+  const body = { seller_name: form.elements.seller_name.value, seller_country: form.elements.seller_country.value,
+                 auto_sync_minutes: Number(form.elements.auto_sync_minutes.value) };
+  fetch("/api/business", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    .then(async (res) => {
+      msg.className = res.ok ? "msg" : "msg bad";
+      msg.textContent = res.ok ? "Saved." : "Not saved. Check the name, the two-letter country code and the minutes.";
+      if (res.ok) await loadBusiness();
+    });
+});
+loadBusiness();
+
 // ---- Auto-resolve policy: the seller's own rules for refunds that need no click -----------
 
 function policyForm(p) {

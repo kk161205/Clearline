@@ -78,6 +78,7 @@ class AgentDeps:
     summaries: SummaryCache
     assistant: Assistant
     item_names: dict[str, str]
+    seller_name: Callable[[], str]  # the current name, from Settings -> Business
     # (order_id, token=, type=, reason=, message=, amount=, via=) -> {request_id, status, ...};
     # the same path the buyer page uses, including the auto-resolve policy.
     submit_request: Callable[..., Awaitable[dict]]
@@ -159,7 +160,7 @@ def build_mcp(deps: AgentDeps) -> MCPServer:
 
     def view(order_id: str) -> dict:
         page, _ = buyer_view(store, deps.summaries, order_id,
-                             seller_name=settings.seller_display_name, item_names=deps.item_names)
+                             seller_name=deps.seller_name(), item_names=deps.item_names)
         return page
 
     def request_rows(page: dict) -> list[dict]:

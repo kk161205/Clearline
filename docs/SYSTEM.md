@@ -91,7 +91,7 @@ flowchart TB
   Charts are served by the app itself.
 - **Calls in.** Browsers, AI agents on `/mcp`, and PayPal webhooks on `/webhooks/paypal`.
   Each webhook is verified with PayPal before it is used.
-- **Background.** `scheduler.py` runs the auto-sync every `AUTO_SYNC_MINUTES` (default 3). It
+- **Background.** `scheduler.py` runs the auto-sync at the interval set on Settings → Business (default 3 minutes). It
   pulls disputes and invoice statuses from PayPal, as a safety net for missed webhooks. An
   hourly job deletes expired sessions.
 
@@ -495,52 +495,38 @@ The same component (`history.js`) is used on `/seller` and in the dashboard's si
 
 ## 7. Configuration
 
-Every setting lives in `app/config.py`. Each is read from an environment variable of the same
-name in capitals, or from `.env` locally. "Local" says whether the local `.env` sets it. It
-was checked through the app's settings loader, so no values were read.
+`app/config.py` reads these from the environment, or from `.env` locally. Render's Environment
+tab holds them in production. The rest of the configuration is a code constant or lives in the
+database on Settings → Business.
 
-| Name | What it does | Required | Secret | Default | Local | Render |
-|---|---|---|---|---|---|---|
-| `PAYPAL_CLIENT_ID` | PayPal REST app id | Yes | No (public in the browser) | none | set | Yes |
-| `PAYPAL_CLIENT_SECRET` | PayPal REST app secret | Yes | Yes | none | set | Yes |
-| `PAYPAL_ENV` | `sandbox` or `live` | No | No | `sandbox` | default | Optional |
-| `DATABASE_PATH` | SQLite file when no `DATABASE_URL` | No | No | `clearline.db` | default | No |
-| `DATABASE_URL` | Postgres connection string (Neon) | Production | Yes | empty (SQLite) | empty | Yes |
-| `PAYPAL_WEBHOOK_ID` | Verifies incoming webhooks; without it webhooks get 503 | For webhooks | Low (but keep private) | empty | set | Yes (Render's own webhook) |
-| `ALLOW_UNVERIFIED_WEBHOOKS` | Accept unverifiable webhooks (local tests only) | No | No | `false` | default | Never |
-| `GEMINI_API_KEY` | Primary AI | For AI | Yes | empty | set | Yes |
-| `GEMINI_MODEL` | Gemini model name | No | No | `gemini-3.5-flash-lite` | default | No |
-| `GROQ_API_KEY` | Fallback AI | For fallback | Yes | empty | set | Yes |
-| `GROQ_MODEL` | Groq model name | No | No | `openai/gpt-oss-120b` | default | No |
-| `AI_TIMEOUT_SECONDS` | Per AI call | No | No | `20` | default | No |
-| `AUTO_SYNC_MINUTES` | Dispute and invoice safety-net sync; 0 = off | No | No | `3` | default | Optional |
-| `APP_SECRET` | Signs buyer links; random per start if empty | Yes in production | Yes | empty | set | Yes (same as local, so old links keep working) |
-| `TRUST_PROXY` | Trust `X-Forwarded-*` (Secure cookie, client IP) | Behind a proxy | No | `false` | default | `true` |
-| `SELLER_DISPLAY_NAME` | Name buyers see | No | No | `Demo Design Studio` | default | Optional |
-| `SELLER_COUNTRY` | `IN` shows the India export checklist | No | No | `IN` | default | Optional |
-| `AG_STUDIO_LICENSE_KEY` | Removes the AG Studio watermark | No | Yes | empty | empty | When the trial key arrives |
-| `LOG_LEVEL` | Clearline's log level | No | No | `INFO` | default | No |
-| `SELLER_PASSWORD`, `MERCHANT_API_KEY` | Retired; ignored with a warning | No | n/a | n/a | not set | Never |
+| Name | What it does | Required in production | Secret |
+|---|---|---|---|
+| `DATABASE_URL` | Postgres connection string (Neon). Empty locally: SQLite | Yes | Yes |
+| `APP_SECRET` | Signs buyer links. Changing it breaks every link already sent | Yes, at least 32 characters | Yes |
+| `PAYPAL_CLIENT_ID` | PayPal REST app id | Yes | No (public in the browser) |
+| `PAYPAL_CLIENT_SECRET` | PayPal REST app secret | Yes | Yes |
+| `PAYPAL_WEBHOOK_ID` | Verifies incoming webhooks; without it webhooks get 503 | Yes | Low (keep private) |
+| `GEMINI_API_KEY` | Primary AI | No (AI is off without a key) | Yes |
+| `GROQ_API_KEY` | Fallback AI | No | Yes |
+| `AG_STUDIO_LICENSE_KEY` | Removes the AG Studio watermark | No | Yes |
+| `PUBLIC_BASE_URL` | Overrides `RENDER_EXTERNAL_URL` for absolute links | No | No |
+| `LOG_LEVEL` | Clearline's log level, default `INFO` | No | No |
 
-### Proposal: fewer environment variables (not implemented)
+**Set by Render, read by the app:** `RENDER` turns on production mode and trusts Render's proxy
+headers. `RENDER_EXTERNAL_URL` is the public base URL.
 
-Keep only real secrets and deployment wiring in the environment. Give everything else a good
-default or move it to a Settings page stored in the database (`app_settings` already exists).
+**Local only:** `APP_ENV=production` runs production mode's checks anywhere. `DATABASE_PATH` picks
+the SQLite file (default `clearline.db`). `ALLOW_UNVERIFIED_WEBHOOKS` accepts webhooks that fail
+verification; the app refuses to start with it on in production.
 
-| Before (env) | After |
-|---|---|
-| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID` | Env (secrets) |
-| `DATABASE_URL`, `APP_SECRET` | Env (secret, wiring) |
-| `GEMINI_API_KEY`, `GROQ_API_KEY`, `AG_STUDIO_LICENSE_KEY` | Env (secrets) |
-| `PAYPAL_ENV` | Env (wiring); default `sandbox` |
-| `TRUST_PROXY` | Automatic: on when Render's `RENDER` variable is present; env still overrides |
-| `DATABASE_PATH` | Default only (local) |
-| `SELLER_DISPLAY_NAME`, `SELLER_COUNTRY` | Settings page (DB) |
-| `AUTO_SYNC_MINUTES` | Settings page (DB), default 3 |
-| `GEMINI_MODEL`, `GROQ_MODEL`, `AI_TIMEOUT_SECONDS` | Code defaults; Settings page for advanced use |
-| `LOG_LEVEL` | Code default |
-| `ALLOW_UNVERIFIED_WEBHOOKS` | Local only: refused when `RENDER` is set |
+**Code constants:** `PAYPAL_ENV` (`sandbox`), `TRUSTED_PROXY_HOPS` (1), `GEMINI_MODEL`, `GROQ_MODEL`,
+`AI_TIMEOUT_SECONDS` (20).
 
-**Minimal list for Render:** `DATABASE_URL`, `APP_SECRET`, `PAYPAL_CLIENT_ID`,
-`PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `GEMINI_API_KEY`, `GROQ_API_KEY`, and later
-`AG_STUDIO_LICENSE_KEY`. That is 8 variables (7 today), instead of up to 19.
+**Settings → Business (database):** seller name, seller country and the auto-sync interval, with
+the old defaults (`Demo Design Studio`, `IN`, 3 minutes).
+
+**Retired variables:** `TRUST_PROXY`, `PAYPAL_ENV`, `GEMINI_MODEL`, `GROQ_MODEL`,
+`AI_TIMEOUT_SECONDS`, `SELLER_DISPLAY_NAME`, `SELLER_COUNTRY`, `AUTO_SYNC_MINUTES`,
+`SELLER_PASSWORD`, `MERCHANT_API_KEY`, and `DATABASE_PATH` on Render. If one is still set the app
+starts, ignores it and logs one warning naming it. On a first start the three business values are
+copied into the database if it has none, so nothing visibly changes.

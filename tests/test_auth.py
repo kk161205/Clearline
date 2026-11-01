@@ -303,13 +303,13 @@ def test_session_cookie_flags_and_only_a_hash_is_stored(tmp_path):
     assert owner == user_id and sid == Accounts.session_id(token) and token not in sid
 
 
-def test_x_forwarded_proto_counts_only_with_trust_proxy(tmp_path):
+def test_x_forwarded_proto_counts_only_on_render(tmp_path):
     client, _, _ = with_account(tmp_path)
     resp = login(client, headers={"X-Forwarded-Proto": "https"})
-    assert "secure" not in resp.headers["set-cookie"].lower()  # TRUST_PROXY is off by default
+    assert "secure" not in resp.headers["set-cookie"].lower()  # only Render's proxy is trusted
 
-    proxied, _ = new_client(tmp_path, trust_proxy=True)
-    resp = login(proxied, headers={"X-Forwarded-Proto": "https"})  # what Render/ngrok send
+    proxied, _ = new_client(tmp_path, render="true", database_url=db_target(tmp_path))
+    resp = login(proxied, headers={"X-Forwarded-Proto": "https"})  # what Render sends
     assert "secure" in resp.headers["set-cookie"].lower()
 
 

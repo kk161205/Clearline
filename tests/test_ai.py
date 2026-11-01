@@ -5,6 +5,7 @@ import json
 import httpx
 import respx
 
+from app.ai import GEMINI_MODEL, GROQ_MODEL
 from app.store import TimelineStore
 from tests.support import (DISPUTE_ID, GEMINI, GROQ, DisputeOnPayPal, ai_reply, events,
                            fight, make_client, open_dispute, setup_paypal, shipped_order)
@@ -36,7 +37,7 @@ def test_gemini_ok_stores_recommendation(tmp_path):
     client, _, gemini, groq = disputed(tmp_path, ai_reply(fight()))
     [rec] = events(client, "ORDER1", "ai_recommendation")
     p = rec["payload"]
-    assert p["provider"] == "gemini" and p["model"] == "gemini-test-lite"
+    assert p["provider"] == "gemini" and p["model"] == GEMINI_MODEL
     assert p["prompt_version"] and isinstance(p["latency_ms"], int)
     assert p["recommendation"]["decision"] == "FIGHT"
     assert p["dispute_update_time"] == "2026-10-26T17:01:43.853Z"
@@ -57,7 +58,7 @@ def test_gemini_429_switches_to_groq_and_persists(tmp_path):
     client, settings, gemini, groq = disputed(tmp_path, httpx.Response(429))
     [rec] = events(client, "ORDER1", "ai_recommendation")
     assert rec["payload"]["provider"] == "groq"
-    assert rec["payload"]["model"] == "openai/gpt-oss-120b"
+    assert rec["payload"]["model"] == GROQ_MODEL
     assert gemini.call_count == 1 and groq.call_count == 1
 
     # Survives a restart: a fresh store on the same file still says groq.

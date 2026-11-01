@@ -26,11 +26,15 @@ from .store import TimelineStore
 
 log = logging.getLogger("clearline.ai")
 
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-120b"
+AI_TIMEOUT_SECONDS = 20  # one AI reply, before treating the provider as down
+
 PROVIDERS = {
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-               "key": "gemini_api_key", "model": "gemini_model", "label": "Gemini"},
+               "key": "gemini_api_key", "model": GEMINI_MODEL, "label": "Gemini"},
     "groq": {"base_url": "https://api.groq.com/openai/v1",
-             "key": "groq_api_key", "model": "groq_model", "label": "Groq"},
+             "key": "groq_api_key", "model": GROQ_MODEL, "label": "Groq"},
 }
 
 
@@ -62,7 +66,7 @@ class AIClient:
                  http: httpx.AsyncClient | None = None):
         self.settings = settings
         self.store = store
-        self.http = http or httpx.AsyncClient(timeout=settings.ai_timeout_seconds)
+        self.http = http or httpx.AsyncClient(timeout=AI_TIMEOUT_SECONDS)
 
     @property
     def configured(self) -> bool:
@@ -70,7 +74,7 @@ class AIClient:
         return any(getattr(self.settings, p["key"]) for p in PROVIDERS.values())
 
     def model_for(self, provider: str) -> str:
-        return getattr(self.settings, PROVIDERS[provider]["model"])
+        return PROVIDERS[provider]["model"]
 
     def status(self) -> dict:
         """Active provider and model for GET /api/ai/status (never includes keys)."""
@@ -167,7 +171,7 @@ class AIClient:
         try:
             resp = await self.http.post(f"{cfg['base_url']}/chat/completions", json=body,
                                         headers={"Authorization": f"Bearer {getattr(self.settings, cfg['key'])}"},
-                                        timeout=self.settings.ai_timeout_seconds)
+                                        timeout=AI_TIMEOUT_SECONDS)
         except httpx.TimeoutException:
             raise AIError(provider, "timeout", switch=False)
         except httpx.HTTPError as err:
@@ -247,7 +251,7 @@ class AIClient:
         try:
             resp = await self.http.post(f"{cfg['base_url']}/chat/completions", json=body,
                                         headers={"Authorization": f"Bearer {key}"},
-                                        timeout=self.settings.ai_timeout_seconds)
+                                        timeout=AI_TIMEOUT_SECONDS)
         except httpx.TimeoutException:
             raise AIError(provider, "timeout", switch=True)
         except httpx.HTTPError as err:

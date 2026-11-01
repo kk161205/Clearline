@@ -8,6 +8,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from app.accounts import Accounts
+from app.business import BUSINESS_KEY, Business
 from app.config import Settings
 from app.main import create_app
 from app.db import Database
@@ -24,6 +25,7 @@ PAYER_EMAIL = "buyer@us.example.com"
 # A test-only account (never used outside the test suite).
 SELLER_EMAIL = "seller@example.com"
 TEST_PASSWORD = "test-only-password-1"
+TEST_APP_SECRET = "test-secret-long-enough-for-production-mode"
 
 
 def db_target(tmp_path) -> str:
@@ -44,16 +46,16 @@ def query(target: str, sql: str, params=()) -> list[dict]:
         return conn.execute(sql, params).fetchall()
 
 
-def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", paypal_env="sandbox",
+def make_client(tmp_path, *, gemini_key="g-test", groq_key="q-test", seller_country="IN",
                 auto_sync_minutes=0, login=True, email=SELLER_EMAIL, **overrides):
     # Every AI setting is explicit so a real .env can't change the result.
-    settings = Settings(paypal_client_id="cid", paypal_client_secret="secret",
-                        **db_settings(tmp_path), paypal_webhook_id="WH-1",
-                        gemini_api_key=gemini_key, gemini_model="gemini-test-lite",
-                        groq_api_key=groq_key, groq_model="openai/gpt-oss-120b",
-                        ai_timeout_seconds=5, paypal_env=paypal_env,
-                        auto_sync_minutes=auto_sync_minutes, app_secret="test-secret",
-                        **{"seller_country": "IN", **overrides})
+    settings = Settings(**{"paypal_client_id": "cid", "paypal_client_secret": "secret",
+                           **db_settings(tmp_path), "paypal_webhook_id": "WH-1",
+                           "gemini_api_key": gemini_key, "groq_api_key": groq_key,
+                           "app_secret": TEST_APP_SECRET, **overrides})
+    # The shop's settings as the app would find them saved, so a real .env's can't change them.
+    TimelineStore(settings.database_target).set_setting(BUSINESS_KEY, Business(
+        seller_country=seller_country, auto_sync_minutes=auto_sync_minutes).model_dump())
     http = httpx.AsyncClient(base_url=settings.api_base)
     client = TestClient(create_app(settings, http))
     if login:

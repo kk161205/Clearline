@@ -60,6 +60,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
+      - name: Fail unless the tests will really use Postgres
+        run: python -c "import os, psycopg; print(psycopg.connect(os.environ['TEST_DATABASE_URL']).execute('SHOW server_version').fetchone())"
       # Everything that reads or writes the database in its own way: the store and migrations,
       # accounts, webhooks and sync, Settings -> Business, System status, production mode.
       - run: >-

@@ -7,9 +7,8 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 ## 8. Status matrix
 
 - **Built:** the commit that added it.
-- **Tested offline:** tests that pass with PayPal and the AI mocked. 365 in total, all
-  passing on SQLite. The last Postgres run (Neon dev branch, 110 + 1 skipped) was before this
-  round, so the newest tests haven't run there; the deployed app does run on Neon.
+- **Tested offline:** tests that pass with PayPal and the AI mocked. 399 in total, all
+  passing on SQLite. CI also runs the database tests on a Postgres container on every push.
 - **Live in Sandbox:** tested by hand against PayPal Sandbox.
 - **On Render:** what was checked on `https://clearline-cbyb.onrender.com` (section 9).
 
@@ -38,6 +37,7 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 | Checkout on Render | | | | **Partly** | The button renders with no CSP violations; no payment tried |
 | Production mode, proxy IP, headers, CSP | `6a8d40b` | `test_security` (33) | n/a | **Yes** (headers, anonymous routes, checkout CSP) | Zero CSP violations on 8 page types locally in production mode |
 | Fewer env vars, Settings → Business | `f0fdfac` | `test_business` (16) | Locally | Not verified | Needs the Render clean-up below |
+| CI, secret scan, pre-demo check | see section 10 | `test_check` (19), `test_secret_scan` (15) | n/a | **Yes** (`app.check` passes on the live site) | |
 | Request logs, startup summary, System status | `9413cac` | `test_diagnostics` (33) | Locally | **Partly** (`X-Request-ID`; login-only page not opened) | Render's log lines not seen from here |
 
 ## 9. Live deployment check (1 Nov 2026, read-only)
@@ -65,10 +65,10 @@ SDK loading on the checkout page. Pages behind a login were last checked on 30 O
 
 | # | Automation | What it does | Effort | Demo value |
 |---|---|---|---|---|
-| 1 | **CI on GitHub Actions** | Every push: the full test suite on SQLite, plus the database tests against a Postgres service container. Fails fast | S | High: no broken deploys during the last two weeks |
-| 2 | **Secret scan in CI** | Fails the build if a diff has a Neon host name, a Postgres connection string, an agent key, or PayPal or AI key patterns. Same check as a local pre-commit hook | S | High: one leak would be costly |
-| 3 | **Pre-demo check command** (`python -m app.smoke <url>`) | Wakes Render and waits out the cold start. Checks `/healthz`, `/login`, that `/setup` is 404, a judge login, AI provider status, whether the AG Studio key is present, and webhook readiness (the `{}` probe). Prints one green/red table | S | High: run it 10 minutes before judging |
-| 4 | **Deploy pipeline** | Turn off Render auto-deploy; CI calls Render's deploy hook only after tests pass, then runs the smoke check (3) against the live URL | S–M | High: a red deploy never reaches judges |
+| 1 | ✅ **CI on GitHub Actions** | Every push and pull request: the full test suite on SQLite, plus the database tests against a Postgres service container | Done | High: no broken deploys during the last two weeks |
+| 2 | ✅ **Secret scan in CI** | `scripts/secret_scan.py` fails the build on a Neon host, a Postgres URL with credentials, an agent key, PayPal, Google or Groq keys, or a private key, in the tree or in any new commit | Done | High: one leak would be costly |
+| 3 | ✅ **Pre-demo check command** (`python -m app.check --base <url>`) | Wakes Render, then checks the public pages, headers and CSP, blocked API pages, and with a login System status. Prints a pass/fail table | Done | High: run it 10 minutes before judging |
+| 4 | ⏳ **Deploy pipeline** | Built: CI calls Render's deploy hook only after all three jobs pass, then runs `app.check` until the new commit is serving. Waits on your Render setting and GitHub secret (section 11) | Yours to switch on | High: a red deploy never reaches judges |
 | 5 | **Demo data reset on Neon** (`python -m app.demo_reset`) | Rebuilds one fresh "demo story": an order to ship, an open buyer request, an inquiry dispute waiting on the seller, an overdue invoice, an agent refund. Refuses to run without a flag and a backup | M | High: every demo starts from the same story |
 | 6 | **Playwright demo walk** | Walks the story on the live site (login, today, dispute card, buyer page, dashboard, Insights AI question), recording video and screenshots | M | High: backup footage if Sandbox or Wi-Fi fails |
 | 7 | **Screenshot script in the repo** | Move the screenshot script into `tools/`, with a `--live` mode, for README and Devpost images in light and dark at phone and desktop widths | S | Medium |
@@ -100,9 +100,8 @@ gantt
   section Render and PayPal (you)
   Render env clean-up                        :crit, r1, 2026-11-01, 1d
   Live Sandbox run on Render                 :crit, r3, 2026-11-02, 1d
+  Deploy hook, Auto-Deploy off               :crit, r4, 2026-11-02, 1d
   section Automation
-  CI + secret scan                           :a1, 2026-11-01, 1d
-  Deploy hook + smoke check                  :a2, 2026-11-02, 1d
   Demo data reset                            :a3, 2026-11-04, 2d
   Playwright demo walk + footage             :a4, 2026-11-06, 2d
   section AG Studio (you)
@@ -120,8 +119,8 @@ gantt
 | Item | Who | Blocked on you? |
 |---|---|---|
 | Render environment clean-up (delete the retired variables) | You (Render dashboard) | **Yes** |
+| Deploy pipeline: Auto-Deploy Off, deploy hook in GitHub secret `RENDER_DEPLOY_HOOK` | You (Render and GitHub) | **Yes** |
 | Live Sandbox run on Render (checkout under the CSP, first webhook, System status) | You, with Claude checking | **Yes** (buyer approval in Sandbox) |
-| CI, secret scan, deploy hook, smoke check | Claude | You add the deploy hook secret to GitHub |
 | Demo data reset, Playwright walk | Claude | Sandbox buyer steps are yours |
 | AG Studio 45-day trial (request on 7–8 Nov, lasts to about 22 Dec) | You (email AG Grid) | **Yes** |
 | Overdue invoice for the reminder demo (create about 5 Nov, shortest term) | You click, or Claude via the app | Partly |

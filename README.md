@@ -1,5 +1,7 @@
 # Clearline
 
+[![CI](https://github.com/kk161205/Clearline/actions/workflows/ci.yml/badge.svg)](https://github.com/kk161205/Clearline/actions/workflows/ci.yml)
+
 **Start here:** [System guide](docs/SYSTEM.md) (architecture, flows, data, security,
 configuration) · [Status and plan](docs/STATUS.md) (what works, live check, automation,
 dates to submission).
@@ -589,7 +591,8 @@ Grid's:
   the first line of stdin (`reset-password` too). `/setup` only exists while there are no
   accounts.
 - **Health check:** `GET /healthz` returns `{"ok": true, "db": "ok"}` after one cheap query, or
-  503 `{"ok": false, "db": "down"}`. No versions or hosts.
+  503 `{"ok": false, "db": "down"}`. No hosts or details. A 200 also carries `X-App-Version`, the
+  short commit, which is how the post-deploy check knows the new version is the one serving.
 
 ### Render (web service)
 
@@ -605,6 +608,35 @@ Grid's:
 - **Production mode** is automatic on Render (or `APP_ENV=production`): the app refuses to start if
   a required setting is missing or `ALLOW_UNVERIFIED_WEBHOOKS` is on, naming the setting and never
   its value, and `/docs`, `/redoc` and `/openapi.json` don't exist.
+
+### CI and deploys
+
+`.github/workflows/ci.yml` runs on every push and pull request to main: the full test suite on
+SQLite, the database tests on a throwaway Postgres container, and a secret scan
+(`scripts/secret_scan.py`, which you can also run locally, with `--staged` before a commit). None of
+them need repo secrets.
+
+A push to main that passes all three is deployed: the last job calls Render's deploy hook, then
+runs `app.check` against the live site until the new commit is serving. For that to be the only way
+code reaches Render, its **Auto-Deploy** setting is **Off** and `RENDER_DEPLOY_HOOK` is a GitHub
+secret. Without the secret that job does nothing and says so.
+
+Render's own "After CI Checks Pass" isn't used, because Render tells GitHub nothing when a deploy
+finishes, so CI couldn't check the live site at the right moment. A job that waited for the deploy
+would itself be a check Render might be waiting for.
+
+### Pre-demo check
+
+```powershell
+python -m app.check --base https://clearline-cbyb.onrender.com
+"your password" | python -m app.check --base https://clearline-cbyb.onrender.com --login-email you@example.com --password-stdin
+```
+
+Wakes the service (up to 2 minutes), then checks `/login` is 200, `/setup` is 404, the security
+headers and CSP, and that the API pages are blocked. With a login it adds Settings → System status:
+database, migrations, PayPal token, webhook id, AI provider, AG Studio key, last webhook. A missing
+AG Studio key or webhook is a WARN; anything marked FAIL makes it exit 1. It's read-only, and it
+logs out at the end.
 
 ### Logs and diagnostics
 

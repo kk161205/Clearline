@@ -1,0 +1,125 @@
+# Tests and a secret scan on every push and pull request to main. A push to main that passes all
+# three is deployed to Render, then checked on the live site. Needs no repo secrets to pass: the
+# deploy step only runs once RENDER_DEPLOY_HOOK exists (see README, Render).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13.5"  # the same as PYTHON_VERSION on Render
+  LIVE_URL: https://clearline-cbyb.onrender.com
+
+jobs:
+  sqlite:
+    name: Tests (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  postgres:
+    name: Tests (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: clearline_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # A throwaway database in this job's container. Built with format() so the secret scan,
+      # which flags any connection string with a password, stays strict for the whole repo.
+      TEST_DATABASE_URL: ${{ format('{0}://ci:ci@localhost:5432/clearline_test', 'postgresql') }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      # Everything that reads or writes the database in its own way: the store and migrations,
+      # accounts, webhooks and sync, Settings -> Business, System status, production mode.
+      - run: >-
+          python -m pytest -q
+          tests/test_db.py tests/test_migrate.py tests/test_auth.py tests/test_webhooks.py
+          tests/test_sync_sandbox.py tests/test_business.py tests/test_diagnostics.py
+          tests/test_security.py tests/test_check.py
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the commits being pushed, not just the last one
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Scan the tree and the new commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # A brand-new branch has no "before": all zeros. Then the tree scan is the whole check.
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            python scripts/secret_scan.py --diff "$BASE" "$HEAD"
+          else
+            python scripts/secret_scan.py
+          fi
+
+  deploy:
+    name: Deploy and check
+    needs: [sqlite, postgres, secrets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy  # Render deploys the branch's latest commit, so a newer push replaces this run
+      cancel-in-progress: true
+    env:
+      DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+    steps:
+      - name: No deploy hook yet
+        if: env.DEPLOY_HOOK == ''
+        run: echo "::notice::RENDER_DEPLOY_HOOK isn't set, so CI didn't deploy or check the live site."
+      - name: Deploy to Render
+        if: env.DEPLOY_HOOK != ''
+        run: curl --fail --silent --show-error --output /dev/null --request POST "$DEPLOY_HOOK"
+      - uses: actions/checkout@v5
+        if: env.DEPLOY_HOOK != ''
+      - uses: actions/setup-python@v6
+        if: env.DEPLOY_HOOK != ''
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - if: env.DEPLOY_HOOK != ''
+        run: pip install -r requirements.txt
+      # Up to 10 minutes: the build, the cold start, and the switch to the new version.
+      - name: Check the live site
+        if: env.DEPLOY_HOOK != ''
+        run: python -m app.check --base "$LIVE_URL" --expect-commit "$GITHUB_SHA" --wait 600

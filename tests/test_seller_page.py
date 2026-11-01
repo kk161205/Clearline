@@ -210,7 +210,7 @@ def money_actions(answer):
 
 
 def test_money_actions_use_the_in_app_confirm():
-    script = (ROOT / "app/static/seller.html").read_text(encoding="utf-8")
+    script = (ROOT / "app/static/pages/seller.js").read_text(encoding="utf-8")
     assert not re.search(r"(?<![\w.])(confirm|prompt|alert)\(", script)  # no browser dialogs at all
 
     cancelled = money_actions(False)

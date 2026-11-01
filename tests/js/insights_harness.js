@@ -9,7 +9,7 @@ const html = fs.readFileSync(page, "utf8");
 global.document = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] }; // no readyState: start() doesn't run
 global.setInterval = () => 0;
 new Function(fs.readFileSync(path.join(dir, "ui.js"), "utf8"))();
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8");
 const view = new Function(script + "; return { toSources, defaultState, stackForPhone, moneyStateHtml, turnEvents, turnResponse, turnBody, configureTarget, panelsForAssistant };")();
 
 const data = JSON.parse(fs.readFileSync(0, "utf8"));

@@ -8,7 +8,7 @@ const path = require("path");
 const html = fs.readFileSync(process.argv[2], "utf8");
 // history.js is a classic <script> before the page's own, so its globals come first.
 const history = fs.readFileSync(path.join(path.dirname(process.argv[2]), "history.js"), "utf8");
-const script = [history, html.match(/<script>([\s\S]*)<\/script>/)[1]].join(";\n");
+const script = [history, fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8")].join(";\n");
 const stub = { addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] };
 global.document = { getElementById: () => stub, querySelector: () => null, querySelectorAll: () => [] };
 global.fetch = () => new Promise(() => {}); // never resolves: the page doesn't render on its own

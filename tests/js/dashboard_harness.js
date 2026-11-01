@@ -10,7 +10,7 @@ global.document = { getElementById: () => null, querySelector: () => null, query
 global.location = { origin: "https://shop.example" };
 global.setInterval = () => 0;
 new Function(fs.readFileSync(path.join(dir, "ui.js"), "utf8"))();
-const script = [fs.readFileSync(path.join(dir, "history.js"), "utf8"), html.match(/<script>([\s\S]*)<\/script>/)[1]].join(";\n");
+const script = [fs.readFileSync(path.join(dir, "history.js"), "utf8"), fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8")].join(";\n");
 const view = new Function(script + "; return { kpiTiles, toGridRows, drawerHtml };")();
 
 const data = JSON.parse(fs.readFileSync(0, "utf8"));

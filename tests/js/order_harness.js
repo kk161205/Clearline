@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 
 const html = fs.readFileSync(process.argv[2], "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8");
 const stub = { addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], innerHTML: "" };
 global.document = { getElementById: () => stub, querySelector: () => null, querySelectorAll: () => [] };
 global.location = { pathname: "/o/test-token" };

@@ -98,9 +98,10 @@ def test_insights_page_loads_ag_studio_pinned_with_sri_and_a_failure_state(tmp_p
     html = client.get("/insights").text
     tag = re.search(r'<script src="https://cdn\.jsdelivr\.net/[^>]+>', html).group(0)
     assert "ag-studio@3.0.0/dist/umd/ag-studio.min.js" in tag
-    assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag and "onerror=" in tag
+    assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag
     assert len(re.findall(r'<script src="https://', html)) == 1  # the one third-party script
-    assert "Insights couldn't load" in html and 'href="/dashboard"' in html
+    script = (ROOT / "app/static/pages/insights.js").read_text(encoding="utf-8")
+    assert "Insights couldn't load" in script and 'href="/dashboard"' in script
     for page in ("seller.html", "dashboard.html", "agents.html"):  # in every seller nav
         assert 'href="/insights"' in (ROOT / "app/static" / page).read_text(encoding="utf-8")
 
@@ -153,7 +154,7 @@ def test_insights_report_is_built_from_the_dashboard_data(mixed):  # noqa: F811
 
 
 def test_insights_money_uses_the_apps_two_decimal_format():
-    html = (ROOT / "app/static/insights.html").read_text(encoding="utf-8")
+    html = (ROOT / "app/static/pages/insights.js").read_text(encoding="utf-8")
     assert 'const MONEY = { format: "0.00" };' in html
     assert "createFormats({ overrides: { currencyFormat: { formatOptions: MONEY }, decimalFormat: { formatOptions: MONEY } } })" in html
     fields = re.findall(r'format: "currencyFormat"[^}]*}', html)
@@ -178,7 +179,7 @@ def test_grid_amount_stays_numeric_and_displays_like_the_app(mixed):  # noqa: F8
 
 
 def test_studios_own_widgets_stay_available_beside_ours():
-    html = (ROOT / "app/static/insights.html").read_text(encoding="utf-8")
+    html = (ROOT / "app/static/pages/insights.js").read_text(encoding="utf-8")
     assert "const widgets = (config) => agStudio.createWidgets({" in html
     assert 'menu: [...config.menu, { label: "Clearline", widgetIds: ["money-state"] }],' in html
     assert "maxTurns: 8," in html  # Studio's own cap; the server keeps plain questions to 6

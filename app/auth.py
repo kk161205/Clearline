@@ -28,6 +28,7 @@ PUBLIC_ROUTES = [
     ("GET", r"/healthz"),                         # load balancer health check: {"ok", "db"} only
     ("GET", r"/favicon\.ico"),
     ("GET", r"/static/(?:ui\.(?:css|js)|fonts/instrument-sans-latin(?:-ext)?\.woff2)"),  # design system + font
+    ("GET", r"/static/pages/(?:buyer|order|login|setup)\.js"),  # the public pages' own scripts
     # MCP server for AI agents (Day 6). Not a seller session: buyer tools are scoped by the
     # order link, merchant tools need an agent key as a Bearer token (checked in agents.py).
     ("POST", r"/mcp"),

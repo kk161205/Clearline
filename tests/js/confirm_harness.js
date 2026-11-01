@@ -7,7 +7,7 @@ const path = require("path");
 const html = fs.readFileSync(process.argv[2], "utf8");
 // history.js is a classic <script> before the page's own, so its globals come first.
 const history = fs.readFileSync(path.join(path.dirname(process.argv[2]), "history.js"), "utf8");
-const script = [history, html.match(/<script>([\s\S]*)<\/script>/)[1]].join(";\n");
+const script = [history, fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8")].join(";\n");
 const { answer } = JSON.parse(fs.readFileSync(0, "utf8"));
 
 const el = (props = {}) => ({ addEventListener() {}, querySelector: () => null, querySelectorAll: () => [],

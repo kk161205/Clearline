@@ -48,6 +48,7 @@ from .policy import POLICY_KEY, TRIGGER, NotInPolicy, Policy, day_start, decide,
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
 from .scheduler import run_every
+from .security import SecurityHeaders, forwarded_client
 from .store import TimelineStore
 
 STATIC = Path(__file__).parent / "static"
@@ -357,6 +358,8 @@ def create_app(settings: Settings | None = None,
                ai_http: httpx.AsyncClient | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+    if settings.production and (problems := settings.production_problems()):
+        raise SystemExit("Refusing to start in production: " + "; ".join(problems))
     paypal = PayPalClient(settings, http)
     store = TimelineStore(settings.database_target)
     ai = AIClient(settings, store, ai_http)
@@ -420,7 +423,10 @@ def create_app(settings: Settings | None = None,
                     with suppress(asyncio.CancelledError):
                         await t
 
-    app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan)
+    # No API pages in production: /docs, /redoc and /openapi.json don't exist there.
+    api_pages = {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.production else {}
+    app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan, **api_pages)
+    app.add_middleware(SecurityHeaders, production=settings.production, sdk_url=settings.sdk_url)
 
     def fail(err: PayPalError) -> HTTPException:
         return HTTPException(status_code=502, detail={"paypal_status": err.status,
@@ -429,10 +435,10 @@ def create_app(settings: Settings | None = None,
     # ---- Seller accounts: everything not public needs a signed-in seller ------------
 
     def client_ip(request: Request) -> str:
-        """The client's IP: the first X-Forwarded-For hop only behind a trusted proxy."""
+        """The client's IP: from X-Forwarded-For only behind a trusted proxy, counted from the
+        right, because the left end is whatever the client sent."""
         if settings.trust_proxy:
-            forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            if forwarded:
+            if forwarded := forwarded_client(request.headers.get("x-forwarded-for", "")):
                 return forwarded
         return request.client.host if request.client else "unknown"
 
@@ -616,6 +622,7 @@ def create_app(settings: Settings | None = None,
 
     # The shared design system (Day 7) and its self-hosted font. Only these files are served.
     static_files = {"ui.css": None, "ui.js": None, "history.js": None,
+                    **{f"pages/{page.stem}.js": None for page in (STATIC / "pages").glob("*.js")},
                     "vendor/ag-grid-community-36.2.0.min.js": None,
                     "vendor/ag-charts-community-14.2.0.min.js": None,
                     "fonts/instrument-sans-latin.woff2": "font/woff2",
@@ -694,7 +701,7 @@ def create_app(settings: Settings | None = None,
     # ---- Buyer clarity page (Day 4): public, by unguessable link ------------
 
     def buyer_link(order_id: str) -> str:
-        return f"/o/{buyer_token(secret, order_id)}"
+        return f"{settings.base_url}/o/{buyer_token(secret, order_id)}"
 
     def order_from_token(token: str) -> str:
         order_id = order_for_token(store, secret, token)
@@ -1579,7 +1586,7 @@ def create_app(settings: Settings | None = None,
                   "role": "buyer" if t.name in BUYER_TOOLS else "merchant",
                   "description": (t.description or "").strip().split("\n\n")[0]}
                  for t in await mcp_server.list_tools()]
-        return {"mcp_path": "/mcp", "transport": "Streamable HTTP (stateless, JSON replies)",
+        return {"mcp_url": f"{settings.base_url}/mcp", "transport": "Streamable HTTP (stateless, JSON replies)",
                 "sdk": f"mcp {package_version('mcp')}",
                 "merchant_enabled": store.active_api_keys() > 0, "tools": tools,
                 "calls": store.agent_calls(20)}

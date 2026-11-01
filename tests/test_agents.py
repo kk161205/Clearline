@@ -113,7 +113,7 @@ def test_mcp_endpoint_lists_the_tools_over_http_and_in_process(tmp_path):
         # The /agents page data: same tools, with roles.
         info = client.get("/api/agents").json()
         assert {t["name"]: t["role"] for t in info["tools"]}["money_in_flight"] == "merchant"
-        assert info["mcp_path"] == "/mcp" and info["sdk"].startswith("mcp ")
+        assert info["mcp_url"] == "/mcp" and info["sdk"].startswith("mcp ")
 
     async def in_process():
         async with Client(client.app.state.mcp) as mcp_client:

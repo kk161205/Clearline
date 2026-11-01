@@ -4,11 +4,15 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+MIN_APP_SECRET = 32
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    paypal_client_id: str
-    paypal_client_secret: str
+    # Required in production (see production_problems); blank locally is fine for UI checks.
+    paypal_client_id: str = ""
+    paypal_client_secret: str = ""
     paypal_env: str = "sandbox"
     database_path: str = "clearline.db"
     # Postgres (e.g. Neon's connection string, with sslmode=require) instead of the SQLite file above.
@@ -42,6 +46,13 @@ class Settings(BaseSettings):
     # Level for Clearline's own logs (uvicorn's are untouched). Lines carry counts, ids and
     # statuses only, so they're safe to ship to a log service.
     log_level: str = "INFO"
+    # Render sets these itself. RENDER switches production mode on, RENDER_EXTERNAL_URL is the
+    # service's public address. APP_ENV=production turns production mode on anywhere else.
+    render: str | None = None
+    render_external_url: str | None = None
+    app_env: str = "development"
+    # Overrides RENDER_EXTERNAL_URL (a custom domain, say) for the absolute links we generate.
+    public_base_url: str | None = None
     # No longer used: seller logins are accounts and agent keys live in Settings -> Agent access.
     # Accepted so an old .env still starts; the app warns (by name, never the value) and ignores
     # them. Not shown in repr.
@@ -52,6 +63,28 @@ class Settings(BaseSettings):
     def database_target(self) -> str:
         """What TimelineStore opens: the Postgres URL if set, else the SQLite file."""
         return self.database_url or self.database_path
+
+    @property
+    def production(self) -> bool:
+        return bool(self.render) or self.app_env.lower() == "production"
+
+    @property
+    def base_url(self) -> str:
+        """The public address for absolute links; "" (links stay relative) when it's unknown."""
+        return (self.public_base_url or self.render_external_url or "").rstrip("/")
+
+    def production_problems(self) -> list[str]:
+        """What stops the app starting in production. Names settings, never their values."""
+        required = {"DATABASE_URL": self.database_url, "APP_SECRET": self.app_secret,
+                    "PAYPAL_CLIENT_ID": self.paypal_client_id,
+                    "PAYPAL_CLIENT_SECRET": self.paypal_client_secret,
+                    "PAYPAL_WEBHOOK_ID": self.paypal_webhook_id}
+        problems = [f"{name} is missing" for name, value in required.items() if not value]
+        if self.app_secret and len(self.app_secret) < MIN_APP_SECRET:
+            problems.append(f"APP_SECRET must be at least {MIN_APP_SECRET} characters")
+        if self.allow_unverified_webhooks:
+            problems.append("ALLOW_UNVERIFIED_WEBHOOKS must be off")
+        return problems
 
     @property
     def api_base(self) -> str:

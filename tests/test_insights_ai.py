@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import shutil
-from datetime import date
 from pathlib import Path
 
 import httpx
@@ -23,6 +22,7 @@ from app.logsafe import short_reason
 from app.logsafe import safe
 from app.paypal import PayPalError
 from app.store import TimelineStore
+from tests.clock import TODAY
 from tests.support import GEMINI, GROQ, make_client
 from tests.test_dashboard import mixed  # noqa: F401  (fixture)
 from tests.test_insights import insights_view
@@ -365,7 +365,7 @@ def test_needs_you_guidance_and_today_are_sent_with_the_question(tmp_path):
     assert "filter on Act by, never on Deadline" in system
     assert "Act by is\n  set only on items that need the seller" in system and "say so plainly" in system
     assert '"120.00 USD"' in system and "its Next action, and its Deadline when there is one" in system
-    assert f"Today is {date.today().isoformat()}." in system
+    assert f"Today is {TODAY.isoformat()}." in system
     tool = next(m for m in body["messages"] if m["role"] == "tool")
     assert tool["content"] == SIX_ROWS  # the rows, dates and amounts reach the model intact
 

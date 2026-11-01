@@ -11,3 +11,4 @@ psycopg-pool==3.3.3
 pytest>=8.0
 pytest-asyncio>=0.24
 respx>=0.21
+time-machine>=3.0  # pins the clock in tests

@@ -2,7 +2,7 @@
 the buyer page, the India export checklist, and refund buttons on every request (no network)."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -10,6 +10,7 @@ import respx
 
 from app.invoicing import InvoiceDraft, ReminderDraft, extract_problems, reminder_problems
 from app.store import TimelineStore
+from tests.clock import TODAY
 from tests.support import API, GEMINI, GROQ, make_client, setup_paypal
 from tests.test_seller_page import NODE, render
 from tests.test_webhooks import SIG_HEADERS, capture_order
@@ -17,7 +18,6 @@ from tests.test_webhooks import SIG_HEADERS, capture_order
 INVOICES = f"{API}/v2/invoicing/invoices"
 INV = "INV2-ABCD-1234-EFGH-5678"
 TEXT = "Bill Acme Corp 1200 USD for logo design, due in 14 days"
-TODAY = datetime.now(timezone.utc).date()
 
 
 def ai(content: dict) -> httpx.Response:

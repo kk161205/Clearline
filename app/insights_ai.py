@@ -31,7 +31,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -285,7 +285,7 @@ def chat_messages(turn: InsightsTurn) -> list[dict]:
     Consecutive tool calls become one assistant message, as chat/completions expects; the
     provider-specific form (signatures for Gemini) is made by for_provider()."""
     guidance = clean(turn.instructions)[:MAX_STUDIO_GUIDANCE] if turn.instructions else ""
-    system = SYSTEM.replace("{today}", date.today().isoformat())
+    system = SYSTEM.replace("{today}", datetime.now(timezone.utc).date().isoformat())
     messages: list[dict] = [{"role": "system", "content": system + (f"\n\nFor this turn: {guidance}" if guidance else "")}]
     for item in recent_items(turn.items):
         kind, typ = item.get("kind"), item.get("type")

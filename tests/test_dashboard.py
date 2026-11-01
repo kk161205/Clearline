@@ -16,6 +16,7 @@ from app.main import CATALOGUE
 from app.policy import TRIGGER
 from app.seed_demo import MARKER, main as seed_main, seed
 from app.store import TimelineStore
+from tests.clock import TODAY
 from tests.support import make_client
 from tests.test_seller_page import RAW_CODE, visible_text
 
@@ -86,7 +87,7 @@ def mixed(tmp_path):
     store.add("ORDER000000AUTOED", "seller_reply", {"request_id": "R2", "message": "Refunded", "auto": True})
     order(store, "ORDER0000000ASKED")
     store.add("ORDER0000000ASKED", "buyer_request", {"request_id": "R3", "type": "not_arrived", "message": NOTE})
-    today = date.today()
+    today = TODAY
     invoice(store, "INV2-PAID", "0001", "SENT", (today + timedelta(days=9)).isoformat())
     invoice(store, "INV2-PAID", "0001", "PAID", (today + timedelta(days=9)).isoformat())
     store.add("INV2-PAID", "invoice_paid", {"invoice_id": "INV2-PAID", "number": "0001", "amount": "900.00",
@@ -244,8 +245,8 @@ def test_needs_you_means_the_seller_has_something_to_do(mixed):
         "…TBUYER": (False, None),                # waiting for the buyer
         "…0PLAIN": (False, None),                # shipped, nothing to do
         "…CLOSED": (True, None),                 # dispute closed, but it was never shipped: Add tracking
-        "Invoice 0002": (True, (date.today() - timedelta(days=3)).isoformat()),   # overdue
-        "Invoice 0003": (False, (date.today() + timedelta(days=4)).isoformat()),  # sent, not due yet
+        "Invoice 0002": (True, (TODAY - timedelta(days=3)).isoformat()),   # overdue
+        "Invoice 0003": (False, (TODAY + timedelta(days=4)).isoformat()),  # sent, not due yet
         "Invoice 0001": (False, None),           # paid
     }
     assert {ref: (rows[ref]["needs_you"], rows[ref]["deadline"]) for ref in expected} == expected

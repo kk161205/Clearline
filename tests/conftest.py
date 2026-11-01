@@ -1,11 +1,20 @@
 """Shared test setup: never let a real .env leak AI keys into tests (no network, no cost)."""
 
 import pytest
+import time_machine
 from argon2 import PasswordHasher
 
 import app.accounts
 from app.paypal import PayPalClient
 from tests import pg
+from tests.clock import NOON
+
+
+@pytest.fixture(autouse=True)
+def noon_utc():
+    """Every test runs at the same time of day; the clock keeps ticking from there."""
+    with time_machine.travel(NOON, tick=True):
+        yield
 
 
 @pytest.fixture(autouse=True)

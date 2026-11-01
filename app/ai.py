@@ -10,6 +10,7 @@ provider's own schema enforcement is a convenience, not something we trust.
 
 import asyncio
 import copy
+import functools
 import json
 import logging
 import re
@@ -50,6 +51,18 @@ class AIError(Exception):
         self.retry_after: float | None = None
         self.tool_validation = False  # the provider rejected the model's tool call
         super().__init__(f"{provider}: {reason}")
+
+
+def logs_failure(call):
+    """Log a failed provider call once: provider, status and error class (no provider text)."""
+    @functools.wraps(call)
+    async def run(*args, **kwargs):
+        try:
+            return await call(*args, **kwargs)
+        except AIError as err:
+            log.warning("AI call failed: %s, %s", err.provider, short_reason(err))
+            raise
+    return run
 
 
 @dataclass
@@ -157,6 +170,7 @@ class AIClient:
                     raise
                 retried = True
 
+    @logs_failure
     async def _post_tools(self, provider: str, messages: list[dict], tools: list[dict],
                           tool_choice) -> dict:
         cfg = PROVIDERS[provider]
@@ -233,6 +247,7 @@ class AIClient:
         raise AIError(provider, f"invalid JSON after retry: {error.error_count()} errors",
                       switch=True)
 
+    @logs_failure
     async def _post(self, provider: str, messages: list[dict], schema_name: str,
                     schema: dict) -> str:
         """One chat/completions call. Returns the message content or raises AIError."""

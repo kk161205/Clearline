@@ -4,6 +4,7 @@ import pytest
 from argon2 import PasswordHasher
 
 import app.accounts
+from app.paypal import PayPalClient
 from tests import pg
 
 
@@ -38,3 +39,12 @@ def drop_postgres_test_schemas():
 def fast_password_hashing(monkeypatch):
     """Argon2id at a tiny cost so tests stay fast; the app always uses the library defaults."""
     monkeypatch.setattr(app.accounts, "HASHER", PasswordHasher(time_cost=1, memory_cost=1024, parallelism=1))
+
+
+@pytest.fixture(autouse=True)
+def no_paypal_call_at_startup(monkeypatch):
+    """The startup summary asks PayPal for a token; tests that start the app make no network call."""
+    async def nothing(self):
+        return None
+
+    monkeypatch.setattr(PayPalClient, "check_credentials", nothing)

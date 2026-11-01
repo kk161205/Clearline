@@ -15,7 +15,7 @@ from collections.abc import Mapping
 import httpx
 
 from .config import Settings
-from .logsafe import safe
+from .logsafe import event_label, safe
 
 log = logging.getLogger("clearline.paypal")
 
@@ -94,7 +94,7 @@ class PayPalClient:
             auth=(self.settings.paypal_client_id, self.settings.paypal_client_secret),
         )
         if resp.status_code != 200:
-            raise PayPalError(resp.status_code, _body(resp))
+            raise self._failed("POST", "/v1/oauth2/token", resp)
         data = resp.json()
         self._token = data["access_token"]
         self._token_expires_at = time.time() + int(data.get("expires_in", 0))
@@ -118,8 +118,19 @@ class PayPalClient:
         resp = await self.http.request(method, path, json=json, headers=headers,
                                        params=params, files=files)
         if resp.status_code >= 400:
-            raise PayPalError(resp.status_code, _body(resp))
+            raise self._failed(method, path, resp)
         return resp.json() if resp.content else {}
+
+    @staticmethod
+    def _failed(method: str, path: str, resp: httpx.Response) -> PayPalError:
+        err = PayPalError(resp.status_code, _body(resp))
+        log.warning("PayPal %s %s failed: %s", method, path, safe(err))  # name and debug_id
+        return err
+
+    async def check_credentials(self) -> None:
+        """Ask for a fresh token (read-only), for the startup summary and System status."""
+        self._token = None
+        await self._access_token()
 
     # ---- Orders -----------------------------------------------------------
 
@@ -214,17 +225,23 @@ class PayPalClient:
             "transmission_time": h.get("paypal-transmission-time"),
             "webhook_id": self.settings.paypal_webhook_id,
         }
+        kind = event_label(event)
         if not all(body.values()):
-            log.warning("Webhook is missing PayPal signature headers or webhook ID")
+            log.warning("Webhook verification failed (%s): missing signature headers or webhook ID", kind)
             return False
         body["webhook_event"] = event
         try:
             result = await self._request("POST", "/v1/notifications/verify-webhook-signature",
                                          json=body)
         except (PayPalError, httpx.HTTPError) as err:
-            log.warning("Webhook signature verification call failed: %s", safe(err))
+            log.warning("Webhook verification failed (%s): the call failed: %s", kind, safe(err))
             return False
-        return result.get("verification_status") == "SUCCESS"
+        status = result.get("verification_status")
+        if status != "SUCCESS":
+            log.warning("Webhook verification failed (%s): PayPal says %s", kind,
+                        status if status == "FAILURE" else "something unexpected")
+            return False
+        return True
 
     async def get_dispute(self, dispute_id: str) -> dict:
         """Fetch the full dispute record (reason, amount, deadline, disputed transactions)."""

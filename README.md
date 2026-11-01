@@ -639,7 +639,9 @@ Grid's:
 ### Render (web service)
 
 - Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
+- Start command: `uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`. Uvicorn's
+  access log is switched off in code (`app/logsafe.py`), so this needs no `--no-access-log`, and
+  `RequestLog` writes the only line for each request.
 - Health check path: `/healthz`
 - Environment: `DATABASE_URL` (Neon main branch, pooled), `APP_SECRET` (at least 32 characters),
   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `GEMINI_API_KEY`, `GROQ_API_KEY`,
@@ -648,6 +650,20 @@ Grid's:
 - **Production mode** is automatic on Render (or `APP_ENV=production`): the app refuses to start if
   a required setting is missing or `ALLOW_UNVERIFIED_WEBHOOKS` is on, naming the setting and never
   its value, and `/docs`, `/redoc` and `/openapi.json` don't exist.
+
+### Logs and diagnostics
+
+- **Each request** logs one INFO line: method, path (tokens redacted, `/o/…`, no query string),
+  status, duration and a request id. The id comes back as `X-Request-ID` and is on every log line
+  made during that request, so one id in a seller's screenshot finds everything.
+- **`/healthz`** logs nothing while healthy, a WARNING when it fails and an INFO when it recovers.
+- **Each start or wake** logs one line per check: database (with latency), migrations, PayPal
+  token, webhook id, AI provider and keys present, AG Studio key, production mode, public host.
+- **Failures:** PayPal calls log the error name and `debug_id`, AI calls the provider, status and
+  error class, webhook verification the event type and a reason. Unexpected errors log their type,
+  file and line, never a traceback or message, which could carry a provider's text.
+- **Settings → System status** (seller only) runs the same checks on demand, and adds the last
+  webhook, the last sync, the active AI, database latency and the version (Render's commit).
 
 ### Content-Security-Policy
 

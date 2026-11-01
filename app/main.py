@@ -31,7 +31,8 @@ from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
-from .logsafe import configure_logging, safe
+from .diagnostics import log_startup_summary, run_checks
+from .logsafe import RequestLog, configure_logging, event_label, root_logging_kept, safe, where
 from .insights_ai import (ALREADY_HAVE, TOO_MANY_TURNS, InsightsTurn, SignatureCache,
                           canonical_call, chat_messages, chat_tools, earlier_results,
                           for_provider, turn_cap, turn_summary, turns_used)
@@ -195,6 +196,7 @@ class FiraIn(BaseModel):
     downloaded: bool
 
 
+LAST_WEBHOOK_KEY = "last_webhook"  # shown on Settings -> System status
 EXPORT_DISCLAIMER = "Guidance, not legal or tax advice."
 EMAIL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 INVOICE_EVENTS = {"INVOICING.INVOICE.CREATED", "INVOICING.INVOICE.UPDATED",
@@ -392,6 +394,7 @@ def create_app(settings: Settings | None = None,
         if setup["code"] and store.count_users():
             setup["code"] = None
         return bool(setup["code"])
+    health = {"down": False}
     login_limit = RateLimiter(limit=20, window=15 * 60)  # login attempts per IP
     setup_limit = RateLimiter(limit=10, window=15 * 60)  # setup attempts per IP
     summaries = SummaryCache(store, ai)
@@ -402,6 +405,13 @@ def create_app(settings: Settings | None = None,
     sync_lock = asyncio.Lock()
     sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
                   "error": None, "invoices": None, "auto_sync_minutes": business().auto_sync_minutes}
+
+    async def startup_summary() -> None:
+        """In the background: the app answers its health check while this waits on PayPal."""
+        try:
+            await log_startup_summary(settings, store, paypal)
+        except Exception as err:
+            log.warning("Startup summary stopped early (%s)", where(err))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -414,12 +424,13 @@ def create_app(settings: Settings | None = None,
                 log.info("Removed %d expired seller sessions", removed)
 
         cleanup = asyncio.create_task(run_every(3600, clean_sessions))  # hourly
+        app.state.startup_task = summary = asyncio.create_task(startup_summary())
         try:
             async with mcp_server.session_manager.run():  # the MCP endpoint needs this running
                 yield
         finally:
             app.state.scheduling = False
-            for t in (app.state.auto_sync_task, cleanup):
+            for t in (app.state.auto_sync_task, cleanup, summary):
                 if t:
                     t.cancel()
                     with suppress(asyncio.CancelledError):
@@ -428,7 +439,6 @@ def create_app(settings: Settings | None = None,
     # No API pages in production: /docs, /redoc and /openapi.json don't exist there.
     api_pages = {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.production else {}
     app = FastAPI(title="Clearline", version="0.1.0", lifespan=lifespan, **api_pages)
-    app.add_middleware(SecurityHeaders, production=settings.production, sdk_url=settings.sdk_url)
     app.state.auto_sync_task, app.state.scheduling = None, False
 
     def schedule_auto_sync() -> None:
@@ -495,6 +505,10 @@ def create_app(settings: Settings | None = None,
             return JSONResponse({"detail": "Request blocked: wrong origin."}, status_code=403)
         request.state.user, request.state.session_id = found
         return await call_next(request)
+
+    # Added last, so they wrap require_seller too: its redirects and 401s get the headers and an id.
+    app.add_middleware(SecurityHeaders, production=settings.production, sdk_url=settings.sdk_url)
+    app.add_middleware(RequestLog)
 
     def current_user(request: Request) -> dict:
         return request.state.user
@@ -614,14 +628,34 @@ def create_app(settings: Settings | None = None,
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
-        """For the host's health check: one cheap query. No versions, hosts or details."""
+        """For the host's health check: one cheap query. No versions, hosts or details. Logs
+        nothing while healthy, a warning on each failure and one line when it recovers."""
         try:
             await asyncio.to_thread(store.ping)
         except Exception as err:  # any database failure is "down"
+            health["down"] = True
             log.warning("Health check: database unreachable (%s)", type(err).__name__)
             return JSONResponse({"ok": False, "db": "down"}, status_code=503,
                                 headers={"Cache-Control": "no-store"})
+        if health["down"]:
+            health["down"] = False
+            log.info("Health check: database is back")
         return JSONResponse({"ok": True, "db": "ok"}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/system/status")
+    async def system_status():
+        """Settings -> System status (seller only): the startup checks, run again now, and
+        what the app last heard. States and times only, never a value."""
+        checks, latency = await run_checks(settings, store, paypal)
+        ai_provider = None
+        with suppress(Exception):  # the check above has already said the database is down
+            ai_provider = store.ai_state()["active_provider"] if ai.configured else None
+        last_webhook = None
+        with suppress(Exception):
+            last_webhook = store.get_setting(LAST_WEBHOOK_KEY)
+        return {"checks": checks, "db_latency_ms": latency, "ai_provider": ai_provider,
+                "last_webhook": last_webhook, "version": (settings.render_git_commit or "local")[:7],
+                "last_sync": {k: sync_state[k] for k in ("last_synced_at", "trigger", "error", "counts")}}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.
     @app.get("/", include_in_schema=False)
@@ -1214,8 +1248,9 @@ def create_app(settings: Settings | None = None,
                 raise HTTPException(400, "Webhook signature verification failed")
             log.warning("!!! UNVERIFIED WEBHOOK ACCEPTED: %s %s. ALLOW_UNVERIFIED_WEBHOOKS=true "
                         "is for local testing only; never enable it in production. !!!",
-                        event.get("event_type"), event["id"])
+                        event_label(event), event["id"])
 
+        store.set_setting(LAST_WEBHOOK_KEY, {"at": time.time(), "event_type": event_label(event)})
         if not store.mark_webhook_processed(event["id"]):
             return {"status": "duplicate"}
         # Answer PayPal fast; enrichment calls happen after the response is sent.
@@ -1239,7 +1274,7 @@ def create_app(settings: Settings | None = None,
                            "summary": event.get("summary")})
         except Exception as err:
             # The event is already marked processed and PayPal got 200, so never drop it silently.
-            log.exception("Processing webhook %s (%s) failed", event.get("id"), event_type)
+            log.error("Processing webhook %s (%s) failed: %s", event.get("id"), event_label(event), where(err))
             store.add("other", "webhook_processing_failed",
                       {"event_id": event.get("id"), "event_type": event_type, "error": str(err)})
 
@@ -1589,11 +1624,12 @@ def create_app(settings: Settings | None = None,
 
     # ---- MCP server for AI agents (Day 6) ---------------------------------------------
 
-    mcp_server = build_mcp(AgentDeps(settings=settings, store=store, secret=secret,
-                                     summaries=summaries, assistant=assistant,
-                                     item_names=item_names, seller_name=lambda: business().seller_name,
-                                     submit_request=submit_request,
-                                     check_key=accounts.api_key_ok))
+    with root_logging_kept():
+        mcp_server = build_mcp(AgentDeps(settings=settings, store=store, secret=secret,
+                                         summaries=summaries, assistant=assistant,
+                                         item_names=item_names, seller_name=lambda: business().seller_name,
+                                         submit_request=submit_request,
+                                         check_key=accounts.api_key_ok))
     app.state.mcp = mcp_server
     # Stateless + JSON replies: one POST in, one JSON reply out, for 2026-07-28 and older
     # clients alike. The SDK's localhost-only Host check is off because the app is reached

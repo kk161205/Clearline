@@ -461,6 +461,7 @@ def test_no_log_call_formats_a_raw_error_or_content():
     checked = 0
     for path in (ROOT / "app").glob("*.py"):
         text = path.read_text(encoding="utf-8")
+        assert "log.exception(" not in text, path.name  # a traceback prints the raw error
         for call in re.findall(r"log\.(?:info|warning|error)\((.*?)\)\n", text, re.S):
             args = [a.strip() for a in call.split(",")]
             assert not {"err", "err.reason", "problems", "messages", "body"} & set(args), f"{path.name}: {call}"

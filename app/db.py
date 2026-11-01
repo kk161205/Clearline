@@ -288,6 +288,10 @@ class Database:
             _migrated[self.target] = current
         return current
 
+    def schema_version(self) -> int:
+        with self.connect() as conn:
+            return conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()["v"]
+
     def ping(self) -> None:
         """A cheap round trip; raises if the database can't be reached."""
         with self.connect() as conn:

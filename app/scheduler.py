@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+from .logsafe import where
+
 log = logging.getLogger("clearline.scheduler")
 
 
@@ -17,6 +19,6 @@ async def run_every(seconds: float, job: Callable[[], Awaitable[object]], *,
         await sleep(seconds)
         try:
             await job()
-        except Exception:
-            log.exception("Scheduled job failed; will try again in %.0f s", seconds)
+        except Exception as err:
+            log.error("Scheduled job failed (%s); will try again in %.0f s", where(err), seconds)
         done += 1

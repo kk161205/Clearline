@@ -16,9 +16,9 @@ AG Grid builds its icon fonts into its script as data: URIs, so the two grid pag
 
 import json
 import logging
-import traceback
-from pathlib import PurePath
 from urllib.parse import urlsplit
+
+from .logsafe import redact_path, where
 
 log = logging.getLogger("clearline.security")
 
@@ -75,15 +75,6 @@ def forwarded_client(header: str, hops: int = TRUSTED_PROXY_HOPS) -> str | None:
     return entries[-hops] if len(entries) >= hops else None
 
 
-def error_origin(err: BaseException) -> str:
-    """Where an error came from: its type, file and line. No message, which could carry data."""
-    frames = traceback.extract_tb(err.__traceback__)
-    if not frames:
-        return type(err).__name__
-    last = frames[-1]
-    return f"{type(err).__name__} at {PurePath(last.filename).name}:{last.lineno} in {last.name}"
-
-
 class SecurityHeaders:
     """Adds the headers to every response, and turns an unexpected error into a plain JSON 500
     (with the headers too) so a client never sees a traceback."""
@@ -123,7 +114,7 @@ class SecurityHeaders:
         try:
             await self.app(scope, receive, with_headers)
         except Exception as err:
-            log.error("Unexpected error on %s %s: %s", scope["method"], scope["path"], error_origin(err))
+            log.error("Unexpected error on %s %s: %s", scope["method"], redact_path(scope["path"]), where(err))
             if started:
                 raise
             body = json.dumps({"detail": "Something went wrong on our side."}).encode()

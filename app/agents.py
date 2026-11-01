@@ -39,6 +39,7 @@ from .auth import RateLimiter
 from .buyer import REFUND_REASONS, SummaryCache, buyer_view, order_for_token, refund_totals
 from .config import Settings
 from .invoicing import UNPAID, days_overdue
+from .logsafe import where
 from .store import DISPUTE_KINDS, TimelineStore
 
 log = logging.getLogger("clearline.agents")
@@ -129,8 +130,8 @@ def build_mcp(deps: AgentDeps) -> MCPServer:
                     store.log_agent_call(role, fn.__name__, f"refused: {err.outcome}",
                                          err.order_id[-6:] if err.order_id else None)
                     raise
-                except Exception:
-                    log.exception("Agent tool %s crashed", fn.__name__)
+                except Exception as err:
+                    log.error("Agent tool %s crashed: %s", fn.__name__, where(err))
                     store.log_agent_call(role, fn.__name__, "error", None)
                     raise ToolError("Something went wrong in Clearline. Try again later.")
                 order_id = result.pop("_order", None)

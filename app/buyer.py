@@ -18,7 +18,7 @@ from decimal import Decimal, InvalidOperation
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai import AIClient, AIError
-from .logsafe import safe
+from .logsafe import safe, where
 from .assistant import EMAIL_RE, URL_RE
 from .store import DISPUTE_KINDS, TimelineStore
 
@@ -245,9 +245,9 @@ class SummaryCache:
         except AIError as err:
             self.failed.add((order_id, key))
             log.warning("Buyer summary for %s failed (%s); showing the template", order_id, safe(err))
-        except Exception:
+        except Exception as err:
             self.failed.add((order_id, key))
-            log.exception("Buyer summary for %s crashed; showing the template", order_id)
+            log.error("Buyer summary for %s crashed (%s); showing the template", order_id, where(err))
         finally:
             self.in_flight.discard(order_id)
 

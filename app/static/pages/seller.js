@@ -736,6 +736,29 @@ $("business-form").addEventListener("submit", (ev) => {
 });
 loadBusiness();
 
+// ---- System status: the startup checks, run again on demand -------------------------------
+
+const when = (t) => t ? new Date(t * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "Not since the app started";
+
+function systemRows(s) {
+  const mark = (ok) => ok === false ? '<span class="pill disputed">Problem</span> ' : "";
+  const rows = s.checks.map((c) => [c.name, `${mark(c.ok)}${esc(c.detail)}`]);
+  const sync = s.last_sync;
+  rows.push(["Last webhook", s.last_webhook ? `${esc(when(s.last_webhook.at))}, ${esc(s.last_webhook.event_type)}` : "None yet"],
+            ["Last sync", sync.error ? `${mark(false)}${esc(sync.error)}` : `${esc(when(sync.last_synced_at))}${sync.trigger ? ` (${esc(sync.trigger)})` : ""}`],
+            ["Active AI", esc(s.ai_provider || "None")],
+            ["Database latency", s.db_latency_ms === null ? "Unknown" : `${esc(s.db_latency_ms)} ms`],
+            ["App version", esc(s.version)]);
+  return rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+}
+async function loadSystem() {
+  const res = await fetch("/api/system/status");
+  if (!res.ok) throw new Error(await errorText(res));
+  $("system-checks").innerHTML = systemRows(await res.json());
+}
+$("system").addEventListener("toggle", (ev) => { if (ev.currentTarget.open) loadSystem().catch(() => {}); });
+$("system-run").addEventListener("click", (ev) => withBusy(ev.currentTarget, "Checking…", loadSystem));
+
 // ---- Auto-resolve policy: the seller's own rules for refunds that need no click -----------
 
 function policyForm(p) {

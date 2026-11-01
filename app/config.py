@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # service's public address. APP_ENV=production turns production mode on anywhere else.
     render: str | None = None
     render_external_url: str | None = None
+    render_git_commit: str | None = None  # the app version on Settings -> System status
     app_env: str = "development"
     # Overrides RENDER_EXTERNAL_URL (a custom domain, say) for the absolute links we generate.
     public_base_url: str | None = None

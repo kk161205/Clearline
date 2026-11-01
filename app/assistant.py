@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai import AIClient, AIError
+from .logsafe import where
 from .store import DISPUTE_KINDS, TimelineStore
 
 log = logging.getLogger("clearline.assistant")
@@ -265,7 +266,7 @@ class Assistant:
             result = await self._ask(facts)
         except Exception as err:  # AIError, GuardrailError, or a bug: never lose the attempt
             if not isinstance(err, (AIError, GuardrailError)):
-                log.exception("Recommendation for %s crashed", dispute_id)
+                log.error("Recommendation for %s crashed: %s", dispute_id, where(err))
             kind, payload = "ai_failed", {**base, "error": str(err)}
         else:
             kind, payload = "ai_recommendation", {

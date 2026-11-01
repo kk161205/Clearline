@@ -148,7 +148,7 @@ def test_healthz_is_public_and_says_only_ok(tmp_path):
     client, _ = make_client(tmp_path, login=False)
     res = client.get("/healthz")
     assert res.status_code == 200 and res.json() == {"ok": True, "db": "ok"}
-    assert res.headers["cache-control"] == "no-store"
+    assert res.headers["cache-control"] == "no-store" and res.headers["x-app-version"] == "local"
     assert client.head("/healthz").status_code in (200, 405)
 
 

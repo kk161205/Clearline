@@ -395,6 +395,7 @@ def create_app(settings: Settings | None = None,
             setup["code"] = None
         return bool(setup["code"])
     health = {"down": False}
+    app_version = (settings.render_git_commit or "local")[:7]
     login_limit = RateLimiter(limit=20, window=15 * 60)  # login attempts per IP
     setup_limit = RateLimiter(limit=10, window=15 * 60)  # setup attempts per IP
     summaries = SummaryCache(store, ai)
@@ -628,7 +629,7 @@ def create_app(settings: Settings | None = None,
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
-        """For the host's health check: one cheap query. No versions, hosts or details. Logs
+        """For the host's health check: one cheap query. No hosts or details. Logs
         nothing while healthy, a warning on each failure and one line when it recovers."""
         try:
             await asyncio.to_thread(store.ping)
@@ -640,7 +641,9 @@ def create_app(settings: Settings | None = None,
         if health["down"]:
             health["down"] = False
             log.info("Health check: database is back")
-        return JSONResponse({"ok": True, "db": "ok"}, headers={"Cache-Control": "no-store"})
+        # The commit is public anyway (an open repo); python -m app.check waits on it after a deploy.
+        return JSONResponse({"ok": True, "db": "ok"}, headers={"Cache-Control": "no-store",
+                                                               "X-App-Version": app_version})
 
     @app.get("/api/system/status")
     async def system_status():
@@ -654,7 +657,7 @@ def create_app(settings: Settings | None = None,
         with suppress(Exception):
             last_webhook = store.get_setting(LAST_WEBHOOK_KEY)
         return {"checks": checks, "db_latency_ms": latency, "ai_provider": ai_provider,
-                "last_webhook": last_webhook, "version": (settings.render_git_commit or "local")[:7],
+                "last_webhook": last_webhook, "version": app_version,
                 "last_sync": {k: sync_state[k] for k in ("last_synced_at", "trigger", "error", "counts")}}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.

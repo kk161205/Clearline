@@ -6,7 +6,7 @@
 
 Every table is copied in one transaction (all or nothing), ids included, and identity counters
 are moved past the copied ids. A target that already has rows is refused unless --force,
-which deletes the target's rows in Clearline's tables first. Prints row counts per table;
+which DELETES the target's rows in Clearline's tables first, with no undo. Prints row counts per table;
 never the database URL.
 """
 
@@ -64,7 +64,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
                                      description="Copy Clearline's SQLite data into DATABASE_URL.")
     parser.add_argument("--from", dest="source", required=True, help="the SQLite file, e.g. clearline.db")
     parser.add_argument("--dry-run", action="store_true", help="show the counts; write nothing")
-    parser.add_argument("--force", action="store_true", help="replace rows already in the target")
+    parser.add_argument("--force", action="store_true",
+                        help="DELETE every row in the target first, then copy. Destroys live data")
     args = parser.parse_args(argv)
 
     quiet_driver_logs()
@@ -93,8 +94,12 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
             print("Dry run: nothing written.")
             return 0
         if filled and not args.force:
-            raise SystemExit("The target already has data, so nothing was copied. "
-                             "Use --force to replace it.")
+            raise SystemExit("The target already has data, so nothing was copied. Neon on Render is "
+                             "the source of truth and a local file is almost certainly older. "
+                             "--force would DELETE every row above and replace it with this file. "
+                             "There is no undo: only use it to wipe that database on purpose.")
+        if filled:
+            print("--force: deleting every row listed above and replacing it with the SQLite file.")
         TimelineStore(settings.database_url)  # creates or updates the schema
         copy(src, db, list(counts), replace=bool(filled))
         copied = target_counts(db)

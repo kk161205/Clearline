@@ -83,14 +83,14 @@ flowchart TB
 ```
 
 - **Hosting.** Production runs on Render (`https://clearline-cbyb.onrender.com`) with Neon
-  Postgres. Locally it runs under uvicorn with a SQLite file. ngrok gives the local app a
-  public URL so PayPal webhooks can reach it.
+  Postgres, the source of truth. Local runs use a SQLite file, for tests and UI checks only.
 - **Calls out.** Only `paypal.py` talks to PayPal. Only `ai.py` (dispute assistant, buyer
   summaries, invoice drafts) and `insights_ai.py` (Insights analyst) talk to Gemini and Groq.
   The browser loads AG Studio from jsDelivr, pinned with an integrity hash. AG Grid and AG
   Charts are served by the app itself.
 - **Calls in.** Browsers, AI agents on `/mcp`, and PayPal webhooks on `/webhooks/paypal`.
-  Each webhook is verified with PayPal before it is used.
+  Each webhook is verified with PayPal before it is used. Webhooks are delivered to Render only;
+  local runs get none and rely on Sync disputes or the auto-sync.
 - **Background.** `scheduler.py` runs the auto-sync at the interval set on Settings → Business (default 3 minutes). It
   pulls disputes and invoice statuses from PayPal, as a safety net for missed webhooks. An
   hourly job deletes expired sessions.
@@ -111,7 +111,7 @@ flowchart TB
 | Grid and charts | AG Grid Community 36.2.0, AG Charts Community 14.2.0, self-hosted in `app/static/vendor/` | Sponsor; fast grid; no CDN needed | MIT (licence files alongside) |
 | Report builder | AG Studio 3.0.0 from jsDelivr with SRI | Sponsor; drag-and-drop report with an AI agent framework | Commercial (AG Grid Ltd); runs as a trial with a watermark until a licence key is set |
 | Font | Instrument Sans, self-hosted | Clean UI; no font CDN | SIL OFL |
-| Hosting | Render web service; ngrok for local webhooks | Simple deploys; stable tunnel for Sandbox webhooks | Render free tier |
+| Hosting | Render web service with Neon Postgres | Simple deploys; webhooks reach one stable URL | Render free tier |
 | Tests | pytest 9.1.1, respx 0.23.1 (PayPal and AI mocked); Playwright 1.64.1 for screenshots (outside the repo) | Offline tests, no credentials needed | MIT / Apache 2.0 |
 
 ## 4. Core flows
@@ -473,25 +473,46 @@ The same component (`history.js`) is used on `/seller` and in the dashboard's si
 | Evidence files | Type from magic bytes (PDF, PNG, JPG, GIF), under 5 MB, name sanitised, sent to PayPal from memory and never stored |
 | Database URL and secrets | Never logged; `DATABASE_URL` is hidden from settings repr; CLI tools hide driver messages that could name the host |
 
+### Production hardening
+
+- **Production mode** is on when Render's `RENDER` variable is present or `APP_ENV=production`. The
+  app then refuses to start if `DATABASE_URL`, `APP_SECRET` (at least 32 characters), the PayPal id
+  and secret or `PAYPAL_WEBHOOK_ID` is missing, or `ALLOW_UNVERIFIED_WEBHOOKS` is on. It names the
+  setting and never its value. `/docs`, `/redoc` and `/openapi.json` don't exist there.
+- **Client IP.** Behind Render's proxy, `client_ip` takes the `TRUSTED_PROXY_HOPS`th entry of
+  `X-Forwarded-For` from the right (default 1), so values a client adds on the left change nothing.
+- **Headers on every response, redirects and errors included:** `X-Content-Type-Options`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, a minimal `Permissions-Policy`, CSP with
+  `frame-ancestors 'none'`, and HSTS in production.
+- **CSP per page type**, in `app/security.py`, which lists what PayPal's SDK was measured to load.
+  No policy allows `unsafe-inline` or `unsafe-eval` for scripts: every page's script is a file
+  under `app/static/pages/`. `style-src` allows `unsafe-inline` for style attributes and for the
+  style elements AG Grid and PayPal's SDK inject.
+- **Errors.** An unexpected error answers a plain JSON 500. The log gets its type, file and line,
+  never a traceback or message, which could carry a provider's text.
+
+### Logs and diagnostics
+
+Every request logs one line with a redacted path and a request id, which is returned as
+`X-Request-ID` and is on every line made during that request. Each start logs one line per check.
+Settings → System status re-runs those checks on demand. The README's Deployment notes have
+the details.
+
 ### Known gaps (verified in the code and on the live site)
 
-1. **Client IP behind a proxy.** With `TRUST_PROXY=true`, `client_ip` takes the **first**
-   `X-Forwarded-For` hop (`app/main.py`). A client can put any value there, so the per-IP
-   login and setup limits can be dodged. Fix: take the hop added by Render (the last one).
-   The per-account lockout still applies.
-2. **No security headers.** The live site sends no CSP, HSTS, `X-Frame-Options` or
-   `X-Content-Type-Options` (checked on `/login`). Only the buyer page sets `Referrer-Policy`.
-3. **No production mode.** `/docs` and `/openapi.json` are on (seller-only).
-   `ALLOW_UNVERIFIED_WEBHOOKS` is not refused when running in production.
-4. **Rate limits are in memory.** They reset on restart and are per process. That is fine for
+1. **Rate limits are in memory.** They reset on restart and are per process. That is fine for
    one Render instance; with two or more instances they would need the database.
-5. **Buyer links never expire.** A link is valid as long as `APP_SECRET` is unchanged, and
+2. **Buyer links never expire.** A link is valid as long as `APP_SECRET` is unchanged, and
    one link can't be revoked on its own. Changing `APP_SECRET` breaks every link.
-6. **MCP Origin check** compares against `X-Forwarded-Host` whether or not `TRUST_PROXY` is
-   set. Browsers can't set that header, so the risk is low.
-7. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
+3. **MCP Origin check** compares against `X-Forwarded-Host` wherever the app runs, not only behind
+   Render's proxy. Browsers can't set that header, so the risk is low.
+4. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
    1 MB, layout 256 KB, evidence 5 MB).
-8. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
+5. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
+6. **`TRUSTED_PROXY_HOPS` is unconfirmed against Render's real header.** It's 1 as specified. If
+   Render's chain has more proxies than that, the IP in the login log lines won't be the client's;
+   comparing one with your own IP settles it.
+7. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
 
 ## 7. Configuration
 

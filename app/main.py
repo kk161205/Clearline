@@ -1633,7 +1633,7 @@ def create_app(settings: Settings | None = None,
     app.state.mcp = mcp_server
     # Stateless + JSON replies: one POST in, one JSON reply out, for 2026-07-28 and older
     # clients alike. The SDK's localhost-only Host check is off because the app is reached
-    # through ngrok; McpGuard does the Origin check the spec requires instead.
+    # through Render's public address; McpGuard does the Origin check the spec requires instead.
     mcp_http = mcp_server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))

@@ -2,7 +2,7 @@
 
 Transport: Streamable HTTP from the official MCP Python SDK, stateless with plain JSON replies,
 so it works for 2026-07-28 clients (one POST per request) and older ones (initialize + session
-headers) alike, behind ngrok, with no separate process.
+headers) alike, behind Render's proxy, with no separate process.
 
 Two kinds of agent, two kinds of credential:
 - Buyer agents pass the buyer's private order link (/o/<token>). It scopes every buyer tool to

@@ -85,7 +85,7 @@ def test_a_target_with_data_is_refused_unless_forced(tmp_path, capsys):
     source, target = source_db(tmp_path), target_of(tmp_path)
     settings = target_settings(tmp_path, target)
     TimelineStore(target).add("KEEP", "order_created", {})
-    with pytest.raises(SystemExit, match="already has data"):
+    with pytest.raises(SystemExit, match="already has data.*DELETE every row.*no undo"):
         migrate(["--from", source], settings=settings)
     assert "Target already has rows:" in capsys.readouterr().out
     assert list(TimelineStore(target).all_events()) == ["KEEP"]  # untouched

@@ -56,106 +56,51 @@ verifies each webhook with PayPal, ignores repeats, and puts dispute events on
 the right order's timeline, so the seller page shows a red **Disputed** badge with
 the reason, amount and response deadline.
 
-PayPal has to reach your laptop, so the app runs behind a tunnel. The default is **ngrok
-with your free fixed dev domain**: the URL never changes, so you register the PayPal webhook
-once. Cloudflare quick tunnels still work as a fallback, but their URL changes on every restart.
+Webhooks go to the Render deployment only. A local run gets none: use **Sync disputes** on
+`/seller`, or the auto-sync, which finds the same disputes by asking PayPal.
 
-### 1. Start the app and a tunnel (PowerShell)
-
-Terminal 1:
-
-```powershell
-.venv\Scripts\Activate.ps1
-uvicorn app.main:create_app --factory --reload
-```
-
-#### Tunnel on Windows: ngrok (default)
-
-One-time setup (`tools/` is git-ignored):
-
-1. Create a free account at https://ngrok.com.
-2. Download the Windows (amd64) zip from https://ngrok.com/download, extract it, and put
-   `ngrok.exe` in `tools\`. Check it with `tools\ngrok.exe version`.
-3. Save your authtoken (dashboard → **Your Authtoken**). This stores it in ngrok's own
-   config in your user profile, not in this project:
-   ```powershell
-   tools\ngrok.exe config add-authtoken <your token>
-   ```
-4. Note your dev domain (dashboard → **Domains**), e.g. `<your-domain>.ngrok-free.dev`.
-
-Every session, in terminal 2:
-
-```powershell
-tools\ngrok.exe http 8000 --url=https://<your-domain>.ngrok-free.dev
-```
-
-Leave it running. The public URL is always `https://<your-domain>.ngrok-free.dev`. ngrok
-connects out over port 443, so it also works on networks that block Cloudflare tunnels.
-
-#### Fallback: Cloudflare quick tunnel
-
-```powershell
-New-Item -ItemType Directory -Force tools
-Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile tools\cloudflared.exe
-tools\cloudflared.exe tunnel --url http://localhost:8000
-```
-
-Wait for `Registered tunnel connection`, then copy the `https://<random>.trycloudflare.com`
-URL. It changes **every time cloudflared restarts**, so you must update the webhook URL in the
-Dashboard each time. If you get Cloudflare **Error 1033** and the log says
-`QUIC connection failed` / `HTTP/2 connection is blocked`, your network blocks port 7844
-(common on college or office Wi-Fi): turn on the Cloudflare WARP VPN (1.1.1.1 app) or use a
-phone hotspot, or use ngrok instead. The background auto-sync (Day 3) picks up disputes whose
-webhooks were missed while a tunnel was down.
-
-### 2. Register the webhook
+### 1. Register the webhook
 
 1. Developer Dashboard → **Apps & Credentials** → your Sandbox app → **Webhooks** → **Add Webhook**
    (or edit the existing one).
-2. Webhook URL: `https://<your-domain>.ngrok-free.dev/webhooks/paypal`
-   (with the Cloudflare fallback: `https://<random>.trycloudflare.com/webhooks/paypal`).
+2. Webhook URL: `https://clearline-cbyb.onrender.com/webhooks/paypal`
 3. Select these events:
    - `CUSTOMER.DISPUTE.CREATED`, `CUSTOMER.DISPUTE.UPDATED`, `CUSTOMER.DISPUTE.RESOLVED`
    - `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.PENDING`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`
-4. Save, copy the **Webhook ID**, and put it in `.env`:
-   ```
-   PAYPAL_WEBHOOK_ID=<the webhook id>
-   ```
-5. Restart the app (Ctrl+C in terminal 1, run uvicorn again).
+4. Save, copy the **Webhook ID**, and set `PAYPAL_WEBHOOK_ID` to it in Render's Environment tab.
+   Render restarts the app.
 
-> With ngrok's fixed domain you do this once. With the Cloudflare fallback the URL changes on
-> every restart, so edit the webhook in the Dashboard each time. The Webhook ID stays the same
-> when you edit the URL. If you delete the webhook and add a new one, update `PAYPAL_WEBHOOK_ID`.
+> The Webhook ID stays the same when you edit the URL. If you delete the webhook and add a new
+> one, update `PAYPAL_WEBHOOK_ID`.
+
+### 2. Check it
+
+**Settings → System status** on the live site shows the time and type of the last webhook that
+passed verification.
 
 ### 3. Real dispute test
 
-1. Pay the $120 order on http://localhost:8000 (Day 1 flow) if you haven't already.
+1. Pay the $120 order on https://clearline-cbyb.onrender.com (Day 1 flow) if you haven't already.
 2. Log in at https://www.sandbox.paypal.com as the **US Personal** account.
 3. Open the $120 payment, choose **Report a problem** (Resolution Center),
    pick **"I didn't receive an item I bought"** (item not received) and submit.
-4. Watch http://localhost:8000/seller. It refreshes every 10 seconds. Within a minute or so
+4. Watch https://clearline-cbyb.onrender.com/seller. It refreshes every 10 seconds. Within a minute or so
    the order should show **Disputed**, "Item not received", USD 120.00 and "Respond by …".
 
 ### 4. Quick test with the Webhook Simulator
 
-Developer Dashboard → **Webhooks Simulator** → paste the same `/webhooks/paypal` URL →
-event type `CUSTOMER.DISPUTE.CREATED` → **Send Test**.
-
-Simulator events are mock data and don't pass signature verification, so this needs
-`ALLOW_UNVERIFIED_WEBHOOKS=true` in `.env` (restart after changing it). The event lands in the
-**Unmatched and other PayPal events** section at the bottom of the seller page, because its
-dispute isn't about one of your orders. Set it back to `false` when you're done.
+Simulator events are mock data and don't pass signature verification, and production refuses to
+start with `ALLOW_UNVERIFIED_WEBHOOKS` on, so the Simulator can't be used against Render. A
+rejected event still shows in Render's log: `Webhook verification failed (<event type>): <reason>`.
 
 ### Troubleshooting
 
 - `503` from `/webhooks/paypal`: `PAYPAL_WEBHOOK_ID` is not set or the app wasn't restarted.
 - `400 Webhook signature verification failed`: the Webhook ID doesn't belong to the URL that
-  sent the event, or the event came from the Simulator. Check the uvicorn log.
-- Nothing arrives: the tunnel isn't running, or (Cloudflare fallback) its URL changed. Check that
-  the Dashboard's webhook URL is your tunnel URL + `/webhooks/paypal`. Meanwhile **Sync disputes**
+  sent the event, or the event came from the Simulator. Render's log gives the reason.
+- Nothing arrives: check that the Dashboard's webhook URL is the Render URL + `/webhooks/paypal`.
+  Render's free tier sleeps when idle, and PayPal retries for a while. Meanwhile **Sync disputes**
   on `/seller` (or the auto-sync) picks up missed disputes.
-- ngrok `ERR_NGROK_4018` / authentication failed: the authtoken isn't saved; run the
-  `config add-authtoken` command again.
 
 ## Day 3: AI dispute assistant
 
@@ -214,8 +159,7 @@ curl.exe -X POST http://localhost:8000/api/ai/reset     # go back to Gemini
 
 ### 4. Auto-sync (safety net for missed webhooks)
 
-Quick tunnels die (sleep, network changes), and PayPal's webhooks then go nowhere. The app
-therefore also pulls disputes from PayPal every few minutes (Settings → Business, default 3;
+A webhook can be missed (Render asleep, a network problem), so the app also pulls disputes from PayPal every few minutes (Settings → Business, default 3;
 `0` turns it off). It only reads from PayPal. "Last synced: … (auto)" next to **Sync disputes** shows when
 it last ran.
 
@@ -428,7 +372,7 @@ Clearline is also an [MCP](https://modelcontextprotocol.io) server, so a buyer's
 assistant can use it directly. It runs inside the app (no extra process) at:
 
 ```
-https://<your-domain>/mcp        e.g. https://copper-chastise-waggle.ngrok-free.dev/mcp
+https://clearline-cbyb.onrender.com/mcp
 ```
 
 Transport: **Streamable HTTP**, stateless with JSON replies (official MCP Python SDK `mcp==2.3.0`,
@@ -445,9 +389,11 @@ tools and the last 20 agent calls (tool, time, result, order ref; no personal da
 | `get_dispute_brief` | merchant | Bearer key | Facts, latest AI recommendation, what PayPal allows now |
 | `money_in_flight` | merchant | Bearer key | Captured, refunded, disputed, invoiced-unpaid totals per currency |
 
+- Agents connect to the Render URL above; there's one shop, and every seller account sees it.
 - **Buyer tools** take the buyer's private link (`https://…/o/<token>`) as `order_link`. It
   scopes the call to that one order; forged or unknown links get "Unknown order link".
-- **Merchant tools** need `Authorization: Bearer <agent key>`. Create keys in `/seller` →
+- **Merchant tools** are read-only and need `Authorization: Bearer <agent key>`, with a key created
+  on the live site. Create keys in `/seller` →
   Settings → **Agent access**: name it, copy it (`cl_live_…`, shown once; only its SHA-256 is
   stored), and revoke it there when an agent shouldn't have access any more. Any live key
   works; calls without one get 401. They are **read-only**: refunds and dispute answers stay
@@ -462,23 +408,23 @@ in place of `<agent key>` below. Buyer tools need no key.
 
 - **Claude Code** (buyer tools / merchant tools):
   ```powershell
-  claude mcp add --transport http clearline-buyer https://<your-domain>/mcp
-  claude mcp add --transport http clearline-seller https://<your-domain>/mcp --header "Authorization: Bearer <agent key>"
+  claude mcp add --transport http clearline-buyer https://clearline-cbyb.onrender.com/mcp
+  claude mcp add --transport http clearline-seller https://clearline-cbyb.onrender.com/mcp --header "Authorization: Bearer <agent key>"
   ```
 - **Claude Desktop**: Settings → Connectors → *Add custom connector* → URL
-  `https://<your-domain>/mcp` (buyer tools; custom connectors don't send custom headers). For the
+  `https://clearline-cbyb.onrender.com/mcp` (buyer tools; custom connectors don't send custom headers). For the
   merchant tools, add to `claude_desktop_config.json`:
   ```json
   {"mcpServers": {"clearline-seller": {"command": "npx", "args": ["-y", "mcp-remote",
-    "https://<your-domain>/mcp", "--header", "Authorization: Bearer <agent key>"]}}}
+    "https://clearline-cbyb.onrender.com/mcp", "--header", "Authorization: Bearer <agent key>"]}}}
   ```
 - **MCP Inspector**: `npx @modelcontextprotocol/inspector`, Transport *Streamable HTTP*, URL
-  `https://<your-domain>/mcp`, connection *Via Proxy*; for merchant tools add the header
+  `https://clearline-cbyb.onrender.com/mcp`, connection *Via Proxy*; for merchant tools add the header
   `Authorization: Bearer <agent key>`. Then *List Tools* and call one.
 
 ### Example prompts
 
-- Buyer agent: *"Here's my order link https://<your-domain>/o/… — where is my order, and has
+- Buyer agent: *"Here's my order link https://clearline-cbyb.onrender.com/o/… — where is my order, and has
   the seller replied?"* · *"It never arrived. Ask for a refund (reason: not received) and tell
   me what happens."*
 - Merchant agent: *"What needs my attention in Clearline today? Sort by due date."* ·
@@ -616,6 +562,14 @@ Grid's:
 
 ## Deployment notes
 
+### Where Clearline runs
+
+- **Render with Neon Postgres is the only deployment and Neon is the source of truth.** Orders,
+  accounts, settings and webhooks all live there.
+- **Local runs are for tests and UI checks only:** `uvicorn app.main:create_app --factory --reload`
+  on a SQLite file (`clearline.db`, ignored by git). They get no webhooks and rely on **Sync
+  disputes** or the auto-sync. Their data isn't the shop's and never goes back to Neon.
+
 ### Database: SQLite locally, Postgres (Neon) in production
 
 - `DATABASE_URL` unset: SQLite at `DATABASE_PATH` (default `clearline.db`), as before.
@@ -625,10 +579,11 @@ Grid's:
   statements are used).
 - The schema is created and upgraded at startup (`schema_version` table, one migration path
   for both databases, an advisory lock on Postgres so two instances don't race).
-- **Moving existing data:** with `DATABASE_URL` set,
+- **Moving existing data (a one-off, already done for Neon):** with `DATABASE_URL` set,
   `python -m app.migrate_sqlite --from clearline.db --dry-run` shows the row counts per table,
   then the same without `--dry-run` copies everything in one transaction. A target that already
-  has rows is refused unless `--force` (which replaces them). The URL is never printed.
+  has rows is refused. **`--force` deletes every row in the target and has no undo: never run it
+  against Neon's main branch.** The URL is never printed.
 - **Accounts on a server without a terminal prompt:**
   `python -m app.users create --email you@example.com --password-stdin` reads the password from
   the first line of stdin (`reset-password` too). `/setup` only exists while there are no

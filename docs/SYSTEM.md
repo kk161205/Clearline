@@ -505,16 +505,20 @@ the details.
 
 ### Known gaps (verified in the code and on the live site)
 
-1. **Rate limits are in memory.** They reset on restart and are per process. That is fine for
+1. **The AI recommendation can miss a dispute.** PayPal's first webhook often says `UNDER_REVIEW`,
+   and the status that needs the seller comes in a `dispute_updated` seconds later. The webhook path
+   only recommends on `dispute_created`, and sync sees nothing new, so nothing runs until the seller
+   clicks Ask AI again. Found by the live end-to-end run.
+2. **Rate limits are in memory.** They reset on restart and are per process. That is fine for
    one Render instance; with two or more instances they would need the database.
-2. **Buyer links never expire.** A link is valid as long as `APP_SECRET` is unchanged, and
+3. **Buyer links never expire.** A link is valid as long as `APP_SECRET` is unchanged, and
    one link can't be revoked on its own. Changing `APP_SECRET` breaks every link.
-3. **MCP Origin check** compares against `X-Forwarded-Host` wherever the app runs, not only behind
+4. **MCP Origin check** compares against `X-Forwarded-Host` wherever the app runs, not only behind
    Render's proxy. Browsers can't set that header, so the risk is low.
-4. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
+5. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
    1 MB, layout 256 KB, evidence 5 MB).
-5. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
-6. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
+6. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
+7. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
 
 ## 7. Configuration
 

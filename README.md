@@ -638,6 +638,27 @@ database, migrations, PayPal token, webhook id, AI provider, AG Studio key, last
 AG Studio key or webhook is a WARN; anything marked FAIL makes it exit 1. It's read-only, and it
 logs out at the end.
 
+### Live end-to-end run
+
+`python -m app.e2e` drives the deployed site with Playwright, as a buyer and as the seller, in PayPal
+Sandbox: real Sandbox payments, refunds and disputes, written to the live database. So it adds
+orders to the shop every time, and it's never part of CI.
+
+```powershell
+$env:PYTHONPATH = "<folder with Playwright>"
+python -m app.e2e --list                                  # the flows
+python -m app.e2e                                         # all of them, then app.check
+python -m app.e2e --only checkout,refund --headed         # some, in a visible browser
+python -m app.e2e --only invoice-overdue                  # two days after the invoice flow
+```
+
+It reads `E2E_BASE_URL`, `E2E_SELLER_EMAIL`, `E2E_SELLER_PASSWORD`, `E2E_BUYER_EMAIL` and
+`E2E_BUYER_PASSWORD` from the environment or `.env`, and writes a report, a screenshot per step and a
+video per flow to a timestamped folder (`--out`). It refuses to start unless `/api/config` says
+sandbox, blocks any PayPal page outside `sandbox.paypal.com`, and puts the auto-policy and the
+Insights layout back after every flow, even on failure. On a captcha or 2-step check it stops
+that flow and reports it as BLOCKED.
+
 ### Logs and diagnostics
 
 - **Each request** logs one INFO line: method, path (tokens redacted, `/o/…`, no query string),

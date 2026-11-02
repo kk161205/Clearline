@@ -1,32 +1,32 @@
 # Clearline: status, live check, automation and plan
 
 How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state of things on
-1 Nov 2026 (after the hardening round), and what's left before the deadline: **13 Nov 2026,
+3 Nov 2026 (after the live end-to-end run), and what's left before the deadline: **13 Nov 2026,
 1:30 AM IST** (12 Nov, 20:00 UTC).
 
 ## 8. Status matrix
 
 - **Built:** the commit that added it.
-- **Tested offline:** tests that pass with PayPal and the AI mocked. 439 in total, all
+- **Tested offline:** tests that pass with PayPal and the AI mocked. 458 in total, all
   passing on SQLite. CI also runs the database tests on a Postgres container on every push.
 - **Live in Sandbox:** tested by hand against PayPal Sandbox.
 - **On Render:** what was checked on `https://clearline-cbyb.onrender.com` (section 9).
 
 | Feature | Built | Tested offline | Live in Sandbox | On Render | Notes |
 |---|---|---|---|---|---|
-| Checkout, capture | `5182e43` | `test_flow`, `test_webhooks` | Yes | Not verified | Server-side price catalogue |
-| Mark shipped (tracking) | `5182e43` | `test_flow` | Yes | Not verified | |
-| Verified webhooks | `5182e43` | `test_webhooks` (10) | Yes | Not verified | PayPal now delivers to Render only; no delivery seen yet. Settings → System status shows the last one |
+| Checkout, capture | `5182e43` | `test_flow`, `test_webhooks` | Yes | **Yes** (`app.e2e`) | Server-side price catalogue |
+| Mark shipped (tracking) | `5182e43` | `test_flow` | Yes | **Yes** (`app.e2e`) | |
+| Verified webhooks | `5182e43` | `test_webhooks` (10) | Yes | **Yes** (`app.e2e`) | Capture, refund, dispute and invoice events all arrived |
 | Dispute sync (button; every 3 min) | `0959b11`; auto `0c36ca0` | `test_sync_sandbox` (11) | Yes | Yes | Render's auto-sync listed 4 disputes and 1 invoice, no errors |
-| AI dispute recommendation | `0959b11` | `test_assistant` (21), `test_ai` (10) | Yes | Not verified | Sticky Gemini to Groq fallback |
+| AI dispute recommendation | `0959b11` | `test_assistant` (21), `test_ai` (10) | Yes | **Partly: bug** | Works on Ask AI again. Never runs by itself when a dispute starts UNDER_REVIEW (SYSTEM.md, known gaps) |
 | FIGHT on an inquiry (evidence, message skipped) | `2396d25` | `test_assistant` | Yes | Not verified | Evidence first, re-check before each step |
 | Chargeback document evidence | `31546d2` | `test_documents` (24) | Yes (`PROOF_OF_DELIVERY_SIGNATURE` + PDF) | Not verified | Files never stored |
-| Buyer page and partial refund | `b4d72dc` | `test_buyer` (17) | Yes (40 USD partial) | Not verified | |
+| Buyer page and refund | `b4d72dc` | `test_buyer` (17) | Yes (40 USD partial) | **Yes** (`app.e2e`, full refund) | |
 | Invoices: AI draft, create, send, paid | `15b1e0d` | `test_invoices` (20) | Yes (300 USD paid) | Data visible | |
 | India export checklist | `15b1e0d` | `test_invoices` | Yes | Data visible | Purpose code, FIRA |
-| Invoice reminders (overdue) | `15b1e0d` | `test_invoices` | **No** | No | Needs an invoice that is actually overdue |
+| Invoice reminders (overdue) | `15b1e0d` | `test_invoices` | **No** | Waiting | An invoice due 3 Nov is sent; `--only invoice-overdue` from 4 Nov UTC |
 | MCP buyer agent + auto-refund | `997cc35` | `test_agents` (20) | Yes (120 USD instant) | MCP answers `initialize` | |
-| Auto-policy negative case (shipped order) | `997cc35` | `test_agents` | **No** | No | Covered offline only |
+| Auto-policy negative case (shipped order) | `997cc35` | `test_agents` | Yes | **Yes** (`app.e2e`) | Declined: "the order has shipped" |
 | MCP merchant tools + agent keys | `997cc35`, `e0c36e5` | `test_agents`, `test_auth` | No | No keys created yet | Read-only |
 | UI design system, the clear line | `68e9f58` | `test_seller_page` (14) | Yes | Yes (screenshots) | |
 | Money in flight dashboard (AG Grid) | `5f87977` | `test_dashboard` (9) | Yes | Yes (screenshot) | |
@@ -34,14 +34,22 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 | Insights AI (Gemini, Groq) | `ab00cf3` to `1a8de5b` | `test_insights_ai` (34) | Yes ("needs me this week", bar chart) | Not verified | |
 | Seller accounts, sessions, /setup, CLI | `e0c36e5` | `test_auth` (59) | Locally | **Yes** (login, redirects, `/setup` 404, Secure cookie) | Judge account works |
 | Postgres (Neon), migration, `/healthz` | `f3132a9` | `test_db` (11), `test_migrate` (5) + the Postgres run | n/a | **Yes** (`/healthz` ok) | Data copied: 102 rows |
-| Checkout on Render | | | | **Partly** | The button renders with no CSP violations; no payment tried |
+| Checkout on Render | | | | **Yes** (`app.e2e`) | A real Sandbox payment through the popup under the live CSP |
 | Production mode, proxy IP, headers, CSP | `6a8d40b` | `test_security` (33) | n/a | **Yes** (headers, anonymous routes, checkout CSP) | Zero CSP violations on 8 page types locally in production mode |
 | Fewer env vars, Settings → Business | `f0fdfac` | `test_business` (16) | Locally | Not verified | Needs the Render clean-up below |
+| Live end-to-end run (`python -m app.e2e`) | see section 9 | `test_e2e_guards` | n/a | **Yes** (7 of 8 flows; the dispute flow fails on the AI bug) | Never in CI |
 | Client IP behind Cloudflare and Render, HEAD on pages | B6, B7 | `test_security` | n/a | **Yes** (the chain measured live, one spoofed login sent) | |
 | CI, secret scan, pre-demo check | see section 10 | `test_check` (19), `test_secret_scan` (15) | n/a | **Yes** (`app.check` passes on the live site) | |
 | Request logs, startup summary, System status | `9413cac` | `test_diagnostics` (33) | Locally | **Partly** (`X-Request-ID`; login-only page not opened) | Render's log lines not seen from here |
 
-## 9. Live deployment check (1 Nov 2026, read-only)
+## 9. Live checks
+
+**Full end-to-end run, 3 Nov 2026** (`python -m app.e2e`, real Sandbox money and disputes): checkout,
+ship, refund, the auto-policy's negative case, the agent's instant refund, invoice and Insights
+passed. The dispute flow reached PayPal, the webhook and /seller, then failed because the AI
+recommendation never appeared by itself. `app.check` with the seller login passed.
+
+### Read-only check, 1 Nov 2026
 
 Anonymous, read-only checks of the deployed `9413cac`. Nothing was sent to PayPal, apart from the
 SDK loading on the checkout page. Pages behind a login were last checked on 30 Oct, by screenshot.
@@ -100,7 +108,6 @@ gantt
   axisFormat %d %b
   section Render and PayPal (you)
   Render env clean-up                        :crit, r1, 2026-11-01, 1d
-  Live Sandbox run on Render                 :crit, r3, 2026-11-02, 1d
   section Automation
   Demo data reset                            :a3, 2026-11-04, 2d
   Playwright demo walk + footage             :a4, 2026-11-06, 2d
@@ -119,7 +126,8 @@ gantt
 | Item | Who | Blocked on you? |
 |---|---|---|
 | Render environment clean-up (delete the retired variables) | You (Render dashboard) | **Yes** |
-| Live Sandbox run on Render (checkout under the CSP, first webhook, System status) | You, with Claude checking | **Yes** (buyer approval in Sandbox) |
+| Fix: AI recommendation on `dispute_updated` | Claude, once you approve | Decision only |
+| Invoice part 2 (`--only invoice-overdue`) from 4 Nov UTC | Claude or you | No |
 | Demo data reset, Playwright walk | Claude | Sandbox buyer steps are yours |
 | AG Studio 45-day trial (request on 7–8 Nov, lasts to about 22 Dec) | You (email AG Grid) | **Yes** |
 | Overdue invoice for the reminder demo (create about 5 Nov, shortest term) | You click, or Claude via the app | Partly |

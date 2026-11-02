@@ -35,8 +35,9 @@ def run(client, **kwargs):
 def test_a_healthy_site_passes_without_a_login(site):
     rows = run(site)
     assert [r for r in rows if r.status != check.PASS] == []
-    assert list(by_name(rows)) == ["Service awake", "/login is 200", "/setup is 404", "Security headers on /login",
-                                   "Security headers on /", "API pages blocked, signed out"]
+    assert list(by_name(rows)) == ["Service awake", "/login is 200", "/setup is 404", "/ is 200", "/shop is 200",
+                                   "Security headers on /login", "Security headers on /",
+                                   "Security headers on /shop", "API pages blocked, signed out"]
     assert by_name(rows)["Service awake"].detail == "version abcdef1"
 
 

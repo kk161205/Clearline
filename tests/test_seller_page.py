@@ -261,7 +261,7 @@ def test_self_hosted_font_and_no_google_fonts(tmp_path):
 
 def test_pages_are_served_with_no_cache(tmp_path):
     client, _ = make_client(tmp_path)
-    for path in ("/", "/seller"):
+    for path in ("/", "/shop", "/seller"):
         assert client.get(path).headers["cache-control"] == "no-cache"
 
 

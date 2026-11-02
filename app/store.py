@@ -179,7 +179,7 @@ class TimelineStore:
     # seconds); `disabled` is 0/1 on both databases.
 
     _USER_COLUMNS = ("id, email, password_hash, created_at, last_login_at, failed_logins, "
-                     "locked_until, disabled")
+                     "locked_until, disabled, demo")
 
     def count_users(self) -> int:
         with self.db.connect() as conn:
@@ -210,11 +210,11 @@ class TimelineStore:
 
     def list_users(self) -> list[dict]:
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT id, email, created_at, last_login_at, disabled FROM users ORDER BY id").fetchall()
+            rows = conn.execute("SELECT id, email, created_at, last_login_at, disabled, demo FROM users ORDER BY id").fetchall()
         return [dict(r) for r in rows]
 
     def update_user(self, user_id: int, **fields) -> None:
-        allowed = {"password_hash", "last_login_at", "failed_logins", "locked_until", "disabled"}
+        allowed = {"password_hash", "last_login_at", "failed_logins", "locked_until", "disabled", "demo"}
         assert fields and set(fields) <= allowed, fields
         sets = ", ".join(f"{k} = ?" for k in fields)
         with self.db.connect() as conn:

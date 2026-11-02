@@ -128,7 +128,9 @@ def run(client: httpx.Client, *, https: bool, email: str | None = None, password
         return rows
     try:
         rows += [status_is(client, "/login", 200), status_is(client, "/setup", 404),
+                 status_is(client, "/", 200), status_is(client, "/shop", 200),
                  headers_row(client, "/login", https), headers_row(client, "/", https),
+                 headers_row(client, "/shop", https),
                  api_pages_row(client, (303, 401, 404), "API pages blocked, signed out")]
         if email:
             rows += logged_in_rows(client, email, password or "")

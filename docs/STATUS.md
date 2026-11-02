@@ -7,7 +7,7 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 ## 8. Status matrix
 
 - **Built:** the commit that added it.
-- **Tested offline:** tests that pass with PayPal and the AI mocked. 458 in total, all
+- **Tested offline:** tests that pass with PayPal and the AI mocked. 492 in total, all
   passing on SQLite. CI also runs the database tests on a Postgres container on every push.
 - **Live in Sandbox:** tested by hand against PayPal Sandbox.
 - **On Render:** what was checked on `https://clearline-cbyb.onrender.com` (section 9).
@@ -18,7 +18,7 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 | Mark shipped (tracking) | `5182e43` | `test_flow` | Yes | **Yes** (`app.e2e`) | |
 | Verified webhooks | `5182e43` | `test_webhooks` (10) | Yes | **Yes** (`app.e2e`) | Capture, refund, dispute and invoice events all arrived |
 | Dispute sync (button; every 3 min) | `0959b11`; auto `0c36ca0` | `test_sync_sandbox` (11) | Yes | Yes | Render's auto-sync listed 4 disputes and 1 invoice, no errors |
-| AI dispute recommendation | `0959b11` | `test_assistant` (21), `test_ai` (10) | Yes | **Partly: bug** | Works on Ask AI again. Never runs by itself when a dispute starts UNDER_REVIEW (SYSTEM.md, known gaps) |
+| AI dispute recommendation | `0959b11`, `5c678eb` | `test_assistant`, `test_ai` | Yes | **Yes** (`app.e2e`: by itself, 2 s after PayPal's update) | Once per dispute and stage; sticky Gemini to Groq fallback |
 | FIGHT on an inquiry (evidence, message skipped) | `2396d25` | `test_assistant` | Yes | Not verified | Evidence first, re-check before each step |
 | Chargeback document evidence | `31546d2` | `test_documents` (24) | Yes (`PROOF_OF_DELIVERY_SIGNATURE` + PDF) | Not verified | Files never stored |
 | Buyer page and refund | `b4d72dc` | `test_buyer` (17) | Yes (40 USD partial) | **Yes** (`app.e2e`, full refund) | |
@@ -37,7 +37,8 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 | Checkout on Render | | | | **Yes** (`app.e2e`) | A real Sandbox payment through the popup under the live CSP |
 | Production mode, proxy IP, headers, CSP | `6a8d40b` | `test_security` (33) | n/a | **Yes** (headers, anonymous routes, checkout CSP) | Zero CSP violations on 8 page types locally in production mode |
 | Fewer env vars, Settings → Business | `f0fdfac` | `test_business` (16) | Locally | Not verified | Needs the Render clean-up below |
-| Live end-to-end run (`python -m app.e2e`) | see section 9 | `test_e2e_guards` | n/a | **Yes** (7 of 8 flows; the dispute flow fails on the AI bug) | Never in CI |
+| Live end-to-end run (`python -m app.e2e`) | see section 9 | `test_e2e_guards` | n/a | **Yes** (7 of 8 flows; the dispute flow's AI bug is fixed and passed on 3 Nov) | Never in CI |
+| Landing page, shop at /shop, Sandbox banners, demo account | see the plan | `test_landing`, `test_auth` | n/a | **Yes** (`app.e2e`, screenshots) | Demo flag on the judge account is a manual step |
 | Client IP behind Cloudflare and Render, HEAD on pages | B6, B7 | `test_security` | n/a | **Yes** (the chain measured live, one spoofed login sent) | |
 | CI, secret scan, pre-demo check | see section 10 | `test_check` (19), `test_secret_scan` (15) | n/a | **Yes** (`app.check` passes on the live site) | |
 | Request logs, startup summary, System status | `9413cac` | `test_diagnostics` (33) | Locally | **Partly** (`X-Request-ID`; login-only page not opened) | Render's log lines not seen from here |
@@ -127,6 +128,7 @@ gantt
 |---|---|---|
 | Render environment clean-up (delete the retired variables) | You (Render dashboard) | **Yes** |
 | Invoice part 2 (`--only invoice-overdue`) from 4 Nov UTC | Claude or you | No |
+| `python -m app.users set-demo --email judge@clearline.demo` with the Neon main URL | You | **Yes** |
 | Demo data reset, Playwright walk | Claude | Sandbox buyer steps are yours |
 | AG Studio 45-day trial (request on 7–8 Nov, lasts to about 22 Dec) | You (email AG Grid) | **Yes** |
 | Overdue invoice for the reminder demo (create about 5 Nov, shortest term) | You click, or Claude via the app | Partly |

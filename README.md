@@ -27,7 +27,7 @@ uvicorn app.main:create_app --factory --reload
 
 ### Test the flow
 
-1. Open http://localhost:8000 and click the PayPal button.
+1. Open http://localhost:8000/shop and click the PayPal button.
 2. Log in with your **US Personal** Sandbox account (email + password from
    Developer Dashboard → Sandbox Accounts → ⋮ → View/edit account) and approve.
 3. You should see "Payment completed".
@@ -82,7 +82,7 @@ passed verification.
 
 ### 3. Real dispute test
 
-1. Pay the $120 order on https://clearline-cbyb.onrender.com (Day 1 flow) if you haven't already.
+1. Pay the $120 order on https://clearline-cbyb.onrender.com/shop (Day 1 flow) if you haven't already.
 2. Log in at https://www.sandbox.paypal.com as the **US Personal** account.
 3. Open the $120 payment, choose **Report a problem** (Resolution Center),
    pick **"I didn't receive an item I bought"** (item not received) and submit.
@@ -278,6 +278,9 @@ and dead once an account exists; after that `/setup` returns 404.
   ignored, so a direct client can't spoof them.
 - **Settings → Account:** your email, change password (needs the current one; signs out your
   other devices) and **Sign out everywhere**.
+- **Demo account:** `python -m app.users set-demo --email judge@clearline.demo` (`--off` undoes it).
+  It can use everything, but can't change its password, sign out everywhere, create or revoke agent
+  keys, or change Business settings: the page says so, and the API answers 403.
 - `APP_SECRET` signs buyer order links. Without it a random one is used and the app logs a
   warning: buyer links then stop working after each restart.
 - **Settings → Business:** the name buyers see, your country and how often to check PayPal.
@@ -295,7 +298,7 @@ Webhooks and the auto-sync keep working without anyone logged in.
 
 1. Start uvicorn, copy the setup code from its log, create your account at
    http://localhost:8000/setup.
-2. Pay an order on http://localhost:8000, then click **Questions about this order?** (or
+2. Pay an order on http://localhost:8000/shop, then click **Questions about this order?** (or
    **Copy link** on `/seller`).
 3. On the buyer page, click **I want a refund**, pick a reason and send.
 4. On `/seller`, reply to it, then click **Refund partial…** (e.g. 40.00) and confirm.
@@ -679,7 +682,7 @@ that flow and reports it as BLOCKED.
 
 Set by `app/security.py`, one policy per page type; the comment there lists what PayPal's SDK
 was measured to load. Every page's script is a file under `app/static/pages/`, so no policy allows
-`unsafe-inline` or `unsafe-eval` for scripts. Default: `'self'`. Checkout (`/`): adds PayPal's SDK
+`unsafe-inline` or `unsafe-eval` for scripts. Default: `'self'`, which includes the landing page at `/`. Checkout (`/shop`): adds PayPal's SDK
 host and `www.paypalobjects.com` for fonts. `/insights`: adds `cdn.jsdelivr.net`. `/dashboard` and
 `/insights`: `data:` fonts, which AG Grid builds into its script.
 

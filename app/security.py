@@ -69,7 +69,7 @@ def csp_for(path: str, sdk_url: str) -> str | None:
     """The policy for one path (None: FastAPI's API pages, which need their CDN)."""
     if path.startswith(API_DOCS):
         return None
-    if path == "/":
+    if path == "/shop":
         return checkout_csp(sdk_url)
     if path == "/dashboard":
         return DASHBOARD_CSP

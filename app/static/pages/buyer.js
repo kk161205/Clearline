@@ -11,7 +11,7 @@ function showPaid(orderRef, buyerLink) {
   document.getElementById("paid").hidden = false;
   show("");
   const receipt = buyerLink.split("/").pop();
-  history.replaceState(null, "", `/?receipt=${encodeURIComponent(receipt)}`);
+  history.replaceState(null, "", `/shop?receipt=${encodeURIComponent(receipt)}`);
 }
 
 async function restorePaidState() {

@@ -197,6 +197,7 @@ class FiraIn(BaseModel):
     downloaded: bool
 
 
+DEMO_LOCKED = "This is a shared demo account, so this setting is locked."
 LAST_WEBHOOK_KEY = "last_webhook"  # shown on Settings -> System status
 EXPORT_DISCLAIMER = "Guidance, not legal or tax advice."
 EMAIL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
@@ -522,6 +523,11 @@ def create_app(settings: Settings | None = None,
     def current_user(request: Request) -> dict:
         return request.state.user
 
+    def not_for_demo(request: Request) -> None:
+        """The judges' shared account can use everything but can't lock anyone else out of it."""
+        if current_user(request).get("demo"):
+            raise HTTPException(403, DEMO_LOCKED)
+
     @app.get("/login", include_in_schema=False)
     async def login_page():
         if needs_setup():
@@ -587,11 +593,12 @@ def create_app(settings: Settings | None = None,
     @app.get("/api/account")
     async def account(request: Request):
         user = current_user(request)
-        return {"id": user["id"], "email": user["email"]}
+        return {"id": user["id"], "email": user["email"], "demo": bool(user.get("demo"))}
 
     @app.post("/api/account/password")
     async def change_password(body: PasswordChangeIn, request: Request):
         """New password, with the current one. Every other session of this account ends."""
+        not_for_demo(request)
         user = current_user(request)
         if not accounts.check_password(user, body.current):
             log.warning("Password change refused: wrong current password, user %s", user["id"])
@@ -607,6 +614,7 @@ def create_app(settings: Settings | None = None,
 
     @app.post("/api/account/sign-out-everywhere")
     async def sign_out_everywhere(request: Request, response: Response):
+        not_for_demo(request)
         user = current_user(request)
         ended = store.delete_user_sessions(user["id"])
         response.delete_cookie(SESSION_COOKIE, path="/")
@@ -622,6 +630,7 @@ def create_app(settings: Settings | None = None,
     @app.post("/api/agent-keys")
     async def create_agent_key(body: ApiKeyIn, request: Request):
         """A new key, shown once: only its SHA-256 is stored."""
+        not_for_demo(request)
         user = current_user(request)
         created = accounts.create_api_key(user["id"], body.name)
         log.info("Agent key %s created by user %s", created["id"], user["id"])
@@ -629,6 +638,7 @@ def create_app(settings: Settings | None = None,
 
     @app.delete("/api/agent-keys/{key_id}")
     async def revoke_agent_key(key_id: int, request: Request):
+        not_for_demo(request)
         user = current_user(request)
         if not store.revoke_api_key(user["id"], key_id, time.time()):
             raise HTTPException(404, "No such key")
@@ -672,6 +682,10 @@ def create_app(settings: Settings | None = None,
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.
     @app.get("/", include_in_schema=False)
+    async def landing_page():
+        return FileResponse(STATIC / "landing.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/shop", include_in_schema=False)
     async def buyer_page():
         return FileResponse(STATIC / "buyer.html", headers={"Cache-Control": "no-cache"})
 
@@ -834,7 +848,8 @@ def create_app(settings: Settings | None = None,
         return business()
 
     @app.put("/api/business")
-    async def set_business(body: Business):
+    async def set_business(body: Business, request: Request):
+        not_for_demo(request)
         store.set_setting(BUSINESS_KEY, body.model_dump())
         shop["business"] = body
         sync_state["auto_sync_minutes"] = body.auto_sync_minutes

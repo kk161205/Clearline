@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
         if name in ("create", "reset-password"):
             command.add_argument("--password-stdin", action="store_true",
                                  help="read the password from the first line of stdin instead of prompting")
+    demo = sub.add_parser("set-demo", help="the judges' shared account: everything but its own settings")
+    demo.add_argument("--email", required=True)
+    demo.add_argument("--off", action="store_true", help="make it a normal account again")
     sub.add_parser("list")
     args = parser.parse_args(argv)
 
@@ -76,7 +79,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
             print("No seller accounts yet.")
         for u in users:
             print(f"{u['id']:>4}  {u['email']:<40}  created {when(u['created_at'])}  "
-                  f"last login {when(u['last_login_at'])}  {'disabled' if u['disabled'] else 'active'}")
+                  f"last login {when(u['last_login_at'])}  {'disabled' if u['disabled'] else 'active'}"
+                  f"{'  demo' if u['demo'] else ''}")
         return 0
 
     email = normalise_email(args.email)
@@ -97,6 +101,9 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     if args.command == "reset-password":
         accounts.set_password(user["id"], new_password(email))  # ends every session
         print(f"Password reset for account {user['id']}; it has been signed out everywhere.")
+    elif args.command == "set-demo":
+        store.update_user(user["id"], demo=0 if args.off else 1)
+        print(f"Account {user['id']} is {'a normal account again' if args.off else 'now a demo account'}.")
     elif args.command == "disable":
         accounts.set_disabled(user["id"], True)
         print(f"Account {user['id']} disabled and signed out everywhere.")

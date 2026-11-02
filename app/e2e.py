@@ -355,7 +355,7 @@ class Run:
             flow.contexts[who].storage_state(path=str(self.states[who]))
 
     def buy(self, flow: Flow) -> Order:
-        """Checkout at / through the PayPal popup. Returns the order, once captured."""
+        """Checkout at /shop through the PayPal popup. Returns the order, once captured."""
         page = flow.page("buyer")
         created = {}
 
@@ -365,7 +365,7 @@ class Run:
 
         page.on("response", on_response)
         with flow.step("open checkout"):
-            page.goto(self.config.base + "/", wait_until="load")
+            page.goto(self.config.base + "/shop", wait_until="load")
             page.locator("paypal-button").wait_for(state="visible", timeout=60000)
         with flow.step("pay through the PayPal popup"):
             with page.expect_popup(timeout=30000) as opening:
@@ -817,6 +817,7 @@ def insights(run: Run, f: Flow) -> None:
         text, turns, failed, seconds = ask_insights(f, page, "Add a bar chart of refunded amount by buyer country")
         f.note(f"Second answer: {turns} AI turns, {failed} failed, {seconds:.0f} s; "
                f"charts on the page {before} -> {page.locator('canvas').count()}.")
+        assert not re.search(r"\b\d+ issues?\b", text), "An advisory note is showing in the chat"
         assert "couldn't answer" not in text.lower(), "The assistant couldn't answer"
         assert turns and not failed, f"{failed} of {turns} AI turns failed"
         page.wait_for_timeout(3000)

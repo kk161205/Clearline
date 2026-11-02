@@ -1,6 +1,7 @@
 const CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 let busy = 0; // requests in flight from our buttons; auto-refresh waits for them
 let ENV = null; // "sandbox" or "live", from /api/config; sandbox-only tools need "sandbox"
+let demoAccount = false; // the judges' shared account: its own settings are locked
 const openOrders = new Set(); // expanded rows survive the 10-second refresh
 const openExports = new Set(); // and so does an opened export paperwork panel
 // "Open on Orders" from the dashboard: /seller#order-38815W (the masked id's last 6 characters).
@@ -839,6 +840,15 @@ async function loadAccount() {
   const me = await res.json();
   $("account-email").textContent = me.email;
   $("account-email-full").textContent = me.email;
+  if (me.demo) lockForDemo();
+}
+
+// The server refuses these for a demo account; this says so before anyone tries.
+function lockForDemo() {
+  demoAccount = true;
+  document.querySelectorAll(".demo-note").forEach((note) => { note.hidden = false; });
+  document.querySelectorAll("#business-form :is(input, button), #password-form :is(input, button), #key-form :is(input, button), #signout-all, [data-revoke]")
+    .forEach((el) => { el.disabled = true; });
 }
 
 $("password-form").addEventListener("submit", async (ev) => {
@@ -881,6 +891,7 @@ async function loadKeys() {
   list.innerHTML = keys.length
     ? `<table class="tbl"><thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Status</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${keys.map(keyRow).join("")}</tbody></table>`
     : '<div class="empty"><strong>No agent keys yet</strong>Create one to connect your own AI agent.</div>';
+  list.querySelectorAll("[data-revoke]").forEach((b) => { b.disabled = demoAccount; });
   list.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
     if (!await UI.confirm({ title: `Revoke "${b.dataset.name}"?`, confirm: "Revoke key", tone: "danger",
       what: ["Agents using this key lose access right away. This can't be undone."] })) return;

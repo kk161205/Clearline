@@ -11,7 +11,8 @@ from collections import deque
 
 # (method, path regex) that need no login. HEAD is treated like GET.
 PUBLIC_ROUTES = [
-    ("GET", r"/"),
+    ("GET", r"/"),                               # landing page
+    ("GET", r"/shop"),                           # checkout
     ("GET", r"/api/config"),
     ("POST", r"/api/orders"),                    # checkout: create order
     ("POST", r"/api/orders/[^/]+/capture"),      # checkout: capture after approval

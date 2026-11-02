@@ -90,8 +90,8 @@ def test_pages_send_you_to_setup_while_there_is_no_account(tmp_path):
 
 
 def test_public_routes_are_exactly_the_agreed_ones():
-    assert len(PUBLIC_ROUTES) == 21  # adding a public route should be a deliberate change
-    for method, path in [("GET", "/"), ("GET", "/api/config"), ("POST", "/api/orders"),
+    assert len(PUBLIC_ROUTES) == 22  # adding a public route should be a deliberate change
+    for method, path in [("GET", "/"), ("GET", "/shop"), ("GET", "/api/config"), ("POST", "/api/orders"),
                          ("POST", "/api/orders/X/capture"), ("GET", "/o/abc"), ("GET", "/api/o/abc"),
                          ("GET", "/api/o/abc/status"), ("POST", "/api/o/abc/requests"),
                          ("POST", "/webhooks/paypal"), ("GET", "/login"), ("POST", "/api/login"), ("POST", "/api/logout"),
@@ -410,7 +410,7 @@ def test_sign_out_everywhere_and_the_account_email(tmp_path):
     login(here)
     elsewhere, _ = new_client(tmp_path)
     login(elsewhere)
-    assert here.get("/api/account").json() == {"id": user_id, "email": SELLER_EMAIL}
+    assert here.get("/api/account").json() == {"id": user_id, "email": SELLER_EMAIL, "demo": False}
     assert here.post("/api/account/sign-out-everywhere").status_code == 200
     assert here.get("/api/orders").status_code == 401 and elsewhere.get("/api/orders").status_code == 401
 
@@ -511,3 +511,56 @@ def test_login_as_helper_reuses_the_account(tmp_path):
     client, settings = new_client(tmp_path)
     first = login_as(client, settings)
     assert login_as(client, settings)["id"] == first["id"]
+
+
+# ---- The demo account ------------------------------------------------------------------------
+
+def demo_client(tmp_path):
+    client, settings = make_client(tmp_path)
+    store = TimelineStore(settings.database_target)
+    store.update_user(store.user_by_email(SELLER_EMAIL)["id"], demo=1)
+    return client, store
+
+
+def test_a_demo_account_cant_touch_its_own_settings(tmp_path):
+    client, store = demo_client(tmp_path)
+    user = store.user_by_email(SELLER_EMAIL)
+    key_id = store.create_api_key(user["id"], "existing", "h1", "cl_live_abcd", 1.0)
+    calls = [client.post("/api/account/password", json={"current": TEST_PASSWORD, "password": "a-new-password-22", "confirm": "a-new-password-22"}),
+             client.post("/api/account/sign-out-everywhere"),
+             client.post("/api/agent-keys", json={"name": "k"}),
+             client.delete(f"/api/agent-keys/{key_id}"),
+             client.put("/api/business", json={"seller_name": "Hijacked", "seller_country": "IN", "auto_sync_minutes": 3})]
+    for res in calls:
+        assert res.status_code == 403 and "demo account" in res.json()["detail"], res.url
+    assert client.get("/api/business").json()["seller_name"] != "Hijacked"
+    assert client.get("/api/account").json()["demo"] is True
+    assert store.use_api_key("h1", 2.0) == key_id and login(client).status_code == 200
+
+
+def test_a_demo_account_can_use_everything_else(tmp_path):
+    client, _ = demo_client(tmp_path)
+    for path in ("/api/orders", "/api/dashboard", "/api/policy", "/api/system/status", "/api/agent-keys", "/api/business"):
+        assert client.get(path).status_code == 200, path
+    policy = {k: v for k, v in client.get("/api/policy").json().items() if k not in ("spent_today", "reasons")}
+    assert client.put("/api/policy", json=policy).status_code == 200
+    assert client.post("/api/logout").status_code == 200
+
+
+def test_a_normal_account_keeps_those_settings(tmp_path):
+    client, _ = make_client(tmp_path)
+    assert client.get("/api/account").json()["demo"] is False
+    assert client.post("/api/agent-keys", json={"name": "k"}).status_code == 200
+
+
+def test_the_cli_sets_and_clears_the_demo_flag(tmp_path, capsys):
+    from app.users import main as users
+    client, settings = make_client(tmp_path)
+    assert users(["set-demo", "--email", SELLER_EMAIL], settings=settings) == 0
+    assert client.get("/api/account").json()["demo"] is True
+    assert users(["list"], settings=settings) == 0
+    assert "demo" in capsys.readouterr().out
+    assert users(["set-demo", "--email", SELLER_EMAIL, "--off"], settings=settings) == 0
+    assert client.get("/api/account").json()["demo"] is False
+    with pytest.raises(SystemExit, match="No account"):
+        users(["set-demo", "--email", "nobody@example.com"], settings=settings)

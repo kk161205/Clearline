@@ -333,3 +333,6 @@ details.tech div { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* The Sandbox note on the landing page, the shop and the buyer's order page. */
+.demo-banner { background: var(--held-tint); color: var(--held-ink); font-size: var(--t-xs); text-align: center; padding: 6px var(--gutter); }

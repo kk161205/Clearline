@@ -265,7 +265,7 @@ def test_default_policy_is_self_only(seller):
 
 
 def test_checkout_policy_lists_what_the_paypal_sdk_loads(seller):
-    policy = csp(seller.get("/"))
+    policy = csp(seller.get("/shop"))
     for directive in ("script-src", "connect-src", "frame-src", "img-src"):
         assert SDK_SANDBOX in policy[directive], directive
     assert "https://www.paypalobjects.com" in policy["font-src"]
@@ -284,7 +284,7 @@ def test_buyer_order_page_loads_no_paypal_code(seller):
 
 
 def test_no_policy_allows_inline_scripts_or_eval(seller):
-    for path in ("/", "/seller", "/dashboard", "/insights", "/agents", "/login"):
+    for path in ("/", "/shop", "/seller", "/dashboard", "/insights", "/agents", "/login"):
         script = csp(seller.get(path))["script-src"]
         assert "unsafe-inline" not in script and "unsafe-eval" not in script, path
 
@@ -359,7 +359,7 @@ def test_head_answers_like_get_with_no_body_on_public_pages(tmp_path):
     client, settings = make_client(tmp_path)
     TimelineStore(settings.database_target).add("O1", "payment_captured", {"capture_id": "C1"})
     client.cookies.clear()
-    for path in ("/", "/login", "/healthz", f"/o/{buyer_token(settings.app_secret, 'O1')}", "/static/ui.css"):
+    for path in ("/", "/shop", "/login", "/healthz", f"/o/{buyer_token(settings.app_secret, 'O1')}", "/static/ui.css"):
         res = client.head(path)
         assert res.status_code == 200 and res.content == b"", path
         assert res.headers["content-type"] == client.get(path).headers["content-type"], path

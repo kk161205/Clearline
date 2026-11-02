@@ -20,10 +20,10 @@ def store(tmp_path):
 
 def test_migrations_run_once_and_record_the_version(tmp_path, store):
     latest = MIGRATIONS[-1][0]
-    assert query(store.db.target, "SELECT version FROM schema_version") == [{"version": latest}]
+    assert store.db.schema_version() == latest
     TimelineStore(db_target(tmp_path))  # a second start changes nothing
     store.db.migrate()
-    assert store.db.count("schema_version") == 1
+    assert store.db.count("schema_version") == len(MIGRATIONS)
     for table in TABLES:
         assert store.db.table_exists(table), table
         assert store.db.count(table) == 0
@@ -39,7 +39,15 @@ def test_an_existing_sqlite_file_from_before_versions_keeps_its_data(tmp_path):
         conn.execute("INSERT INTO events (order_id, kind, payload, created_at) VALUES ('O1', 'order_created', '{}', 1.5)")
     store = TimelineStore(str(path))
     assert store.timeline("O1") == [{"kind": "order_created", "payload": {}, "created_at": 1.5}]
-    assert store.db.count("schema_version") == 1
+    assert store.db.schema_version() == MIGRATIONS[-1][0]
+    assert store.update_user(1, demo=1) is None  # newer columns arrived too
+
+
+def test_new_accounts_arent_demo_accounts(store):
+    user_id = store.create_user("new@example.com", "h", 1.0)
+    assert store.user_by_id(user_id)["demo"] == 0
+    store.update_user(user_id, demo=1)
+    assert store.user_by_email("new@example.com")["demo"] == 1 and store.list_users()[0]["demo"] == 1
 
 
 def test_events_orders_and_json_lookups(store):

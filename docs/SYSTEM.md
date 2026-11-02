@@ -460,7 +460,7 @@ The same component (`history.js`) is used on `/seller` and in the dashboard's si
 | Seller passwords | Argon2id (argon2-cffi defaults), rehashed at login if defaults change. 12–128 characters, not a common password, not containing the email's local part |
 | Sessions | Database rows keyed by SHA-256 of a random 32-byte token; the raw token is only in the cookie. HttpOnly, SameSite=Lax, Secure over HTTPS. 7 days idle, 30 days absolute. Rotated at login; logout and password changes delete rows |
 | Brute force | 5 wrong passwords lock the account for 15 min. 20 login attempts / 15 min per IP; 10 setup attempts / 15 min per IP. One generic error message; unknown emails are verified against a dummy hash |
-| Deny by default | Only 20 public routes (checkout, buyer link and API, webhooks, login, setup, healthz, design assets, MCP). Everything else needs a session |
+| Deny by default | Only 22 public routes (landing page, shop, buyer link and API, webhooks, login, setup, healthz, design assets, MCP). Everything else needs a session |
 | Cross-site requests | POST/PUT/PATCH/DELETE with a session and a foreign `Origin` get 403; login, setup and logout too. MCP checks `Origin` (same host or localhost) |
 | First account | `/setup` needs a one-time code from the server log (memory only, constant-time compare); 404 once any account exists. No public sign-up |
 | Agent keys | `cl_live_` + random, stored as SHA-256, shown once, revocable; merchant tools are read-only |
@@ -472,6 +472,12 @@ The same component (`history.js`) is used on `/seller` and in the dashboard's si
 | Auto-policy | Off by default. When on, only within the seller's caps (per order, per day, reasons, currency, no dispute, not shipped), with an explicit amount |
 | Evidence files | Type from magic bytes (PDF, PNG, JPG, GIF), under 5 MB, name sanitised, sent to PayPal from memory and never stored |
 | Database URL and secrets | Never logged; `DATABASE_URL` is hidden from settings repr; CLI tools hide driver messages that could name the host |
+
+### The demo account
+
+`python -m app.users set-demo --email <account>` marks a shared account, like the judges' login. It
+can use everything, but can't change its password, sign out everywhere, create or revoke agent keys,
+or change Business settings: the page says so, and the API answers 403.
 
 ### Production hardening
 

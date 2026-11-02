@@ -205,6 +205,7 @@
       <details class="panel disclose" id="business"><summary><span class="d-title">Business</span>
           <span class="d-line" id="business-line">Your name, country and PayPal checks</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
         <div class="d-body">
+          <p class="muted small demo-note" hidden>This is a shared demo account, so this is locked.</p>
           <form id="business-form" novalidate>
             <label class="field">Business name <input name="seller_name" maxlength="120" required />
               <span class="hint">Buyers see this on their order page.</span></label>
@@ -231,6 +232,7 @@
           <span class="d-line" id="account-email">Signed in</span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>
         <div class="d-body">
           <dl class="kv"><dt>Signed in as</dt><dd id="account-email-full">…</dd></dl>
+          <p class="muted small demo-note" hidden>This is a shared demo account, so this is locked.</p>
           <form id="password-form" class="pw-form" novalidate>
             <h3>Change password</h3>
             <label class="field">Current password <input type="password" name="current" autocomplete="current-password" maxlength="128" required /></label>
@@ -257,6 +259,7 @@
         <div class="d-body">
           <p class="muted small">An agent sends a key as <code>Authorization: Bearer &lt;key&gt;</code> to <span class="mono" id="mcp-url">/mcp</span>.
             Keys can only read: refunds and dispute answers stay your click here.</p>
+          <p class="muted small demo-note" hidden>This is a shared demo account, so this is locked.</p>
           <form id="key-form" class="key-form" novalidate>
             <label class="field">Key name <input name="name" maxlength="60" placeholder="e.g. Claude Desktop" required /></label>
             <button type="submit">Create key</button>

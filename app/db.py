@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS agent_calls (
     outcome TEXT NOT NULL,
     order_ref TEXT
 )
+"""), (2, """
+ALTER TABLE users ADD COLUMN demo INTEGER NOT NULL DEFAULT 0;
 """)]
 
 # Every table the app owns, parents before children (the copy tool keeps this order).

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Clearline · See where every payment stands</title>
+  <meta name="description" content="A seller's console on PayPal: every order's money on one clear line, disputes answered with AI, and a person approving what moves money." />
+  <link rel="preload" href="/static/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/ui.css" />
+  <script src="/static/ui.js"></script>
+  <style>
+    body { font-size: 1rem; }
+    main { max-width: 1040px; margin: 0 auto; padding: 16px var(--gutter) 40px; }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
+    .hero { max-width: 44rem; margin-bottom: 28px; }
+    .hero h1 { font-size: var(--t-2xl); line-height: 1.15; margin: 0 0 12px; }
+    .hero p { color: var(--muted); margin: 0; }
+    .cards { display: grid; gap: 16px; margin-bottom: 32px; }
+    .route { padding: 20px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .route h2 { font-size: var(--t-lg); margin: 0; }
+    .route p { margin: 0; color: var(--muted); font-size: var(--t-sm); }
+    .route .go { margin-top: auto; padding-top: 6px; }
+    .route .btn { width: 100%; }
+    .mcp { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .mcp code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--t-xs); }
+    .how { margin-bottom: 28px; }
+    .how h2 { font-size: var(--t-md); margin: 0 0 12px; }
+    .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    .steps li { display: grid; grid-template-columns: 4px 1fr; gap: 12px; align-items: stretch; }
+    .steps strong { display: block; }
+    .steps span.text { color: var(--muted); font-size: var(--t-sm); }
+    .steps .cl-mark { height: auto; }
+    footer { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: var(--t-sm); }
+    @media (min-width: 640px) {
+      main { padding-top: 24px; }
+      .hero h1 { font-size: 2.25rem; }
+    }
+    @media (min-width: 880px) {
+      .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+    }
+  </style>
+</head>
+<body>
+<div class="demo-banner"><strong>PayPal Sandbox demo:</strong> test accounts only, no real money.</div>
+<main>
+  <div class="top"><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span>
+    <button class="ghost small" type="button" data-theme-toggle aria-pressed="false">Theme</button></div>
+
+  <section class="hero">
+    <h1>See where every payment stands, and answer disputes before they cost you.</h1>
+    <p>Clearline is a console for small sellers who ship across borders on PayPal. Each order's money
+      sits on one clear line, buyers get a page to ask before they dispute, and AI drafts dispute
+      answers and invoices for the seller to review. Money only moves when the seller approves it, or
+      under small refund rules the seller set in advance.</p>
+  </section>
+
+  <section class="cards" aria-label="Ways to try Clearline">
+    <div class="panel route">
+      <h2>Buyer</h2>
+      <p>Buy a test product and get a private page for your order. Pay with a PayPal Sandbox personal account.</p>
+      <div class="go"><a class="btn" href="/shop">Try the shop</a></div>
+    </div>
+    <div class="panel route">
+      <h2>Seller</h2>
+      <p>Orders, disputes, invoices and the money in flight. Judges: the login is in the Devpost testing instructions.</p>
+      <div class="go"><a class="btn" href="/login">Seller login</a></div>
+    </div>
+    <div class="panel route">
+      <h2>AI agents</h2>
+      <p>Connect an MCP client. Buyer agents can check an order and ask for a refund with its private link. Merchant agents can read what needs attention with an agent key.</p>
+      <div class="go mcp"><code>https://clearline-cbyb.onrender.com/mcp</code>
+        <button class="secondary small" type="button" data-copy="https://clearline-cbyb.onrender.com/mcp" aria-label="Copy the MCP URL">Copy</button></div>
+    </div>
+  </section>
+
+  <section class="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ol class="steps">
+      <li><span class="cl-mark" data-tone="settled" aria-hidden="true"></span><div><strong>Pay</strong><span class="text">The buyer pays through PayPal, and the order starts its line.</span></div></li>
+      <li><span class="cl-mark" data-tone="held" aria-hidden="true"></span><div><strong>Ship</strong><span class="text">The seller adds tracking, and the buyer's page follows along.</span></div></li>
+      <li><span class="cl-mark" data-tone="disputed" aria-hidden="true"></span><div><strong>Disputes and refunds</strong><span class="text">AI reads the case and recommends an answer. A person approves it.</span></div></li>
+    </ol>
+  </section>
+
+  <footer>
+    <a href="https://github.com/kk161205/Clearline" rel="noopener">GitHub repo</a>
+    <a href="https://github.com/kk161205/Clearline/blob/main/docs/SYSTEM.md" rel="noopener">System guide</a>
+  </footer>
+</main>
+</body>
+</html>

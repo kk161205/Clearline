@@ -276,6 +276,7 @@ function analyst(api) {
 
 let api = null, saveTimer = 0, applying = false, currency = "USD";
 let report = null; // the seller's real (desktop) layout; phones show a stacked copy of it
+let savedLayout = null; // layoutKey() of the report as loaded, once the seller first touches it
 const desktop = () => window.innerWidth >= 1024;
 const $ = (id) => document.getElementById(id);
 const rawFetch = globalThis.fetch;
@@ -294,16 +295,29 @@ function showFailure() {
 
 function setSaved(text) { $("saved").textContent = text; }
 
+// Pure: the part of Studio's state that is the seller's layout. Which side panels are open isn't:
+// entering Edit layout moves them, and that alone must not save anything.
+function layoutKey(state) {
+  const { panels, ...layout } = state || {};
+  return JSON.stringify(layout);
+}
+
+// Pure: is `state` a real change from the layout in `saved`?
+const layoutChanged = (state, saved) => saved !== null && layoutKey(state) !== saved;
+
 // Debounced save of every layout change; the server keeps it per seller.
 function queueSave(state) {
   if (api && !applying) roomForAssistant(state);
   if (applying || !desktop()) return; // phones only view a stacked copy: nothing to save
   report = state;
+  if (!layoutChanged(state, savedLayout)) return;
   clearTimeout(saveTimer);
   setSaved("Saving…");
+  const key = layoutKey(state);
   saveTimer = setTimeout(async () => {
     try {
       const res = await fetch("/api/insights/layout", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
+      if (res.ok) savedLayout = key;
       setSaved(res.ok ? `Saved ${UI.dateTime(Date.now() / 1000)}` : "Couldn't save this layout");
     } catch { setSaved("Couldn't save this layout"); }
   }, 1200);
@@ -335,6 +349,25 @@ function roomForAssistant(state, force = false) {
   if (!opened || api.getProperty("mode") !== "edit") return;
   const panels = panelsForAssistant(state.panels);
   if (panels) api.setState({ ...state, panels });
+}
+
+// Pure: a step's "1 issue" pill is Studio's health advice about a step that worked. A step that
+// failed says so itself, so its pill stays. Row counts ("3 rows") are never advisories.
+const isAdvisory = (pill, failed) => !failed && /^\d+ issues?$/.test(pill.trim());
+
+// Studio has no option for this, so the chat is filtered as it renders.
+function hideAdvisories() {
+  const failed = (el) => el.closest(":has(> .ag-studio-ai-step-row)")?.querySelector(":scope > .ag-studio-ai-step-row-failed");
+  document.querySelectorAll(".ag-studio-ai-step-pill").forEach((pill) => {
+    pill.style.display = isAdvisory(pill.textContent, failed(pill)) ? "none" : "";
+  });
+  document.querySelectorAll(".ag-studio-ai-step-detail-issues").forEach((notes) => {
+    notes.style.display = failed(notes) ? "" : "none";
+  });
+}
+
+function watchAdvisories() {
+  new MutationObserver(hideAdvisories).observe($("studio"), { childList: true, subtree: true, characterData: true });
 }
 
 async function start() {
@@ -373,6 +406,12 @@ async function start() {
       ai: ({ api: studioApi }) => analyst(studioApi),
     });
     currency = data.charts.currency;
+    // Studio applies initialState a moment after this returns, without an update event, so
+    // "the layout as loaded" can only be read once it has: at the seller's first touch.
+    const loaded = () => { savedLayout ??= layoutKey(api.getState()); };
+    for (const [el, kind] of [[$("studio"), "pointerdown"], [$("studio"), "keydown"], [$("mode"), "pointerdown"]])
+      el.addEventListener(kind, loaded, { capture: true, once: true });
+    watchAdvisories();
     if (layout.updated_at) setSaved(`Your layout, saved ${UI.dateTime(layout.updated_at)}`);
   } catch (err) { showFailure(); return; }
 
@@ -383,6 +422,7 @@ async function start() {
     await fetch("/api/insights/layout", { method: "DELETE" });
     report = defaultState(currency);
     applying = true; api.setState(desktop() ? report : stackForPhone(report)); applying = false;
+    savedLayout = layoutKey(api.getState());
     setSaved("Default layout");
   });
   // Phones: view only, stacked. Crossing the breakpoint swaps between the two views.

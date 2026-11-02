@@ -183,3 +183,17 @@ def test_studios_own_widgets_stay_available_beside_ours():
     assert "const widgets = (config) => agStudio.createWidgets({" in html
     assert 'menu: [...config.menu, { label: "Clearline", widgetIds: ["money-state"] }],' in html
     assert "maxTurns: 8," in html  # Studio's own cap; the server keeps plain questions to 6
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_entering_edit_layout_isnt_a_layout_change(mixed):  # noqa: F811
+    client, _ = mixed
+    view = insights_view(client.get("/api/dashboard").json())
+    assert view["layout"] == {"panelsOnly": False, "moved": True, "notLoaded": False}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_advisory_notes_are_hidden_and_real_errors_are_not(mixed):  # noqa: F811
+    client, _ = mixed
+    view = insights_view(client.get("/api/dashboard").json())
+    assert view["advisory"] == {"one": True, "many": True, "failed": False, "rows": False}

@@ -256,6 +256,14 @@ async function renderInvoices() {
 
 // ---- Today: what needs the seller, each with its one next action ---------------------------
 
+// A paid order with no tracking yet can ship, unless all its money has gone back: a partial
+// refund leaves something to send. `buyer` holds what's refundable (null if it didn't load).
+function canShip(events, buyer) {
+  const kinds = new Set(events.map((e) => e.kind));
+  if (!kinds.has("payment_captured") || kinds.has("invoice_paid") || kinds.has("tracking_added")) return false;
+  return !buyer || Number(buyer.refundable) > 0;
+}
+
 function attentionItems(orders, invoices) {
   const items = [];
   for (const o of orders) {
@@ -265,14 +273,18 @@ function attentionItems(orders, invoices) {
       items.push({ rank: 0, sort: d ? d.days : 99, tone: "disputed", title: `Respond to the ${disputeName(p).toLowerCase()}: ${reasonWords(p.reason)}`,
         sub: `Order …${o.order_id.slice(-6)}`, when: d ? leftText(d.days) : "", urgent: d && d.days <= 3,
         amount: money(p.dispute_amount), action: "Review and respond", target: o.order_id, focus: ".ai" });
+    } else if (state && !disputePanel(state).resolved) { // open, but it's not the seller's turn
+      const p = state.payload;
+      items.push({ rank: 4, sort: 0, tone: "disputed", title: `${disputeName(p)} open: ${reasonWords(p.reason)}`,
+        sub: `Order …${o.order_id.slice(-6)}`, when: noActionReason(p, false), amount: money(p.dispute_amount),
+        action: "View", target: o.order_id, focus: ".dispute" });
     }
     for (const r of openRequests(o.events)) {
       items.push({ rank: 1, sort: r.created_at, tone: "held", title: `Buyer: ${BUYER_TYPES[r.payload.type] || "Sent a request"}`,
         sub: r.payload.message ? `“${r.payload.message.slice(0, 80)}”` : `Order …${o.order_id.slice(-6)}`,
         when: `Asked ${UI.date(r.created_at)}`, action: "Reply", target: o.order_id, focus: "[data-reply-text]" });
     }
-    const kinds = new Set(o.events.map((e) => e.kind));
-    if (kinds.has("payment_captured") && !kinds.has("tracking_added") && !kinds.has("refund_sent") && !state) {
+    if (canShip(o.events, o.buyer) && !state) {
       const paid = o.events.find((e) => e.kind === "payment_captured");
       items.push({ rank: 3, sort: paid.created_at, tone: "settled", title: "Paid, waiting to ship", sub: `Order …${o.order_id.slice(-6)}`,
         when: `Paid ${UI.date(paid.created_at)}`, amount: o.amount, action: "Add tracking", target: o.order_id, focus: "[name=tracking_number]" });
@@ -351,14 +363,12 @@ function orderRow(o, buyer, exp) {
   const state = currentDispute(events);
   const d = disputePanel(state);
   const invoicePaid = events.find((e) => e.kind === "invoice_paid");
-  const captured = events.some((e) => e.kind === "payment_captured") || Boolean(invoicePaid);
-  const tracked = events.some((e) => e.kind === "tracking_added");
   const tone = orderTone(events, state);
   const open = openOrders.has(o.order_id);
   const title = invoicePaid ? `Invoice ${invoicePaid.payload.number || o.order_id}` : `Order …${o.order_id.slice(-6)}`;
   const sub = invoicePaid ? "Paid by invoice" : `Created ${UI.date(events[0]?.created_at || 0)}`;
   const bodyId = `o-${o.order_id.replace(/[^\w-]/g, "")}`;
-  const form = captured && !tracked && !invoicePaid ? `
+  const form = canShip(events, buyer) ? `
       <form class="ship" data-order="${esc(o.order_id)}">
         <label class="field">Tracking number <input name="tracking_number" required autocomplete="off" /></label>
         <label class="field">Carrier <select name="carrier">${CARRIERS.map((c) => `<option value="${c}">${esc(UI.word("carrier", c))}</option>`).join("")}</select></label>

@@ -9,6 +9,7 @@ import respx
 from app.paypal import PayPalError
 from app.scheduler import run_every
 from app.store import TimelineStore
+from tests.test_webhooks import capture_order
 from tests.support import (API, DISPUTE_ID, GEMINI, DisputeOnPayPal, ai_reply, events, fight,
                            make_client, open_dispute, setup_paypal, shipped_order)
 
@@ -206,3 +207,19 @@ def test_sandbox_helper_records_paypal_refusal(tmp_path):
     [failed] = events(client, "ORDER1", "sandbox_status_change_failed")
     assert failed["payload"]["debug_id"] == "dbg-9"
     assert events(client, "ORDER1", "sandbox_status_changed") == []
+
+
+@respx.mock
+def test_a_refund_in_full_stops_shipping_but_a_partial_one_doesnt(tmp_path):
+    client, settings = make_client(tmp_path)
+    setup_paypal()
+    capture_order(client)
+    store = TimelineStore(settings.database_target)
+    track = respx.post(f"{API}/v2/checkout/orders/ORDER1/track").mock(return_value=httpx.Response(201, json={"id": "ORDER1"}))
+    store.add("ORDER1", "refund_sent", {"amount": "20.00", "currency": "USD", "status": "COMPLETED"})
+    first = client.post("/api/orders/ORDER1/tracking", json={"tracking_number": "1", "carrier": "DHL"})
+    assert first.status_code == 200 and track.call_count == 1
+    store.add("ORDER1", "refund_sent", {"amount": "100.00", "currency": "USD", "status": "COMPLETED"})
+    second = client.post("/api/orders/ORDER1/tracking", json={"tracking_number": "2", "carrier": "DHL"})
+    assert second.status_code == 409 and "refunded in full" in second.json()["detail"]
+    assert track.call_count == 1

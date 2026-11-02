@@ -19,7 +19,7 @@ new Function(fs.readFileSync(path.join(path.dirname(process.argv[2]), "ui.js"), 
 global.location = { origin: "https://shop.example" };
 
 const page = new Function(script +
-  "; return { currentDispute, disputePanel, aiCard, timelineRows, buyerSection, exportSection," +
+  "; return { currentDispute, disputePanel, aiCard, timelineRows, buyerSection, exportSection, attentionItems, canShip," +
   " setEnv: (e) => { ENV = e; } };")();
 
 const scenarios = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -31,6 +31,8 @@ const results = scenarios.map(({ env, events, buyer, exportData }) => {
   return { sandbox: out.includes("data-sandbox"), compact: out.includes("ai compact"),
            approve: out.includes("data-approve"), card: out, timeline: page.timelineRows(events || []),
            buyer: buyer ? page.buyerSection("ORDER1", buyer) : "",
-           export: exportData ? page.exportSection("ORDER1", exportData) : "" };
+           export: exportData ? page.exportSection("ORDER1", exportData) : "",
+           canShip: page.canShip(events || [], buyer || null),
+           today: page.attentionItems([{ order_id: "ORDER000000001", events: events || [], amount: "120.00 USD", buyer: buyer || null }], []) };
 });
 process.stdout.write(JSON.stringify(results));

@@ -741,6 +741,9 @@ def create_app(settings: Settings | None = None,
             captured = [e for e in events if e["kind"] == "payment_captured"]
             if not captured:
                 raise HTTPException(409, "Order has not been captured yet")
+            paid, refunded, _ = refund_totals(events)
+            if paid and refunded >= paid:
+                raise HTTPException(409, "This order was refunded in full, so there's nothing to ship.")
             if any(e["kind"] == "tracking_added"
                    and e["payload"].get("carrier") == body.carrier
                    and e["payload"].get("tracking_number") == body.tracking_number

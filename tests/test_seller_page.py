@@ -349,3 +349,54 @@ def test_seller_page_line_and_attention_treat_a_refund_as_an_answer():
     [out] = render({"env": "sandbox", "events": events})
     segs = re.findall(r'<li class="cl-stop[^"]*"[^>]*data-seg="(\w+)"', out["timeline"])
     assert segs == ["none", "settled", "held", "settled"]  # amber while asked, teal once refunded
+
+
+# ---- Today and shipping, from the live run ----------------------------------------------------
+
+PAID = [{"kind": "order_created", "created_at": 1, "payload": {"amount": "120.00", "currency": "USD"}},
+        {"kind": "payment_captured", "created_at": 2, "payload": {"status": "COMPLETED"}}]
+
+
+def dispute_event(status, decisions):
+    return {"kind": "dispute_created", "created_at": 3, "payload": {
+        "dispute_id": "D1", "status": status, "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+        "dispute_life_cycle_stage": "INQUIRY", "update_time": "2026-11-02T19:19:05.000Z",
+        "dispute_amount": {"currency_code": "USD", "value": "120.00"}, "allowed_decisions": decisions}}
+
+
+@pytest.mark.parametrize("status, decisions, title, action", [
+    ("WAITING_FOR_SELLER_RESPONSE", ["FIGHT"], "Respond to the inquiry", "Review and respond"),
+    ("UNDER_REVIEW", [], "Inquiry open", "View"),
+    ("WAITING_FOR_BUYER_RESPONSE", [], "Inquiry open", "View"),
+])
+def test_an_open_dispute_is_on_today_and_never_as_waiting_to_ship(status, decisions, title, action):
+    [out] = render({"env": "sandbox", "events": [*PAID, dispute_event(status, decisions)]})
+    [item] = out["today"]
+    assert item["title"].startswith(title) and item["action"] == action and item["tone"] == "disputed"
+    assert "waiting to ship" not in item["title"].lower()
+
+
+def test_a_dispute_paypal_is_reviewing_says_so_on_today():
+    [out] = render({"env": "sandbox", "events": [*PAID, dispute_event("UNDER_REVIEW", [])]})
+    assert out["today"][0]["when"] == "PayPal is reviewing this case"
+
+
+REFUND = {"kind": "refund_sent", "created_at": 3, "payload": {"amount": "120.00", "currency": "USD", "mode": "full"}}
+PART = {"kind": "refund_sent", "created_at": 3, "payload": {"amount": "20.00", "currency": "USD", "mode": "partial"}}
+BUYER = {"link": "/o/t", "requests": [], "refunds": [], "currency": "USD"}
+
+
+def test_a_fully_refunded_order_doesnt_offer_mark_shipped():
+    [out] = render({"env": "sandbox", "events": [*PAID, REFUND], "buyer": {**BUYER, "refundable": "0.00"}})
+    assert out["canShip"] is False and out["today"] == []
+
+
+def test_a_partly_refunded_order_can_still_ship():
+    [out] = render({"env": "sandbox", "events": [*PAID, PART], "buyer": {**BUYER, "refundable": "100.00"}})
+    assert out["canShip"] is True and out["today"][0]["title"] == "Paid, waiting to ship"
+
+
+def test_a_shipped_order_doesnt_offer_mark_shipped_again():
+    shipped = {"kind": "tracking_added", "created_at": 3, "payload": {"carrier": "DHL", "tracking_number": "1"}}
+    [out] = render({"env": "sandbox", "events": [*PAID, shipped], "buyer": {**BUYER, "refundable": "120.00"}})
+    assert out["canShip"] is False

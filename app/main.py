@@ -50,7 +50,7 @@ from .policy import POLICY_KEY, TRIGGER, NotInPolicy, Policy, day_start, decide,
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
 from .scheduler import run_every
-from .security import SecurityHeaders, forwarded_client
+from .security import HeadAsGet, SecurityHeaders, forwarded_client, request_view
 from .store import TimelineStore
 
 STATIC = Path(__file__).parent / "static"
@@ -508,6 +508,7 @@ def create_app(settings: Settings | None = None,
         return await call_next(request)
 
     # Added last, so they wrap require_seller too: its redirects and 401s get the headers and an id.
+    app.add_middleware(HeadAsGet)
     app.add_middleware(SecurityHeaders, production=settings.production, sdk_url=settings.sdk_url)
     app.add_middleware(RequestLog)
 
@@ -646,9 +647,10 @@ def create_app(settings: Settings | None = None,
                                                                "X-App-Version": app_version})
 
     @app.get("/api/system/status")
-    async def system_status():
+    async def system_status(request: Request):
         """Settings -> System status (seller only): the startup checks, run again now, and
-        what the app last heard. States and times only, never a value."""
+        what the app last heard. States and times only, never a value. "request" shows how
+        this very request arrived, with addresses masked."""
         checks, latency = await run_checks(settings, store, paypal)
         ai_provider = None
         with suppress(Exception):  # the check above has already said the database is down
@@ -658,6 +660,8 @@ def create_app(settings: Settings | None = None,
             last_webhook = store.get_setting(LAST_WEBHOOK_KEY)
         return {"checks": checks, "db_latency_ms": latency, "ai_provider": ai_provider,
                 "last_webhook": last_webhook, "version": app_version,
+                "request": request_view(request.headers, request.client and request.client.host,
+                                        client_ip(request)),
                 "last_sync": {k: sync_state[k] for k in ("last_synced_at", "trigger", "error", "counts")}}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.

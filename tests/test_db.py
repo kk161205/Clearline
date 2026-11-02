@@ -149,7 +149,8 @@ def test_healthz_is_public_and_says_only_ok(tmp_path):
     res = client.get("/healthz")
     assert res.status_code == 200 and res.json() == {"ok": True, "db": "ok"}
     assert res.headers["cache-control"] == "no-store" and res.headers["x-app-version"] == "local"
-    assert client.head("/healthz").status_code in (200, 405)
+    head = client.head("/healthz")
+    assert head.status_code == 200 and head.content == b""
 
 
 def test_healthz_is_503_when_the_database_is_down(tmp_path, monkeypatch, caplog):

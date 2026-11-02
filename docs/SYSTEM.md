@@ -509,9 +509,9 @@ the details.
 4. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
    1 MB, layout 256 KB, evidence 5 MB).
 5. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
-6. **`TRUSTED_PROXY_HOPS` is unconfirmed against Render's real header.** It's 1 as specified. If
-   Render's chain has more proxies than that, the IP in the login log lines won't be the client's;
-   comparing one with your own IP settles it.
+6. **The client IP on Render is wrong.** With `TRUSTED_PROXY_HOPS` at 1 the login logs show
+   private Render addresses, so per-IP login limits don't track real clients. Settings → System
+   status now shows how each request arrives; the fix follows from what it shows on Render.
 7. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
 
 ## 7. Configuration

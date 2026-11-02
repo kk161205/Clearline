@@ -740,6 +740,15 @@ loadBusiness();
 
 const when = (t) => t ? new Date(t * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "Not since the app started";
 
+function requestSeen(r) {
+  const ip = (a) => `${esc(a.ip)} (${esc(a.kind)})`;
+  const lines = [`Client IP we compute: ${ip(r.client)}`, `Connected from: ${ip(r.peer)}`,
+    `X-Forwarded-For: ${r.hops.length} hop${r.hops.length === 1 ? "" : "s"}, ${r.header_lines} header line${r.header_lines === 1 ? "" : "s"}`,
+    ...r.hops.map((h, i) => `Hop ${i + 1} from the left: ${ip(h)}`),
+    `Other address headers: ${r.headers.length ? r.headers.map(esc).join(", ") : "none"}`];
+  return lines.map((line) => `<div>${line}</div>`).join("");
+}
+
 function systemRows(s) {
   const mark = (ok) => ok === false ? '<span class="pill disputed">Problem</span> ' : "";
   const rows = s.checks.map((c) => [c.name, `${mark(c.ok)}${esc(c.detail)}`]);
@@ -748,7 +757,8 @@ function systemRows(s) {
             ["Last sync", sync.error ? `${mark(false)}${esc(sync.error)}` : `${esc(when(sync.last_synced_at))}${sync.trigger ? ` (${esc(sync.trigger)})` : ""}`],
             ["Active AI", esc(s.ai_provider || "None")],
             ["Database latency", s.db_latency_ms === null ? "Unknown" : `${esc(s.db_latency_ms)} ms`],
-            ["App version", esc(s.version)]);
+            ["App version", esc(s.version)],
+            ["Request as seen by the server", requestSeen(s.request)]);
   return rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
 }
 async function loadSystem() {

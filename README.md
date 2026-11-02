@@ -650,7 +650,9 @@ logs out at the end.
   error class, webhook verification the event type and a reason. Unexpected errors log their type,
   file and line, never a traceback or message, which could carry a provider's text.
 - **Settings → System status** (seller only) runs the same checks on demand, and adds the last
-  webhook, the last sync, the active AI, database latency and the version (Render's commit).
+  webhook, the last sync, the active AI, database latency and the version (Render's commit). Its
+  last row shows how your own request reached the app: the client IP computed, each
+  `X-Forwarded-For` hop (masked, public or private) and which other address headers arrived.
 
 ### Content-Security-Policy
 

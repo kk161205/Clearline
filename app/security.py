@@ -14,6 +14,7 @@ at all, so it has the default policy. /insights adds https://cdn.jsdelivr.net fo
 AG Grid builds its icon fonts into its script as data: URIs, so the two grid pages allow them.
 """
 
+import ipaddress
 import json
 import logging
 from urllib.parse import urlsplit
@@ -29,8 +30,11 @@ HSTS = "max-age=31536000"
 PERMISSIONS = "camera=(), microphone=(), geolocation=()"
 PAYPAL_ASSETS = "https://www.paypalobjects.com"
 AG_STUDIO_CDN = "https://cdn.jsdelivr.net"
+# Headers a proxy might set with the client's address. Shown by name on System status.
+CLIENT_IP_HEADERS = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "Forwarded")
 # FastAPI's own API pages, which only exist outside production. They load Swagger from a CDN.
 API_DOCS = ("/docs", "/redoc")
+NOT_PAGES = ("/api/", "/webhooks/", "/mcp")
 
 
 def policy(*, script: str = "", connect: str = "", frame: str = "", img: str = "", font: str = "") -> str:
@@ -73,6 +77,53 @@ def forwarded_client(header: str, hops: int = TRUSTED_PROXY_HOPS) -> str | None:
     the address it saw, so entries further left are whatever the client chose to send."""
     entries = [entry.strip() for entry in header.split(",") if entry.strip()]
     return entries[-hops] if len(entries) >= hops else None
+
+
+def describe_ip(value: str) -> dict:
+    """An address for System status: masked, and whether it's on the public internet. Takes
+    whatever a header held, so anything that isn't an address is shown as just that."""
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return {"ip": "not an IP", "kind": "invalid"}
+    if ip.version == 4:
+        shown = ".".join(str(ip).split(".")[:3]) + ".x"
+    else:
+        shown = ":".join(ip.exploded.split(":")[:3]) + ":x"
+    return {"ip": shown, "kind": "public" if ip.is_global else "private"}
+
+
+def request_view(headers, peer: str | None, client: str) -> dict:
+    """How one request reached the app, for working out which address is really the client's:
+    every X-Forwarded-For hop, left to right, and which address headers arrived (names only)."""
+    lines = headers.getlist("x-forwarded-for")
+    hops = [entry.strip() for line in lines for entry in line.split(",") if entry.strip()]
+    return {"client": describe_ip(client), "peer": describe_ip(peer or ""), "header_lines": len(lines),
+            "hops": [describe_ip(hop) for hop in hops],
+            "headers": [name for name in CLIENT_IP_HEADERS if name in headers]}
+
+
+class HeadAsGet:
+    """HEAD answers as GET does, without the body, on every page and /healthz. Render probes
+    with HEAD. The login check still applies: a signed-out HEAD redirects, as GET does.
+    The API, webhook and MCP routes declare their own methods, so they're left alone."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "HEAD" or scope["path"].startswith(NOT_PAGES):
+            await self.app(scope, receive, send)
+            return
+
+        async def headers_only(message):
+            if message["type"] == "http.response.body":
+                if not message.get("more_body"):
+                    await send({"type": "http.response.body", "body": b""})
+                return
+            await send(message)
+
+        await self.app({**scope, "method": "GET"}, receive, headers_only)
 
 
 class SecurityHeaders:

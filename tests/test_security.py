@@ -7,10 +7,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 
 from app.config import Settings
 from app.main import create_app
-from app.security import forwarded_client
+from app.buyer import buyer_token
+from app.security import describe_ip, forwarded_client, request_view
+from app.store import TimelineStore
 from tests.support import db_target, login_as, make_client
 
 ROOT = Path(__file__).parent.parent
@@ -166,8 +169,6 @@ def test_hsts_is_on_in_production(tmp_path):
 
 
 def test_a_buyer_link_page_keeps_its_stricter_referrer_policy(tmp_path):
-    from app.buyer import buyer_token
-    from app.store import TimelineStore
     client, settings = make_client(tmp_path)
     TimelineStore(settings.database_target).add("O1", "payment_captured", {"capture_id": "C1"})
     res = client.get(f"/o/{buyer_token(settings.app_secret, 'O1')}")
@@ -231,3 +232,80 @@ def test_public_pages_can_load_their_scripts_without_a_login(tmp_path):
 def test_page_scripts_are_served_only_by_name(seller):
     assert seller.get("/static/pages/seller.js").status_code == 200
     assert seller.get("/static/pages/nope.js").status_code == 404
+
+
+# ---- How a request arrived: Settings -> System status ------------------------------------------
+
+@pytest.mark.parametrize("value, ip, kind", [
+    ("104.28.215.83", "104.28.215.x", "public"),
+    ("10.26.23.136", "10.26.23.x", "private"),
+    ("192.168.1.9", "192.168.1.x", "private"),
+    ("172.16.0.1", "172.16.0.x", "private"),
+    ("100.64.0.1", "100.64.0.x", "private"),     # shared address space (RFC 6598)
+    ("127.0.0.1", "127.0.0.x", "private"),
+    ("169.254.1.1", "169.254.1.x", "private"),
+    ("2606:4700:4700::1111", "2606:4700:4700:x", "public"),
+    ("fd00::1", "fd00:0000:0000:x", "private"),
+    ("not-an-address", "not an IP", "invalid"),
+    ("<script>alert(1)</script>", "not an IP", "invalid"),
+])
+def test_addresses_are_masked_and_classified(value, ip, kind):
+    assert describe_ip(value) == {"ip": ip, "kind": kind}
+
+
+def test_request_view_lists_hops_and_header_names_only():
+    headers = Headers(raw=[(b"x-forwarded-for", b"104.28.215.83, 10.31.0.171"), (b"x-forwarded-for", b"10.26.23.136"),
+                           (b"cf-connecting-ip", b"104.28.215.83"), (b"x-real-ip", b"1.2.3.4")])
+    view = request_view(headers, "10.0.0.5", "10.26.23.136")
+    assert view["header_lines"] == 2 and [h["kind"] for h in view["hops"]] == ["public", "private", "private"]
+    assert view["client"] == {"ip": "10.26.23.x", "kind": "private"}
+    assert view["peer"] == {"ip": "10.0.0.x", "kind": "private"}
+    assert view["headers"] == ["CF-Connecting-IP", "X-Real-IP"]
+    assert "104.28.215.83" not in str(view) and "1.2.3.4" not in str(view)
+
+
+def test_system_status_shows_how_the_request_arrived_to_the_seller_only(tmp_path):
+    settings = Settings(**production(tmp_path))
+    client = TestClient(create_app(settings))
+    assert client.get("/api/system/status").status_code == 401
+    login_as(client, settings)
+    res = client.get("/api/system/status", headers={"X-Forwarded-For": "104.28.215.83, 10.26.23.136"})
+    request = res.json()["request"]
+    assert request["client"] == {"ip": "10.26.23.x", "kind": "private"}  # today's rule, shown as it is
+    assert len(request["hops"]) == 2 and "104.28.215.83" not in res.text
+
+
+# ---- HEAD ----------------------------------------------------------------------------------
+
+def test_head_answers_like_get_with_no_body_on_public_pages(tmp_path):
+    client, settings = make_client(tmp_path)
+    TimelineStore(settings.database_target).add("O1", "payment_captured", {"capture_id": "C1"})
+    client.cookies.clear()
+    for path in ("/", "/login", "/healthz", f"/o/{buyer_token(settings.app_secret, 'O1')}", "/static/ui.css"):
+        res = client.head(path)
+        assert res.status_code == 200 and res.content == b"", path
+        assert res.headers["content-type"] == client.get(path).headers["content-type"], path
+        assert res.headers["x-content-type-options"] == "nosniff" and res.headers["x-request-id"], path
+
+
+def test_head_on_seller_pages_follows_the_login_rules(seller, tmp_path):
+    for path in ("/seller", "/dashboard", "/insights", "/agents"):
+        res = seller.head(path)
+        assert res.status_code == 200 and res.content == b"", path
+    seller.post("/api/logout")
+    seller.cookies.clear()
+    res = seller.head("/seller", follow_redirects=False)
+    assert res.status_code == 303 and res.headers["location"] == "/login"
+
+
+def test_head_on_an_unknown_page_is_404_and_the_api_is_unchanged(seller):
+    assert seller.head("/nothing-here").status_code == 404
+    assert seller.head("/api/orders").status_code == 405
+    assert seller.head("/webhooks/paypal").status_code == 405
+
+
+def test_head_is_logged_as_head(tmp_path, caplog):
+    client, _ = make_client(tmp_path, login=False)
+    caplog.set_level(logging.INFO, logger="clearline")
+    client.head("/")
+    assert "HEAD / 200" in caplog.text

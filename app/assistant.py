@@ -224,10 +224,19 @@ def check_guardrails(rec: Recommendation, facts: dict) -> list[str]:
     return errors
 
 
+def seller_can_act(payload: dict) -> bool:
+    """The same test the seller page uses to show a recommendation at all."""
+    status = payload.get("status")
+    if status == "WAITING_FOR_SELLER_RESPONSE":
+        return True
+    return status not in ("RESOLVED", "WAITING_FOR_BUYER_RESPONSE") and bool(payload.get("allowed_decisions"))
+
+
 class Assistant:
     def __init__(self, store: TimelineStore, ai: AIClient):
         self.store = store
         self.ai = ai
+        self.running: set[tuple[str, str | None]] = set()  # (dispute, stage) being asked right now
 
     def latest_result(self, dispute_id: str) -> dict | None:
         """Most recent ai_recommendation or ai_failed event for a dispute."""
@@ -235,14 +244,40 @@ class Assistant:
                   if e["kind"] in ("ai_recommendation", "ai_failed")]
         return events[-1] if events else None
 
-    async def auto_recommend(self, dispute_id: str) -> None:
-        """Background hook after a new/changed dispute: only for matched orders that wait on
-        the seller, only when an AI key is configured, and never twice per PayPal update."""
+    def needs_recommendation(self, dispute_id: str) -> bool:
+        """True if the seller can act on this dispute and has no recommendation for its stage.
+        A failed attempt isn't retried for the same PayPal update, so an AI outage costs one try
+        per update rather than one every sync."""
         state = self.store.latest_dispute_state(dispute_id)
         if (not self.ai.configured or not state or state["order_id"].startswith("unmatched:")
-                or state["payload"].get("status") != "WAITING_FOR_SELLER_RESPONSE"):
+                or not seller_can_act(state["payload"])):
+            return False
+        events = self.store.dispute_events(dispute_id)
+        stage_at = {e["payload"].get("update_time"): e["payload"].get("dispute_life_cycle_stage")
+                    for e in events if e["kind"] in DISPUTE_KINDS}
+        stage = state["payload"].get("dispute_life_cycle_stage")
+        for e in events:
+            update_time = e["payload"].get("dispute_update_time")
+            if e["kind"] == "ai_recommendation" and stage == e["payload"].get("dispute_stage", stage_at.get(update_time)):
+                return False
+            if e["kind"] == "ai_failed" and update_time == state["payload"].get("update_time"):
+                return False
+        return True
+
+    async def auto_recommend(self, dispute_id: str) -> None:
+        """After any new or changed dispute, and on every sync: asks once per dispute and stage.
+        The webhook and a sync can arrive together, so one in flight stops the other."""
+        if not self.needs_recommendation(dispute_id):
             return
-        await self.recommend(dispute_id, trigger="auto")
+        stage = self.store.latest_dispute_state(dispute_id)["payload"].get("dispute_life_cycle_stage")
+        key = (dispute_id, stage)
+        if key in self.running:
+            return
+        self.running.add(key)
+        try:
+            await self.recommend(dispute_id, trigger="auto")
+        finally:
+            self.running.discard(key)
 
     async def recommend(self, dispute_id: str, *, force: bool = False,
                         trigger: str = "regenerate") -> dict | None:
@@ -260,6 +295,7 @@ class Assistant:
             return None
 
         base = {"dispute_id": dispute_id, "dispute_update_time": update_time,
+                "dispute_stage": state["payload"].get("dispute_life_cycle_stage"),
                 "prompt_version": PROMPT_VERSION, "trigger": trigger}
         facts = build_facts(self.store, order_id, dispute_id)
         try:

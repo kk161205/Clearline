@@ -126,7 +126,6 @@ gantt
 | Item | Who | Blocked on you? |
 |---|---|---|
 | Render environment clean-up (delete the retired variables) | You (Render dashboard) | **Yes** |
-| Fix: AI recommendation on `dispute_updated` | Claude, once you approve | Decision only |
 | Invoice part 2 (`--only invoice-overdue`) from 4 Nov UTC | Claude or you | No |
 | Demo data reset, Playwright walk | Claude | Sandbox buyer steps are yours |
 | AG Studio 45-day trial (request on 7–8 Nov, lasts to about 22 Dec) | You (email AG Grid) | **Yes** |

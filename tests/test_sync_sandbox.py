@@ -113,12 +113,12 @@ def test_paypal_errors_read_as_sentences():
 @respx.mock
 def test_regenerate_is_recorded_as_trigger(tmp_path):
     setup_paypal()
-    DisputeOnPayPal(status="UNDER_REVIEW", dispute_life_cycle_stage="CHARGEBACK")
+    DisputeOnPayPal(status="UNDER_REVIEW", dispute_life_cycle_stage="CHARGEBACK", links=[])
     gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
     client, _ = make_client(tmp_path)
     shipped_order(client)
     open_dispute(client)
-    assert not gemini.called  # UNDER_REVIEW: no automatic run
+    assert not gemini.called  # the seller can't act on it: no automatic run
     client.post(f"/api/disputes/{DISPUTE_ID}/recommendation")
     [rec] = events(client, "ORDER1", "ai_recommendation")
     assert rec["payload"]["trigger"] == "regenerate"

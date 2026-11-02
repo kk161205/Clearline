@@ -1305,7 +1305,7 @@ def create_app(settings: Settings | None = None,
                 error = str(err)
         store_dispute(kind, dispute, dispute_id=dispute_id,
                       extra={"event_id": event.get("id")}, error=error)
-        if kind == "dispute_created" and dispute_id:
+        if dispute_id:  # PayPal often says UNDER_REVIEW first, and the seller's turn in an update
             await assistant.auto_recommend(dispute_id)
 
     def store_dispute(kind: str, dispute: dict, *, dispute_id: str | None, extra: dict,
@@ -1570,7 +1570,8 @@ def create_app(settings: Settings | None = None,
 
     async def pull_disputes() -> tuple[dict, list[str]]:
         """Pull disputes from PayPal and record the ones that are new or changed since we last
-        stored them (same recording path as webhooks; unchanged ones add no rows)."""
+        stored them (same recording path as webhooks; unchanged ones add no rows). Returns the
+        counts and the disputes to pass to auto_recommend."""
         items = await paypal.list_disputes()
         counts = {"listed": len(items), "new": 0, "changed": 0, "unchanged": 0, "failed": 0}
         changed = []
@@ -1593,7 +1594,10 @@ def create_app(settings: Settings | None = None,
                           extra={"source": "sync"})
             counts["changed" if known else "new"] += 1
             changed.append(dispute_id)
-        return counts, changed
+        # Unchanged disputes too: one that reached the seller's turn with no recommendation gets one.
+        waiting = [i["dispute_id"] for i in items if i.get("dispute_id") and i["dispute_id"] not in changed
+                   and assistant.needs_recommendation(i["dispute_id"])]
+        return counts, changed + waiting
 
     # ---- Sandbox-only test helper --------------------------------------------
 

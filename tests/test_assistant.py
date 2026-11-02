@@ -1,16 +1,18 @@
 """Day 3: evidence pack, guardrails, one-tap actions and dispute sync (no network)."""
 
+import asyncio
 import json
 
 import httpx
+import pytest
 import respx
 
-from app.assistant import Recommendation, check_guardrails
+from app.assistant import Assistant, Recommendation, check_guardrails, seller_can_act
 from app.store import TimelineStore
 from tests.support import (API, DISPUTE_ID, GEMINI, GROQ, PAYER_EMAIL, DisputeOnPayPal, ai_reply,
-                           events, fight, kinds, make_client, multipart_json, offer,
+                           db_target, events, fight, full_dispute, kinds, make_client, multipart_json, offer,
                            open_dispute, setup_paypal, shipped_order)
-from tests.test_webhooks import capture_order
+from tests.test_webhooks import capture_order, post_event
 
 DISPUTES = f"{API}/v1/customer/disputes"
 FACTS = {"tracking.carrier": "DHL", "tracking.number": "1234567890",
@@ -127,7 +129,7 @@ def test_prompt_contains_facts_but_no_pii(tmp_path):
 # ---- When it runs ------------------------------------------------------------
 
 @respx.mock
-def test_runs_after_dispute_webhook_once_per_update_time(tmp_path):
+def test_runs_after_dispute_webhook_once_per_stage(tmp_path):
     setup_paypal()
     paypal = DisputeOnPayPal()
     gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
@@ -144,15 +146,13 @@ def test_runs_after_dispute_webhook_once_per_update_time(tmp_path):
     client.post(f"/api/disputes/{DISPUTE_ID}/recommendation")
     assert gemini.call_count == 2
 
-    # A real change on PayPal (new update_time) picked up by Sync gets a new recommendation.
+    # A later update in the same stage, picked up by Sync: one per stage, so nothing new.
     paypal.data["update_time"] = "2026-10-27T09:00:00.000Z"
     respx.get(DISPUTES).mock(return_value=httpx.Response(200, json={"items": [
         {"dispute_id": DISPUTE_ID, "update_time": "2026-10-27T09:00:00.000Z",
          "status": "WAITING_FOR_SELLER_RESPONSE"}], "links": []}))
     client.post("/api/disputes/sync")
-    assert gemini.call_count == 3
-    latest = client.get(f"/api/disputes/{DISPUTE_ID}/recommendation").json()
-    assert latest["payload"]["dispute_update_time"] == "2026-10-27T09:00:00.000Z"
+    assert gemini.call_count == 2
 
 
 @respx.mock
@@ -426,3 +426,129 @@ def test_current_state_uses_latest_update_time(tmp_path):
                                            "update_time": "2026-10-26T17:00:00.000Z"})
     state = store.latest_dispute_state("D1")
     assert state["kind"] == "dispute_updated" and state["payload"]["status"] == "UNDER_REVIEW"
+
+
+# ---- When a recommendation is asked for: the live sequence ---------------------------------
+
+def under_review() -> dict:
+    return {"status": "UNDER_REVIEW", "update_time": "2026-11-02T19:19:05.000Z",
+            "links": [{"rel": "self", "method": "GET", "href": "x"}], "allowed_response_options": {}}
+
+
+def waiting() -> dict:
+    return {"status": "WAITING_FOR_SELLER_RESPONSE", "update_time": "2026-11-02T19:19:35.000Z"}
+
+
+def live_sequence(client, paypal):
+    """What PayPal really sent on 2 Nov: created UNDER_REVIEW, then updated 30 s later."""
+    paypal.data.update(under_review())
+    open_dispute(client)
+    paypal.data.update(waiting())
+    return post_event(client, {"id": "WH-EVT-2", "event_type": "CUSTOMER.DISPUTE.UPDATED",
+                               "resource": {"dispute_id": DISPUTE_ID}})
+
+
+@respx.mock
+def test_the_live_sequence_makes_exactly_one_recommendation(tmp_path):
+    client, _ = make_client(tmp_path)
+    setup_paypal()
+    shipped_order(client)
+    paypal = DisputeOnPayPal()
+    gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
+    live_sequence(client, paypal)
+    assert gemini.call_count == 1
+    [rec] = events(client, "ORDER1", "ai_recommendation")
+    assert rec["payload"]["trigger"] == "auto" and rec["payload"]["dispute_stage"] == "INQUIRY"
+    # And nothing more from a repeat, a sync, or a later update in the same stage.
+    paypal.data["update_time"] = "2026-11-02T19:30:00.000Z"
+    post_event(client, {"id": "WH-EVT-3", "event_type": "CUSTOMER.DISPUTE.UPDATED",
+                        "resource": {"dispute_id": DISPUTE_ID}})
+    respx.get(f"{API}/v1/customer/disputes").mock(return_value=httpx.Response(200, json={"items": [paypal.data], "links": []}))
+    respx.get(f"{API}/v2/invoicing/invoices").mock(return_value=httpx.Response(200, json={"items": []}))
+    assert client.post("/api/disputes/sync").status_code == 200
+    assert gemini.call_count == 1 and len(events(client, "ORDER1", "ai_recommendation")) == 1
+
+
+@respx.mock
+def test_a_sync_gives_a_waiting_dispute_its_missing_recommendation(tmp_path):
+    client, settings = make_client(tmp_path)
+    setup_paypal()
+    shipped_order(client)
+    paypal = DisputeOnPayPal()
+    gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
+    TimelineStore(settings.database_target).add("ORDER1", "dispute_created", {  # no recommendation
+        "dispute_id": DISPUTE_ID, "status": "WAITING_FOR_SELLER_RESPONSE", "reason": full_dispute()["reason"],
+        "update_time": paypal.data["update_time"], "dispute_life_cycle_stage": "INQUIRY"})
+    respx.get(f"{API}/v1/customer/disputes").mock(return_value=httpx.Response(200, json={"items": [paypal.data], "links": []}))
+    respx.get(f"{API}/v2/invoicing/invoices").mock(return_value=httpx.Response(200, json={"items": []}))
+    counts = client.post("/api/disputes/sync").json()
+    assert counts["unchanged"] == 1 and gemini.call_count == 1
+    assert len(events(client, "ORDER1", "ai_recommendation")) == 1
+
+
+@respx.mock
+def test_a_new_stage_gets_its_own_recommendation(tmp_path):
+    client, _ = make_client(tmp_path)
+    setup_paypal()
+    shipped_order(client)
+    paypal = DisputeOnPayPal()
+    gemini = respx.post(GEMINI).mock(return_value=ai_reply(fight()))
+    open_dispute(client)
+    paypal.data.update({"dispute_life_cycle_stage": "CHARGEBACK", "update_time": "2026-11-03T09:00:00.000Z"})
+    post_event(client, {"id": "WH-EVT-2", "event_type": "CUSTOMER.DISPUTE.UPDATED",
+                        "resource": {"dispute_id": DISPUTE_ID}})
+    stages = [e["payload"]["dispute_stage"] for e in events(client, "ORDER1", "ai_recommendation")]
+    assert gemini.call_count >= 2 and stages == ["INQUIRY", "CHARGEBACK"]
+
+
+def test_no_two_requests_at_once_for_one_dispute_and_stage(tmp_path):
+    store = TimelineStore(db_target(tmp_path))
+    store.add("O1", "dispute_created", {"dispute_id": "D1", "status": "WAITING_FOR_SELLER_RESPONSE",
+                                        "update_time": "t1", "dispute_life_cycle_stage": "INQUIRY"})
+    calls = []
+
+    class SlowAI:
+        configured = True
+
+    assistant = Assistant(store, SlowAI())
+
+    async def recommend(dispute_id, *, trigger, force=False):
+        calls.append(dispute_id)
+        await asyncio.sleep(0.01)
+
+    assistant.recommend = recommend
+
+    async def together():
+        await asyncio.gather(*(assistant.auto_recommend("D1") for _ in range(3)))
+
+    asyncio.run(together())
+    assert calls == ["D1"] and assistant.running == set()
+
+
+def test_a_failed_attempt_waits_for_the_next_paypal_update(tmp_path):
+    store = TimelineStore(db_target(tmp_path))
+
+    class AI:
+        configured = True
+
+    state = {"dispute_id": "D1", "status": "WAITING_FOR_SELLER_RESPONSE", "update_time": "t1",
+             "dispute_life_cycle_stage": "INQUIRY"}
+    store.add("O1", "dispute_created", state)
+    assistant = Assistant(store, AI())
+    assert assistant.needs_recommendation("D1")
+    store.add("O1", "ai_failed", {"dispute_id": "D1", "dispute_update_time": "t1", "error": "x"})
+    assert not assistant.needs_recommendation("D1")  # no AI call on every 3-minute sync
+    store.add("O1", "dispute_updated", {**state, "update_time": "t2"})
+    assert assistant.needs_recommendation("D1")
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"status": "WAITING_FOR_SELLER_RESPONSE"}, True),
+    ({"status": "UNDER_REVIEW", "allowed_decisions": ["REFUND"]}, True),
+    ({"status": "UNDER_REVIEW", "allowed_decisions": []}, False),
+    ({"status": "UNDER_REVIEW"}, False),
+    ({"status": "WAITING_FOR_BUYER_RESPONSE", "allowed_decisions": ["REFUND"]}, False),
+    ({"status": "RESOLVED", "allowed_decisions": ["REFUND"]}, False),
+])
+def test_when_the_seller_can_act(payload, expected):
+    assert seller_can_act(payload) is expected

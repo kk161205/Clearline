@@ -742,7 +742,7 @@ const when = (t) => t ? new Date(t * 1000).toLocaleString("en-GB", { dateStyle: 
 
 function requestSeen(r) {
   const ip = (a) => `${esc(a.ip)} (${esc(a.kind)})`;
-  const lines = [`Client IP we compute: ${ip(r.client)}`, `Connected from: ${ip(r.peer)}`,
+  const lines = [`Client IP we compute: ${ip(r.client)}`, `Connected from (as uvicorn reports it, untrusted): ${ip(r.peer)}`,
     `X-Forwarded-For: ${r.hops.length} hop${r.hops.length === 1 ? "" : "s"}, ${r.header_lines} header line${r.header_lines === 1 ? "" : "s"}`,
     ...r.hops.map((h, i) => `Hop ${i + 1} from the left: ${ip(h)}`),
     `Other address headers: ${r.headers.length ? r.headers.map(esc).join(", ") : "none"}`];

@@ -23,8 +23,14 @@ from .logsafe import redact_path, where
 
 log = logging.getLogger("clearline.security")
 
-# Proxies between the client and the app, each appending one X-Forwarded-For hop: Render's.
-TRUSTED_PROXY_HOPS = 1
+# Cloudflare's published ranges, from https://www.cloudflare.com/ips/ (ips-v4 and ips-v6), matching
+# api.cloudflare.com/client/v4/ips, on 2 Nov 2026. Render sits behind Cloudflare.
+CLOUDFLARE_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+    "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+    "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32"))
 
 HSTS = "max-age=31536000"
 PERMISSIONS = "camera=(), microphone=(), geolocation=()"
@@ -72,25 +78,61 @@ def csp_for(path: str, sdk_url: str) -> str | None:
     return DEFAULT_CSP
 
 
-def forwarded_client(header: str, hops: int = TRUSTED_PROXY_HOPS) -> str | None:
-    """The client's IP from X-Forwarded-For: the Nth entry from the right. Each proxy appends
-    the address it saw, so entries further left are whatever the client chose to send."""
-    entries = [entry.strip() for entry in header.split(",") if entry.strip()]
-    return entries[-hops] if len(entries) >= hops else None
+def parse_ip(value: str):
+    """An address from a header, or None. An IPv4 address written as IPv6 counts as IPv4."""
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    return getattr(ip, "ipv4_mapped", None) or ip
+
+
+def is_cloudflare(ip) -> bool:
+    return any(ip in network for network in CLOUDFLARE_NETWORKS)
+
+
+def forwarded_client(header: str) -> str | None:
+    """The client's IP from X-Forwarded-For, whose chain on Render ends: client, Cloudflare edge,
+    Render's internal proxies. Each proxy appends the address it saw, so anything further left is
+    whatever the client chose to send.
+
+    From the right: skip the private hops (RFC 1918, shared, loopback, link-local), then at most
+    one Cloudflare hop, and the next address is the client. Only one, because a client can itself
+    be on a Cloudflare address (WARP's exits are): skipping every Cloudflare address would then walk
+    on to a value the client wrote. None when the chain doesn't look like that."""
+    entries = [parse_ip(entry) for entry in reversed(header.split(",")) if entry.strip()]
+    while entries and entries[0] is not None and not entries[0].is_global:
+        entries.pop(0)
+    if entries and entries[0] is not None and is_cloudflare(entries[0]):
+        entries.pop(0)
+    if not entries or entries[0] is None or not entries[0].is_global:
+        return None
+    return str(entries[0])
+
+
+def peer_address(request) -> str | None:
+    """What uvicorn reports as the client. Never trust it on Render: with its forwarded-allow-ips
+    setting uvicorn rewrites it from the left end of X-Forwarded-For, which the client controls.
+    Only client_ip() outside Render, and the System status row that shows it as untrusted, read it."""
+    return request.client.host if request.client else None
+
+
+def same_address(reported: str, computed: str) -> bool:
+    return parse_ip(reported) == parse_ip(computed)
 
 
 def describe_ip(value: str) -> dict:
     """An address for System status: masked, and whether it's on the public internet. Takes
     whatever a header held, so anything that isn't an address is shown as just that."""
-    try:
-        ip = ipaddress.ip_address(value.strip())
-    except ValueError:
+    ip = parse_ip(value)
+    if ip is None:
         return {"ip": "not an IP", "kind": "invalid"}
     if ip.version == 4:
         shown = ".".join(str(ip).split(".")[:3]) + ".x"
     else:
         shown = ":".join(ip.exploded.split(":")[:3]) + ":x"
-    return {"ip": shown, "kind": "public" if ip.is_global else "private"}
+    kind = "private" if not ip.is_global else "Cloudflare" if is_cloudflare(ip) else "public"
+    return {"ip": shown, "kind": kind}
 
 
 def request_view(headers, peer: str | None, client: str) -> dict:

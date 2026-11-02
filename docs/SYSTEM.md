@@ -479,8 +479,13 @@ The same component (`history.js`) is used on `/seller` and in the dashboard's si
   app then refuses to start if `DATABASE_URL`, `APP_SECRET` (at least 32 characters), the PayPal id
   and secret or `PAYPAL_WEBHOOK_ID` is missing, or `ALLOW_UNVERIFIED_WEBHOOKS` is on. It names the
   setting and never its value. `/docs`, `/redoc` and `/openapi.json` don't exist there.
-- **Client IP.** Behind Render's proxy, `client_ip` takes the `TRUSTED_PROXY_HOPS`th entry of
-  `X-Forwarded-For` from the right (default 1), so values a client adds on the left change nothing.
+- **Client IP.** On Render the chain is client, Cloudflare edge, Render's internal proxies. From
+  the right of `X-Forwarded-For`, `client_ip` skips private hops, then at most one Cloudflare hop
+  (ranges in `app/security.py`, with their source and date), and the next address is the client.
+  Only one, because a client on WARP has a Cloudflare address too. If the chain doesn't look like
+  that the IP is `unknown`, so values a client adds on the left never win. `CF-Connecting-IP` is
+  only a cross-check: if it differs, one WARNING per process, masked. uvicorn's own client value
+  comes from the left end of the header, so nothing relies on it.
 - **Headers on every response, redirects and errors included:** `X-Content-Type-Options`,
   `Referrer-Policy: strict-origin-when-cross-origin`, a minimal `Permissions-Policy`, CSP with
   `frame-ancestors 'none'`, and HSTS in production.
@@ -509,10 +514,7 @@ the details.
 4. **No overall request size limit.** Only specific limits exist (MCP body 1 MB, AI turn
    1 MB, layout 256 KB, evidence 5 MB).
 5. **AG Studio licence.** No key is set on Render, so `/insights` shows the trial watermark.
-6. **The client IP on Render is wrong.** With `TRUSTED_PROXY_HOPS` at 1 the login logs show
-   private Render addresses, so per-IP login limits don't track real clients. Settings → System
-   status now shows how each request arrives; the fix follows from what it shows on Render.
-7. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
+6. **Every seller account sees the same single shop.** Accounts are for login, not separate shops.
 
 ## 7. Configuration
 
@@ -540,7 +542,7 @@ headers. `RENDER_EXTERNAL_URL` is the public base URL.
 the SQLite file (default `clearline.db`). `ALLOW_UNVERIFIED_WEBHOOKS` accepts webhooks that fail
 verification; the app refuses to start with it on in production.
 
-**Code constants:** `PAYPAL_ENV` (`sandbox`), `TRUSTED_PROXY_HOPS` (1), `GEMINI_MODEL`, `GROQ_MODEL`,
+**Code constants:** `PAYPAL_ENV` (`sandbox`), `GEMINI_MODEL`, `GROQ_MODEL`,
 `AI_TIMEOUT_SECONDS` (20).
 
 **Settings → Business (database):** seller name, seller country and the auto-sync interval, with

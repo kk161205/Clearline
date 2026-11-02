@@ -36,35 +36,110 @@ def csp(response) -> dict[str, str]:
 
 # ---- The client's IP ---------------------------------------------------------------------
 
-@pytest.mark.parametrize("header, hops, expected", [
-    ("198.51.100.7", 1, "198.51.100.7"),
-    ("1.2.3.4, 198.51.100.7", 1, "198.51.100.7"),   # what the client sent stays on the left
-    ("1.2.3.4, 5.6.7.8, 198.51.100.7", 2, "5.6.7.8"),
-    ("198.51.100.7", 2, None),                       # fewer hops than proxies: not trusted
-    ("", 1, None),
+LIVE_CHAIN = "106.219.147.116, 104.23.213.7, 10.29.147.20"  # measured on Render, 2 Nov 2026
+
+
+@pytest.mark.parametrize("header, expected", [
+    (LIVE_CHAIN, "106.219.147.116"),
+    ("1.2.3.4, " + LIVE_CHAIN, "106.219.147.116"),                 # spoofed on the left
+    ("8.8.8.8, 1.2.3.4, " + LIVE_CHAIN, "106.219.147.116"),
+    ("106.219.147.116, 104.23.213.7, 10.29.147.20, 10.31.0.171", "106.219.147.116"),  # two internal hops
+    ("106.219.147.116, 10.29.147.20", "106.219.147.116"),          # no Cloudflare in front
+    ("106.219.147.116", "106.219.147.116"),
+    ("2a00:1450:4001:81b::200e, 104.23.213.7, 10.29.147.20", "2a00:1450:4001:81b::200e"),  # IPv6 client
+    ("1.2.3.4, 2a00:1450:4001:81b::200e, 104.23.213.7, 10.29.147.20", "2a00:1450:4001:81b::200e"),
+    ("106.219.147.116, 2606:4700:10::6816:1, 10.29.147.20", "106.219.147.116"),  # Cloudflare IPv6 edge
+    ("106.219.147.116, 2a06:98c0:3600::103, fd00::1", "106.219.147.116"),
+    ("::ffff:106.219.147.116, ::ffff:104.23.213.7, 10.29.147.20", "106.219.147.116"),  # IPv4 as IPv6
+    ("104.28.215.83, 104.23.213.7, 10.29.147.20", "104.28.215.83"),    # a client on WARP: Cloudflare's own range
+    ("1.2.3.4, 104.28.215.83, 104.23.213.7, 10.29.147.20", "104.28.215.83"),  # ... can't spoof past that
+    ("10.0.0.1, 192.168.1.1, 100.64.0.1, 127.0.0.1, 169.254.0.1", None),      # only private hops
+    ("1.2.3.4, 10.9.9.9, 104.23.213.7, 10.29.147.20", None),       # a private "client": don't walk on
+    ("104.23.213.7, 10.29.147.20", None),                          # nothing left of the edge
+    ("garbage, 104.23.213.7, 10.29.147.20", None),
+    ("1.2.3.4, garbage, 10.29.147.20", None),
+    ("1.2.3.4:5678, 104.23.213.7", None),
+    ("", None),
 ])
-def test_forwarded_client_counts_from_the_right(header, hops, expected):
-    assert forwarded_client(header, hops) == expected
+def test_forwarded_client_finds_the_address_cloudflare_saw(header, expected):
+    assert forwarded_client(header) == expected
+
+
+def proxied(tmp_path, **overrides):
+    return TestClient(create_app(Settings(**production(tmp_path, **overrides))))
+
+
+def login_from(client, forwarded=None, **headers):
+    if forwarded is not None:
+        headers["X-Forwarded-For"] = forwarded
+    return client.post("/api/login", json={"email": "a@example.com", "password": "nope"}, headers=headers)
 
 
 def test_spoofed_leading_values_do_not_change_the_rate_limit_key(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="clearline")
-    client = TestClient(create_app(Settings(**production(tmp_path))))
+    client = proxied(tmp_path)
     for attempt in range(21):  # the limit is 20 per IP; a fresh left-hand value on each try
-        forwarded = f"10.9.8.{attempt}, 198.51.100.7"
-        res = client.post("/api/login", json={"email": "a@example.com", "password": "nope"},
-                          headers={"X-Forwarded-For": forwarded})
+        res = login_from(client, f"10.9.8.{attempt}, 7.7.7.{attempt}, " + LIVE_CHAIN)
     assert res.status_code == 429
-    assert "Login blocked: too many attempts from 198.51.100.7" in caplog.text
-    assert "10.9.8." not in caplog.text
+    assert "Login blocked: too many attempts from 106.219.147.116" in caplog.text
+    assert "7.7.7." not in caplog.text
+
+
+def test_different_clients_have_different_rate_limit_keys(tmp_path):
+    client = proxied(tmp_path)
+    for _ in range(20):
+        login_from(client, LIVE_CHAIN)
+    assert login_from(client, LIVE_CHAIN).status_code == 429
+    assert login_from(client, "49.36.1.2, 104.23.213.7, 10.29.147.20").status_code == 401
+
+
+def test_a_chain_with_nothing_left_is_unknown_and_never_uvicorns_value(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="clearline")
+    login_from(proxied(tmp_path), "10.0.0.1, 10.0.0.2")
+    assert "from unknown" in caplog.text and "testclient" not in caplog.text
+
+
+def test_cf_connecting_ip_is_never_the_source(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="clearline")
+    login_from(proxied(tmp_path), LIVE_CHAIN, **{"CF-Connecting-IP": "9.9.9.9", "True-Client-IP": "8.8.4.4"})
+    assert "from 106.219.147.116" in caplog.text and "from 9.9.9.9" not in caplog.text
+
+
+def test_a_differing_cf_connecting_ip_warns_once_and_masked(tmp_path, caplog):
+    client = proxied(tmp_path)
+    for _ in range(3):
+        login_from(client, LIVE_CHAIN, **{"CF-Connecting-IP": "9.9.9.9"})
+    warnings = [r.getMessage() for r in caplog.records if "Client IP check" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "9.9.9.x" in warnings[0] and "106.219.147.x" in warnings[0]
+    assert "9.9.9.9" not in warnings[0] and "106.219.147.116" not in warnings[0]
+
+
+def test_a_matching_cf_connecting_ip_is_quiet(tmp_path, caplog):
+    login_from(proxied(tmp_path), LIVE_CHAIN, **{"CF-Connecting-IP": "106.219.147.116"})
+    assert "Client IP check" not in caplog.text
+
+
+def test_only_one_function_reads_uvicorns_client():
+    uses = []
+    for path in (ROOT / "app").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        uses += [(path.name, text[:m.start()].rfind("\ndef ")) for m in
+                 re.finditer(r"request\.client\b|\.client\.host|scope\[[\"']client[\"']\]|scope\.get\([\"']client", text)]
+    security = (ROOT / "app/security.py").read_text(encoding="utf-8")
+    start = security.index("\ndef peer_address(")
+    assert {name for name, _ in uses} == {"security.py"}, uses  # only peer_address, below
+    assert {at for _, at in uses} == {start}, uses
+    callers = (ROOT / "app/main.py").read_text(encoding="utf-8").count("peer_address(request)")
+    assert callers == 2  # client_ip() outside Render, and the System status row
 
 
 def test_x_forwarded_for_is_ignored_without_a_trusted_proxy(tmp_path, caplog):
     client, _ = make_client(tmp_path, login=False)
     caplog.set_level(logging.INFO, logger="clearline")
     client.post("/api/login", json={"email": "a@example.com", "password": "nope"},
-                headers={"X-Forwarded-For": "198.51.100.7"})
-    assert "from testclient" in caplog.text and "198.51.100.7" not in caplog.text
+                headers={"X-Forwarded-For": "106.219.147.116"})
+    assert "from testclient" in caplog.text and "106.219.147.116" not in caplog.text
 
 
 # ---- Production mode ---------------------------------------------------------------------
@@ -237,14 +312,16 @@ def test_page_scripts_are_served_only_by_name(seller):
 # ---- How a request arrived: Settings -> System status ------------------------------------------
 
 @pytest.mark.parametrize("value, ip, kind", [
-    ("104.28.215.83", "104.28.215.x", "public"),
+    ("106.219.147.116", "106.219.147.x", "public"),
+    ("104.23.213.7", "104.23.213.x", "Cloudflare"),
     ("10.26.23.136", "10.26.23.x", "private"),
     ("192.168.1.9", "192.168.1.x", "private"),
     ("172.16.0.1", "172.16.0.x", "private"),
     ("100.64.0.1", "100.64.0.x", "private"),     # shared address space (RFC 6598)
     ("127.0.0.1", "127.0.0.x", "private"),
     ("169.254.1.1", "169.254.1.x", "private"),
-    ("2606:4700:4700::1111", "2606:4700:4700:x", "public"),
+    ("2606:4700:4700::1111", "2606:4700:4700:x", "Cloudflare"),
+    ("2a00:1450:4001::1", "2a00:1450:4001:x", "public"),
     ("fd00::1", "fd00:0000:0000:x", "private"),
     ("not-an-address", "not an IP", "invalid"),
     ("<script>alert(1)</script>", "not an IP", "invalid"),
@@ -254,14 +331,14 @@ def test_addresses_are_masked_and_classified(value, ip, kind):
 
 
 def test_request_view_lists_hops_and_header_names_only():
-    headers = Headers(raw=[(b"x-forwarded-for", b"104.28.215.83, 10.31.0.171"), (b"x-forwarded-for", b"10.26.23.136"),
-                           (b"cf-connecting-ip", b"104.28.215.83"), (b"x-real-ip", b"1.2.3.4")])
+    headers = Headers(raw=[(b"x-forwarded-for", b"106.219.147.116, 10.31.0.171"), (b"x-forwarded-for", b"10.26.23.136"),
+                           (b"cf-connecting-ip", b"106.219.147.116"), (b"x-real-ip", b"1.2.3.4")])
     view = request_view(headers, "10.0.0.5", "10.26.23.136")
     assert view["header_lines"] == 2 and [h["kind"] for h in view["hops"]] == ["public", "private", "private"]
     assert view["client"] == {"ip": "10.26.23.x", "kind": "private"}
     assert view["peer"] == {"ip": "10.0.0.x", "kind": "private"}
     assert view["headers"] == ["CF-Connecting-IP", "X-Real-IP"]
-    assert "104.28.215.83" not in str(view) and "1.2.3.4" not in str(view)
+    assert "106.219.147.116" not in str(view) and "1.2.3.4" not in str(view)
 
 
 def test_system_status_shows_how_the_request_arrived_to_the_seller_only(tmp_path):
@@ -269,10 +346,11 @@ def test_system_status_shows_how_the_request_arrived_to_the_seller_only(tmp_path
     client = TestClient(create_app(settings))
     assert client.get("/api/system/status").status_code == 401
     login_as(client, settings)
-    res = client.get("/api/system/status", headers={"X-Forwarded-For": "104.28.215.83, 10.26.23.136"})
+    res = client.get("/api/system/status", headers={"X-Forwarded-For": LIVE_CHAIN})
     request = res.json()["request"]
-    assert request["client"] == {"ip": "10.26.23.x", "kind": "private"}  # today's rule, shown as it is
-    assert len(request["hops"]) == 2 and "104.28.215.83" not in res.text
+    assert request["client"] == {"ip": "106.219.147.x", "kind": "public"}
+    assert [h["kind"] for h in request["hops"]] == ["public", "Cloudflare", "private"]
+    assert "106.219.147.116" not in res.text
 
 
 # ---- HEAD ----------------------------------------------------------------------------------

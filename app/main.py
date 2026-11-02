@@ -50,7 +50,8 @@ from .policy import POLICY_KEY, TRIGGER, NotInPolicy, Policy, day_start, decide,
 from .paypal import (PayPalClient, PayPalError, allowed_actions, capture_id_from,
                      dispute_summary, disputed_capture_ids, parent_capture_id)
 from .scheduler import run_every
-from .security import HeadAsGet, SecurityHeaders, forwarded_client, request_view
+from .security import (HeadAsGet, SecurityHeaders, describe_ip, forwarded_client, peer_address,
+                       request_view, same_address)
 from .store import TimelineStore
 
 STATIC = Path(__file__).parent / "static"
@@ -394,7 +395,7 @@ def create_app(settings: Settings | None = None,
         if setup["code"] and store.count_users():
             setup["code"] = None
         return bool(setup["code"])
-    health = {"down": False}
+    health = {"down": False, "ip_mismatch_logged": False}
     app_version = (settings.render_git_commit or "local")[:7]
     login_limit = RateLimiter(limit=20, window=15 * 60)  # login attempts per IP
     setup_limit = RateLimiter(limit=10, window=15 * 60)  # setup attempts per IP
@@ -458,12 +459,18 @@ def create_app(settings: Settings | None = None,
     # ---- Seller accounts: everything not public needs a signed-in seller ------------
 
     def client_ip(request: Request) -> str:
-        """The client's IP: from X-Forwarded-For only behind a trusted proxy, counted from the
-        right, because the left end is whatever the client sent."""
-        if settings.trust_proxy:
-            if forwarded := forwarded_client(request.headers.get("x-forwarded-for", "")):
-                return forwarded
-        return request.client.host if request.client else "unknown"
+        """The client's IP, for everything that needs one. On Render it's worked out from the
+        chain of proxies; elsewhere no proxy is trusted and it's the connection's own address."""
+        if not settings.trust_proxy:
+            return peer_address(request) or "unknown"
+        client = forwarded_client(",".join(request.headers.getlist("x-forwarded-for"))) or "unknown"
+        cloudflare = request.headers.get("cf-connecting-ip")
+        if cloudflare and not same_address(cloudflare, client) and not health["ip_mismatch_logged"]:
+            health["ip_mismatch_logged"] = True  # once per process: this is a signal, not a stream
+            log.warning("Client IP check: CF-Connecting-IP says %s but the proxy chain gives %s. "
+                        "Has Render's chain changed?", describe_ip(cloudflare)["ip"],
+                        describe_ip(client)["ip"])
+        return client
 
     def is_https(request: Request) -> bool:
         if request.url.scheme == "https":
@@ -660,8 +667,7 @@ def create_app(settings: Settings | None = None,
             last_webhook = store.get_setting(LAST_WEBHOOK_KEY)
         return {"checks": checks, "db_latency_ms": latency, "ai_provider": ai_provider,
                 "last_webhook": last_webhook, "version": app_version,
-                "request": request_view(request.headers, request.client and request.client.host,
-                                        client_ip(request)),
+                "request": request_view(request.headers, peer_address(request), client_ip(request)),
                 "last_sync": {k: sync_state[k] for k in ("last_synced_at", "trigger", "error", "counts")}}
 
     # no-cache: browsers revalidate every load, so a new page version shows up right away.

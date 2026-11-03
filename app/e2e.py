@@ -577,12 +577,16 @@ def open_dispute_on_paypal(run: Run, f: Flow) -> str:
     assert fresh, "No payment to report on PayPal's disputes page"
     fresh[0].click()
     page.wait_for_timeout(4000)
-    sheet = frame_with(page, "text=Report a Problem")
-    assert sheet, "PayPal's Report a Problem sheet didn't open"
+    sheet = wait_for(lambda: frame_with(page, "text=Report a Problem"), 45, "PayPal's Report a Problem sheet", 2)
     sheet.get_by_text("Report a Problem", exact=False).first.click()
-    page.wait_for_timeout(6000)
-    reason = frame_with(page, "[data-testid=elg-item-0]")
-    assert reason, "PayPal's list of reasons didn't appear"
+    def reasons():
+        # A shipped order first gets PayPal's own tracking info and a button to go on anyway.
+        found = frame_with(page, "[data-testid=elg-item-0]")
+        if not found and (past := frame_with(page, "button:has-text('Report Issue to PayPal')")):
+            past.get_by_role("button", name="Report Issue to PayPal").click()
+        return found
+
+    reason = wait_for(reasons, 60, "PayPal's list of reasons", 2)
     reason.locator("[data-testid=elg-item-0]").click()
     page.wait_for_timeout(5000)
     forward = re.compile(r"^\s*(Continue|Next|Submit|Submit Case|File (a )?(Case|Dispute)|Open (a )?(Case|Dispute))\s*$", re.I)
@@ -663,6 +667,48 @@ def respond_to_dispute(run: Run, f: Flow, order: Order) -> None:
             page.locator("[data-ok]").click()
         reply = answer.value
         f.note(f"PayPal's answer through /act: HTTP {reply.status}: {reply.text()[:400]}")
+
+
+def recommendation_note(run: Run, order: Order) -> dict:
+    """The automatic recommendation, in words for the report: decision, confidence, reasons, provider."""
+    event = run.api.events(order.id, "ai_recommendation")[-1]["payload"]
+    rec = event["recommendation"]
+    return {"decision": rec["decision"], "confidence": rec["confidence"], "provider": event.get("provider"),
+            "model": event.get("model"), "trigger": event.get("trigger"),
+            "reasons": [r["text"] for r in rec.get("reasons", [])],
+            "message_to_buyer": rec.get("message_to_buyer"), "note_to_paypal": rec.get("note_to_paypal")}
+
+
+def shipped_dispute(run: Run, f: Flow) -> Order:
+    """A shipped order with an item-not-received dispute and its automatic recommendation."""
+    order = run.buy(f)
+    with f.step("mark it shipped with DHL"):
+        run.ship(f, order)
+    with f.step("open an item-not-received dispute at PayPal"):
+        f.note(f"PayPal case: {open_dispute_on_paypal(run, f)}")
+    with f.step("the dispute reaches /seller"):
+        page = run.seller(f)
+
+        def arrived():
+            if "dispute_created" in run.api.kinds(order.id):
+                return True
+            page.click("#sync")
+            return False
+
+        wait_for(arrived, 600, "the dispute on the order", 30)
+    with f.step("the recommendation appears by itself"):
+        wait_for(lambda: ai_answered(run, order), 180, "an AI recommendation", 10)
+        assert "ai_recommendation" in run.api.kinds(order.id), "The AI failed on this dispute"
+        seen = recommendation_note(run, order)
+        assert seen["trigger"] == "auto", seen["trigger"]
+        f.note("Recommendation: " + json.dumps(seen))
+    return order
+
+
+@flow("dispute-shipped", default=False)
+def dispute_shipped(run: Run, f: Flow) -> None:
+    order = shipped_dispute(run, f)
+    respond_to_dispute(run, f, order)
 
 
 @flow("dispute-respond", default=False)
@@ -747,7 +793,7 @@ def invoice(run: Run, f: Flow) -> None:
         button = page.locator(f'[data-invoice-send="{invoice_id}"]')
         button.click()
         page.locator("[data-ok]").click()
-        wait_for(lambda: f"invoice_send_sent" in run.api.kinds(invoice_id), 60, "the send on the timeline", 3)
+        wait_for(lambda: "invoice_send_sent" in run.api.kinds(invoice_id), 60, "the send on the timeline", 3)
     run.invoice_file.write_text(json.dumps({"invoice_id": invoice_id, "due_date": due}), encoding="utf-8")
     f.note(f"Invoice for part 2: {invoice_id}, due {due}. Run --only invoice-overdue after that date.")
     print(f"Invoice id: {invoice_id}, due {due}", flush=True)
@@ -826,7 +872,8 @@ def insights(run: Run, f: Flow) -> None:
 
 # ---- Running them ----------------------------------------------------------------------------
 
-def run_flow(run: Run, name: str) -> Flow:
+def run_flow(run: Run, name: str, fn=None) -> Flow:
+    """Runs one flow (by name, or `fn` for the demo story) and records how it went."""
     directory = run.out / name
     directory.mkdir(parents=True, exist_ok=True)
     f = Flow(name, run, directory)
@@ -834,7 +881,7 @@ def run_flow(run: Run, name: str) -> Flow:
     started = time.monotonic()
     print(f"== {name}", flush=True)
     try:
-        FLOWS[name](run, f)
+        (fn or FLOWS[name])(run, f)
     except Blocked as err:
         f.status, f.detail = BLOCKED, str(err)
     except Exception as err:

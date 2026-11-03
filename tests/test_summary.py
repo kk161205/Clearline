@@ -77,3 +77,35 @@ def test_the_summary_needs_a_login(tmp_path):
     client, _ = make_client(tmp_path, login=False)
     assert client.get("/api/seller/summary").status_code == 401
 
+
+# ---- Archiving (the demo reset) ---------------------------------------------------------------
+
+def test_archive_hides_everything_but_what_it_keeps(tmp_path):
+    client, store = shop(tmp_path)
+    store.add("ORDER2", "payment_captured", {"capture_id": "CAP2"})
+    assert client.post("/api/archive", json={"keep": ["ORDER2"]}).json() == {"archived": 2}  # ORDER1, INV2-1
+    body = client.get("/api/seller/summary").json()
+    assert [o["order_id"] for o in body["orders"]] == ["ORDER2"] and body["invoices"] == []
+    assert [s["order_id"] for s in body["side"]] == ["other"]  # PayPal's own events stay
+    assert [r["ref"] for r in client.get("/api/dashboard").json()["rows"]] == ["…ORDER2"]
+    assert client.get("/api/invoices").json() == []
+    assert "archived" in [e["kind"] for e in store.timeline("ORDER1")]  # nothing deleted
+    assert client.post("/api/archive", json={"keep": ["ORDER2"]}).json() == {"archived": 0}  # again: nothing
+
+
+def test_include_archived_shows_them_again_marked(tmp_path):
+    client, _ = shop(tmp_path)
+    client.post("/api/archive", json={})
+    plain = client.get("/api/seller/summary")
+    shown = client.get("/api/seller/summary?include_archived=true")
+    assert plain.json()["orders"] == [] and plain.headers["etag"] != shown.headers["etag"]
+    [order] = shown.json()["orders"]
+    assert order["archived"] is True and shown.json()["include_archived"] is True
+
+
+def test_a_demo_account_cant_archive_or_cancel(tmp_path):
+    client, store = shop(tmp_path)
+    store.update_user(store.user_by_email("seller@example.com")["id"], demo=1)
+    assert client.post("/api/archive", json={}).status_code == 403
+    assert client.post("/api/invoices/INV2-1/cancel").status_code == 403
+    assert len(client.get("/api/seller/summary").json()["orders"]) == 1

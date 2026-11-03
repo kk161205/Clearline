@@ -662,6 +662,22 @@ sandbox, blocks any PayPal page outside `sandbox.paypal.com`, and puts the auto-
 Insights layout back after every flow, even on failure. On a captcha or 2-step check it stops
 that flow and reports it as BLOCKED.
 
+### Demo reset
+
+```powershell
+python -m app.demo archive   # cancels the unpaid test invoices, archives every order and invoice
+python -m app.demo story     # builds a fresh story through real Sandbox flows
+python -m app.demo all       # both, archive first: run this on recording day
+```
+
+The story: an order waiting to ship, a shipped order with an open item-not-received dispute and
+its recommendation, a shipped order whose buyer asked for a refund as not as described (the
+policy leaves it to the seller), an order a buyer's agent refunded through MCP, and three settled
+orders. Invoice `INV2-AYSR-JFEC-N8KQ-5A45` (`KEEP` in `app/demo.py`) is never archived or
+cancelled. Archiving only adds an `archived` event, so nothing is deleted: **Include archived** on
+`/seller` shows them again. It works through the live site with the same settings and guards as
+`python -m app.e2e`, and a demo account can't archive or cancel.
+
 ### Logs and diagnostics
 
 - **Each request** logs one INFO line: method, path (tokens redacted, `/o/…`, no query string),

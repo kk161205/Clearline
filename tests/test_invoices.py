@@ -391,3 +391,29 @@ def test_export_section_is_labelled_guidance_with_sources():
     assert "Guidance, not legal or tax advice." in html and "https://www.paypal.com/in/x" in html
     assert "AI suggests <strong>P1007</strong>" in html and "not applied" in html
     assert 'value="P1007" selected' not in html  # the suggestion doesn't pre-select itself
+
+
+# ---- Cancelling (the demo reset) -------------------------------------------------------------
+
+@respx.mock
+def test_an_unpaid_invoice_is_cancelled_quietly(tmp_path):
+    setup_paypal()
+    paypal = InvoiceOnPayPal(status="SENT")
+    client, _ = make_client(tmp_path)
+    created_invoice(client, paypal)
+    cancel = respx.post(f"{INVOICES}/{INV}/cancel").mock(
+        side_effect=lambda r: paypal.data.update(status="CANCELLED") or httpx.Response(204))
+    assert client.post(f"/api/invoices/{INV}/cancel").status_code == 200 and cancel.called
+    assert json.loads(cancel.calls[0].request.content) == {"send_to_recipient": False, "send_to_invoicer": False}
+    kinds = [e["kind"] for e in client.get(f"/api/orders/{INV}/timeline").json()]
+    assert "invoice_cancel_sent" in kinds
+
+
+@respx.mock
+def test_a_paid_invoice_isnt_cancelled(tmp_path):
+    setup_paypal()
+    paypal = InvoiceOnPayPal(status="PAID", paid=True)
+    client, _ = make_client(tmp_path)
+    created_invoice(client, paypal)
+    cancel = respx.post(f"{INVOICES}/{INV}/cancel").mock(return_value=httpx.Response(204))
+    assert client.post(f"/api/invoices/{INV}/cancel").status_code == 409 and not cancel.called

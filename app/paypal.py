@@ -186,6 +186,12 @@ class PayPalClient:
                                    json={"send_to_recipient": True, "send_to_invoicer": True},
                                    idempotent=True)
 
+    async def cancel_invoice(self, invoice_id: str) -> dict:
+        """Cancel a sent invoice. Quietly: PayPal emails nobody about it."""
+        return await self._request("POST", f"/v2/invoicing/invoices/{invoice_id}/cancel",
+                                   json={"send_to_recipient": False, "send_to_invoicer": False},
+                                   idempotent=True)
+
     async def remind_invoice(self, invoice_id: str, *, subject: str, note: str) -> dict:
         """Send a payment reminder (PayPal allows 2 per invoice per day)."""
         return await self._request("POST", f"/v2/invoicing/invoices/{invoice_id}/remind",

@@ -7,7 +7,7 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 ## 8. Status matrix
 
 - **Built:** the commit that added it.
-- **Tested offline:** tests that pass with PayPal and the AI mocked. 492 in total, all
+- **Tested offline:** tests that pass with PayPal and the AI mocked. 507 in total, all
   passing on SQLite. CI also runs the database tests on a Postgres container on every push.
 - **Live in Sandbox:** tested by hand against PayPal Sandbox.
 - **On Render:** what was checked on `https://clearline-cbyb.onrender.com` (section 9).
@@ -38,6 +38,8 @@ How the system works is in [SYSTEM.md](SYSTEM.md). This page is the honest state
 | Production mode, proxy IP, headers, CSP | `6a8d40b` | `test_security` (33) | n/a | **Yes** (headers, anonymous routes, checkout CSP) | Zero CSP violations on 8 page types locally in production mode |
 | Fewer env vars, Settings → Business | `f0fdfac` | `test_business` (16) | Locally | Not verified | Needs the Render clean-up below |
 | Live end-to-end run (`python -m app.e2e`) | see section 9 | `test_e2e_guards` | n/a | **Yes** (7 of 8 flows; the dispute flow's AI bug is fixed and passed on 3 Nov) | Never in CI |
+| Demo reset (`python -m app.demo`), archived orders | see section 10 | `test_summary`, `test_invoices` | Yes | **Yes** (run on production 3 Nov) | Never in CI |
+| `/seller` loads one summary, 304 when unchanged | `ea9a0cc`, `813f352` | `test_summary` | n/a | **Yes** (measured: 0 KB idle, nothing hidden) | |
 | Landing page, shop at /shop, Sandbox banners, demo account | see the plan | `test_landing`, `test_auth` | n/a | **Yes** (`app.e2e`, screenshots) | Demo flag on the judge account is a manual step |
 | Client IP behind Cloudflare and Render, HEAD on pages | B6, B7 | `test_security` | n/a | **Yes** (the chain measured live, one spoofed login sent) | |
 | CI, secret scan, pre-demo check | see section 10 | `test_check` (19), `test_secret_scan` (15) | n/a | **Yes** (`app.check` passes on the live site) | |
@@ -79,7 +81,7 @@ SDK loading on the checkout page. Pages behind a login were last checked on 30 O
 | 2 | ✅ **Secret scan in CI** | `scripts/secret_scan.py` fails the build on a Neon host, a Postgres URL with credentials, an agent key, PayPal, Google or Groq keys, or a private key, in the tree or in any new commit | Done | High: one leak would be costly |
 | 3 | ✅ **Pre-demo check command** (`python -m app.check --base <url>`) | Wakes Render, then checks the public pages, headers and CSP, blocked API pages, and with a login System status. Prints a pass/fail table | Done | High: run it 10 minutes before judging |
 | 4 | ✅ **Deploy pipeline** | CI calls Render's deploy hook only after all three jobs pass, then runs `app.check` until the new commit is serving | Done | High: a red deploy never reaches judges |
-| 5 | **Demo data reset on Neon** (`python -m app.demo_reset`) | Rebuilds one fresh "demo story": an order to ship, an open buyer request, an inquiry dispute waiting on the seller, an overdue invoice, an agent refund. Refuses to run without a flag and a backup | M | High: every demo starts from the same story |
+| 5 | ✅ **Demo data reset** (`python -m app.demo`) | Rebuilds one fresh "demo story": an order to ship, an open buyer request, an inquiry dispute waiting on the seller, an overdue invoice, an agent refund. Refuses to run without a flag and a backup | M | High: every demo starts from the same story |
 | 6 | **Playwright demo walk** | Walks the story on the live site (login, today, dispute card, buyer page, dashboard, Insights AI question), recording video and screenshots | M | High: backup footage if Sandbox or Wi-Fi fails |
 | 7 | **Screenshot script in the repo** | Move the screenshot script into `tools/`, with a `--live` mode, for README and Devpost images in light and dark at phone and desktop widths | S | Medium |
 | 8 | **Faster tests** | Run with `pytest -n auto` (xdist) on SQLite. For Postgres, share one schema per test file, or run in CI next to the database (each query costs about 270 ms from India) | S | Medium: today SQLite takes 3 min, Postgres 27 min |

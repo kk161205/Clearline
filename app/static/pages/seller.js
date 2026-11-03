@@ -265,7 +265,7 @@ function canShip(events, buyer) {
 
 function attentionItems(orders, invoices) {
   const items = [];
-  for (const o of orders) {
+  for (const o of orders.filter((x) => !x.archived)) {
     const state = currentDispute(o.events);
     if (state && !disputePanel(state).resolved && !noActionReason(state.payload, false)) {
       const p = state.payload, d = daysLeft(p.seller_response_due_date);
@@ -340,6 +340,7 @@ const CARRIERS = ["DHL", "FEDEX", "UPS", "USPS"];
 // The row's pill: the one thing to know about this order.
 function rowStatus(events, state, d) {
   const kinds = new Set(events.map((e) => e.kind));
+  if (kinds.has("archived")) return '<span class="pill plain">Archived</span>';
   if (d.disputed) return d.badge;
   if (openRequests(events).length) return '<span class="pill held">Buyer is waiting</span>';
   if (orderTone(events, state) === "held") return '<span class="pill held">Payment on hold</span>';
@@ -395,7 +396,8 @@ let summary = null, summaryTag = null;
 const details = new Map(); // an opened order's full timeline, buyer view and export: { last_id, events, buyer, exp }
 
 async function loadSummary(force) {
-  const res = await fetch("/api/seller/summary", { cache: "no-store", headers: !force && summaryTag ? { "If-None-Match": summaryTag } : {} });
+  const url = $("show-archived")?.checked ? "/api/seller/summary?include_archived=true" : "/api/seller/summary";
+  const res = await fetch(url, { cache: "no-store", headers: !force && summaryTag ? { "If-None-Match": summaryTag } : {} });
   if (res.status === 304 || !res.ok) return false;
   summaryTag = res.headers.get("ETag");
   summary = await res.json();
@@ -995,6 +997,8 @@ function typing() {
 }
 
 fetch("/api/config").then((r) => r.json()).then((c) => { ENV = c.env; }).catch(() => {}).finally(render);
+$("show-archived")?.addEventListener("change", () => render(true).catch(() => {}));
+
 // Every 30 s while the tab is visible, and at once when the seller comes back to it.
 const refresh = () => { if (!document.hidden && !typing()) render(false).catch(() => {}); };
 setInterval(refresh, 30000);

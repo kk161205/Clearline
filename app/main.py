@@ -38,7 +38,7 @@ from .insights_ai import (ALREADY_HAVE, TOO_MANY_TURNS, InsightsTurn, SignatureC
                           canonical_call, chat_messages, chat_tools, earlier_results,
                           for_provider, turn_cap, turn_summary, turns_used)
 from .insights_ai import reply as insights_reply
-from .invoicing import (EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
+from .invoicing import (UNPAID, EXTRACT_PROMPT, EXTRACT_PROMPT_VERSION, EXTRACT_SCHEMA,
                         OFFICIAL_SOURCES, PAID, PURPOSE_CODES, PURPOSE_PROMPT,
                         PURPOSE_PROMPT_VERSION, PURPOSE_SCHEMA, REMINDER_PROMPT,
                         REMINDER_PROMPT_VERSION, REMINDER_SCHEMA, InvoiceDraft,
@@ -194,6 +194,10 @@ class PurposeIn(BaseModel):
                   "P1004", "P1005", "P1006", "P1007", "P1008", "P1009"]
 
 
+class ArchiveIn(BaseModel):
+    keep: list[str] = Field(default=[], max_length=50)  # order or invoice ids to leave out
+
+
 class FiraIn(BaseModel):
     downloaded: bool
 
@@ -202,6 +206,9 @@ DEMO_LOCKED = "This is a shared demo account, so this setting is locked."
 # Events only an opened order shows (the AI card, what was sent to PayPal): not in the summary.
 DETAIL_ONLY = {"ai_recommendation", "ai_failed", "dispute_action_sent", "dispute_action_failed",
                "dispute_action_skipped", "export_purpose_suggested", "export_purpose_set", "export_fira"}
+# An order or invoice put away by the demo reset: kept, but out of Today, the list, the dashboard
+# and Insights (the list's Include archived shows it again). Its own event, so nothing is deleted.
+ARCHIVED = "archived"
 LAST_WEBHOOK_KEY = "last_webhook"  # shown on Settings -> System status
 EXPORT_DISCLAIMER = "Guidance, not legal or tax advice."
 EMAIL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
@@ -989,19 +996,20 @@ def create_app(settings: Settings | None = None,
         tag weak (W/"..."), and that's the form the browser sends back."""
         return {t.strip().removeprefix("W/") for t in header.split(",") if t.strip()}
 
-    def summary_tag() -> str:
+    def summary_tag(include_archived: bool) -> str:
         """Changes whenever the summary would: a new event, a new day (invoices fall overdue),
         or a sync (its status line). Cheap: one query."""
         sync = (sync_state["last_synced_at"], sync_state["running"], sync_state["error"])
-        raw = json.dumps([store.last_event_id(), today().isoformat(), sync, business().auto_sync_minutes])
+        raw = json.dumps([store.last_event_id(), today().isoformat(), sync, business().auto_sync_minutes,
+                          include_archived])
         return f'"{hashlib.sha256(raw.encode()).hexdigest()[:20]}"'
 
     @app.get("/api/seller/summary")
-    async def seller_summary(request: Request):
+    async def seller_summary(request: Request, include_archived: bool = False):
         """The order list, Today, invoices, stats and sync status in one answer. Each order has
         the events that its row and Today use; its full timeline loads when it's opened. With
         If-None-Match, an unchanged shop answers 304 with no body."""
-        tag = summary_tag()
+        tag = summary_tag(include_archived)
         headers = {"ETag": tag, "Cache-Control": "no-cache"}
         if tag in matching_tags(request.headers.get("if-none-match", "")):
             return Response(status_code=304, headers=headers)
@@ -1010,6 +1018,8 @@ def create_app(settings: Settings | None = None,
         for order_id in sorted(timelines, key=lambda o: last_ids.get(o, 0), reverse=True):
             events = timelines[order_id]
             kinds = {e["kind"] for e in events}
+            if ARCHIVED in kinds and not include_archived:
+                continue
             if order_id == "other" or order_id.startswith("unmatched:"):
                 side.append({"order_id": order_id, "events": events})
                 continue
@@ -1019,11 +1029,12 @@ def create_app(settings: Settings | None = None,
                 if "invoice_paid" not in kinds:
                     continue  # an invoice joins the order list once it's paid
             paid, refunded, currency = refund_totals(events)
-            orders.append({"order_id": order_id, "last_id": last_ids.get(order_id, 0),
+            orders.append({"order_id": order_id, "last_id": last_ids.get(order_id, 0), "archived": ARCHIVED in kinds,
                            "events": [e for e in events if e["kind"] not in DETAIL_ONLY],
                            "buyer": {"refundable": f"{paid - refunded:.2f}", "currency": currency}
                            if kinds & {"payment_captured", "invoice_paid"} else None})
         body = {"orders": orders, "side": side, "stats": await stats(), "sync": sync_state,
+                "include_archived": include_archived,
                 "invoices": sorted(invoices, key=lambda r: r.get("number") or "", reverse=True)}
         return JSONResponse(body, headers=headers)
 
@@ -1073,10 +1084,26 @@ def create_app(settings: Settings | None = None,
                 "display_status": display_status(summary, today()),
                 "days_overdue": days_overdue(summary, today())}
 
+    @app.post("/api/archive")
+    async def archive(body: ArchiveIn, request: Request):
+        """Put away every order and invoice except `keep` (the demo reset). Nothing is deleted:
+        each gets an "archived" event. Already archived ones are left as they are."""
+        not_for_demo(request)
+        done = 0
+        for o in store.orders():
+            if o["order_id"] == "other" or o["order_id"].startswith("unmatched:"):
+                continue
+            if ARCHIVED in o["kinds"] or o["order_id"] in body.keep:
+                continue
+            store.add(o["order_id"], ARCHIVED, {"by": current_user(request)["id"]})
+            done += 1
+        log.info("Archived %d orders and invoices for user %s", done, current_user(request)["id"])
+        return {"archived": done}
+
     @app.get("/api/invoices")
     async def list_invoices():
         rows = [invoice_row(s) for o in store.orders() if "invoice_status" in o["kinds"]
-                if (s := latest_invoice(o["order_id"]))]
+                and ARCHIVED not in o["kinds"] if (s := latest_invoice(o["order_id"]))]
         return sorted(rows, key=lambda r: r.get("number") or "", reverse=True)
 
     @app.post("/api/invoices/extract")
@@ -1164,6 +1191,16 @@ def create_app(settings: Settings | None = None,
                                      f"{display_status(summary, today())}.")
         return await invoice_action(invoice_id, "send",
                                     lambda: paypal.send_invoice(invoice_id), {})
+
+    @app.post("/api/invoices/{invoice_id}/cancel")
+    async def cancel_invoice(invoice_id: str, request: Request):
+        """Cancel an unpaid invoice at PayPal, without emailing anyone (the demo reset)."""
+        not_for_demo(request)
+        summary = await fresh_invoice(invoice_id)
+        if summary["status"] not in UNPAID:
+            raise HTTPException(409, f"Only unpaid invoices can be cancelled; this one is "
+                                     f"{display_status(summary, today())}.")
+        return await invoice_action(invoice_id, "cancel", lambda: paypal.cancel_invoice(invoice_id), {})
 
     @app.post("/api/invoices/{invoice_id}/reminder-draft")
     async def draft_reminder(invoice_id: str):
@@ -1852,7 +1889,8 @@ def create_app(settings: Settings | None = None,
 
     @app.get("/api/dashboard")
     async def dashboard_data():
-        return build_dashboard(store.all_events(), item_names=item_names)
+        timelines = {k: v for k, v in store.all_events().items() if not any(e["kind"] == ARCHIVED for e in v)}
+        return build_dashboard(timelines, item_names=item_names)
 
     @app.get("/api/orders")
     async def list_orders():

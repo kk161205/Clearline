@@ -15,7 +15,8 @@ const el = (props = {}) => ({ addEventListener() {}, querySelector: () => null, 
 const handlers = {}; // click handlers the page wires by element id (the policy Save button)
 const byId = (id) => el({ addEventListener: (type, fn) => { handlers[id] = fn; },
                           querySelector: () => (id === "policy-form" ? el({ checked: true, value: "10" }) : null) });
-global.document = { getElementById: byId, querySelector: () => null, querySelectorAll: () => [] };
+global.document = { getElementById: byId, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+global.window = { addEventListener() {} };
 global.location = { origin: "https://shop.example" };
 global.setInterval = () => 0;
 new Function(fs.readFileSync(path.join(path.dirname(process.argv[2]), "ui.js"), "utf8"))();

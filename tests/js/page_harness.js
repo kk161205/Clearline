@@ -10,7 +10,8 @@ const html = fs.readFileSync(process.argv[2], "utf8");
 const history = fs.readFileSync(path.join(path.dirname(process.argv[2]), "history.js"), "utf8");
 const script = [history, fs.readFileSync(path.join(path.dirname(process.argv[2]), "pages", path.basename(process.argv[2], ".html") + ".js"), "utf8")].join(";\n");
 const stub = { addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] };
-global.document = { getElementById: () => stub, querySelector: () => null, querySelectorAll: () => [] };
+global.document = { getElementById: () => stub, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+global.window = { addEventListener() {} };
 global.fetch = () => new Promise(() => {}); // never resolves: the page doesn't render on its own
 global.setInterval = () => 0;
 // The shared design system first (the page uses UI.*), as <script src="/static/ui.js"> does.

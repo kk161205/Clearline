@@ -191,10 +191,8 @@ function buyerSection(orderId, b) {
     </div>`;
 }
 
-async function loadStats() {
-  const res = await fetch("/api/stats");
-  if (!res.ok) return;
-  const s = await res.json(), el = document.getElementById("stats");
+function showStats(s) {
+  const el = document.getElementById("stats");
   el.innerHTML = `<strong>${esc(s.questions_answered_before_dispute)}</strong> questions answered before a dispute${
     s.auto_resolved ? `, ${esc(s.auto_resolved)} by your policy` : ""}`;
   el.hidden = false;
@@ -330,6 +328,7 @@ function setOpen(row, open) {
   head.setAttribute("aria-expanded", String(open));
   body.hidden = !open;
   if (open) openOrders.add(row.dataset.orderId); else openOrders.delete(row.dataset.orderId);
+  if (open && stale().length) render(false).catch(() => {}); // its full timeline, on first open
 }
 
 // ---- Orders --------------------------------------------------------------------------------
@@ -359,8 +358,9 @@ function orderAmount(events) {
   return c ? UI.money(c.payload.amount, c.payload.currency) : "";
 }
 
-function orderRow(o, buyer, exp) {
-  const { events } = o;
+function orderRow(o) {
+  const { events } = o; // the summary's: enough for the header, Today and Mark shipped
+  const full = details.get(o.order_id); // the rest, once the order has been opened
   const state = currentDispute(events);
   const d = disputePanel(state);
   const invoicePaid = events.find((e) => e.kind === "invoice_paid");
@@ -369,7 +369,7 @@ function orderRow(o, buyer, exp) {
   const title = invoicePaid ? `Invoice ${invoicePaid.payload.number || o.order_id}` : `Order …${o.order_id.slice(-6)}`;
   const sub = invoicePaid ? "Paid by invoice" : `Created ${UI.date(events[0]?.created_at || 0)}`;
   const bodyId = `o-${o.order_id.replace(/[^\w-]/g, "")}`;
-  const form = canShip(events, buyer) ? `
+  const form = canShip(events, o.buyer) ? `
       <form class="ship" data-order="${esc(o.order_id)}">
         <label class="field">Tracking number <input name="tracking_number" required autocomplete="off" /></label>
         <label class="field">Carrier <select name="carrier">${CARRIERS.map((c) => `<option value="${c}">${esc(UI.word("carrier", c))}</option>`).join("")}</select></label>
@@ -382,30 +382,59 @@ function orderRow(o, buyer, exp) {
         ${rowStatus(events, state, d)}
         <span class="amount num">${esc(orderAmount(events))}</span>${CHEV}
       </button>
-      <div class="order-body" id="${esc(bodyId)}"${open ? "" : " hidden"}>
-        <div class="history"><h3>History</h3>${timelineRows(events, o.order_id)}</div>
-        <div class="work">${d.panel}${aiCard(events, state, d.resolved)}${form}${buyerSection(o.order_id, buyer)}${exportSection(o.order_id, exp)}</div>
+      <div class="order-body" id="${esc(bodyId)}"${open ? "" : " hidden"}>${full ? `
+        <div class="history"><h3>History</h3>${timelineRows(full.events, o.order_id)}</div>
+        <div class="work">${d.panel}${aiCard(full.events, currentDispute(full.events), d.resolved)}${form}${buyerSection(o.order_id, full.buyer)}${exportSection(o.order_id, full.exp)}</div>`
+        : '<div class="muted small">Loading…</div>'}
       </div></article>`;
 }
 
-async function render() {
-  const [all] = await Promise.all([fetch("/api/orders").then((r) => r.json()), renderInvoices()]);
-  // Invoices show in the orders list once paid (with a buyer link like any order).
-  const orders = all.filter((o) => !isSide(o.order_id)
-    && !(o.kinds.includes("invoice_status") && !o.kinds.includes("invoice_paid")));
+// ---- Loading: one summary per refresh. Unchanged, it's a 304 with no body. ----------------
+
+let summary = null, summaryTag = null;
+const details = new Map(); // an opened order's full timeline, buyer view and export: { last_id, events, buyer, exp }
+
+async function loadSummary(force) {
+  const res = await fetch("/api/seller/summary", { cache: "no-store", headers: !force && summaryTag ? { "If-None-Match": summaryTag } : {} });
+  if (res.status === 304 || !res.ok) return false;
+  summaryTag = res.headers.get("ETag");
+  summary = await res.json();
+  return true;
+}
+
+async function loadDetails(o) {
+  const id = encodeURIComponent(o.order_id);
+  const [events, buyer, exp] = await Promise.all([
+    getTimeline(o.order_id),
+    o.buyer ? fetch(`/api/orders/${id}/buyer`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null,
+    o.buyer ? fetch(`/api/export/${id}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null]);
+  details.set(o.order_id, { last_id: o.last_id, events, buyer, exp });
+}
+
+// Opened orders whose details are missing or older than the summary.
+const stale = () => (summary?.orders || []).filter((o) => openOrders.has(o.order_id) && details.get(o.order_id)?.last_id !== o.last_id);
+
+// After the seller acts (force) or on the timer: fetch, then repaint only if something changed.
+async function render(force = true) {
+  const changed = await loadSummary(force);
+  if (!summary) return;
+  const reload = stale();
+  if (!changed && !reload.length) return;
+  await Promise.all(reload.map(loadDetails));
+  paint();
+}
+
+function paint() {
   const root = document.getElementById("order-list");
-  renderOther(all.filter((o) => isSide(o.order_id)));
-  const loaded = await Promise.all(orders.map(async (o) => {
-    const events = await getTimeline(o.order_id);
-    const captured = events.some((e) => e.kind === "payment_captured" || e.kind === "invoice_paid");
-    const buyer = captured ? await (await fetch(`/api/orders/${encodeURIComponent(o.order_id)}/buyer`)).json().catch(() => null) : null;
-    const exp = captured ? await fetch(`/api/export/${encodeURIComponent(o.order_id)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
-    return { order_id: o.order_id, events, amount: orderAmount(events), buyer, exp };
-  }));
-  const items = attentionItems(loaded, invoiceRows);
+  invoiceRows = summary.invoices;
+  renderInvoiceList(invoiceRows);
+  renderOther(summary.side);
+  showStats(summary.stats);
+  showSyncStatus(summary.sync);
+  const items = attentionItems(summary.orders, invoiceRows);
   document.getElementById("attention").innerHTML = attentionHtml(items);
   document.querySelectorAll("[data-attend]").forEach((b) => b.addEventListener("click", () => attend(items[Number(b.dataset.attend)])));
-  root.innerHTML = loaded.length ? loaded.map((o) => orderRow(o, o.buyer, o.exp)).join("")
+  root.innerHTML = summary.orders.length ? summary.orders.map((o) => orderRow(o)).join("")
     : '<div class="empty"><strong>No orders yet</strong>Pay one on the checkout page to see it here.</div>';
   if (deepLink) {
     const row = [...root.querySelectorAll(".order")].find((r) => r.dataset.orderId.endsWith(deepLink));
@@ -439,7 +468,6 @@ async function render() {
   root.querySelectorAll("[data-fira]").forEach((c) => c.addEventListener("change", () => saveFira(c)));
   root.querySelectorAll("details.export").forEach((el) => el.addEventListener("toggle", () =>
     (el.open ? openExports.add(el.dataset.export) : openExports.delete(el.dataset.export))));
-  loadStats();
   root.querySelectorAll(".ai textarea, .ai input, .ai select").forEach((el) =>
     el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
   root.querySelectorAll('[data-field="evidence_file"]').forEach((input) =>
@@ -447,18 +475,12 @@ async function render() {
   root.querySelectorAll("[data-regen]").forEach((b) => b.addEventListener("click", () => regenerate(b)));
   root.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", () => approve(b)));
   root.querySelectorAll("[data-sandbox]").forEach((b) => b.addEventListener("click", () => sandboxRequireEvidence(b)));
-  loadSyncStatus();
 }
 
-async function loadSyncStatus() {
-  const el = document.getElementById("sync-status");
-  try {
-    const s = await (await fetch("/api/disputes/sync/status")).json();
-    const auto = s.auto_sync_minutes > 0 ? `checks PayPal every ${s.auto_sync_minutes} min` : "automatic checks off";
-    el.textContent = s.error ? `Last sync failed: ${s.error}`
-      : s.last_synced_at ? `Synced ${fmt(s.last_synced_at)}, ${auto}`
-      : `Not synced yet, ${auto}`;
-  } catch { el.textContent = ""; }
+function showSyncStatus(s) {
+  const auto = s.auto_sync_minutes > 0 ? `checks PayPal every ${s.auto_sync_minutes} min` : "automatic checks off";
+  document.getElementById("sync-status").textContent = s.error ? `Last sync failed: ${s.error}`
+    : s.last_synced_at ? `Synced ${fmt(s.last_synced_at)}, ${auto}` : `Not synced yet, ${auto}`;
 }
 
 // Sandbox-only test tool; the server refuses it (404) in live mode as well.
@@ -587,13 +609,10 @@ async function approve(button) {
 }
 
 // Webhook events that didn't match one of our orders (e.g. Simulator mock data).
-async function renderOther(side) {
+function renderOther(side) {
   const root = document.getElementById("other");
   if (!side.length) { root.innerHTML = ""; return; }
-  const blocks = await Promise.all(side.map(async (o) => {
-    const events = await getTimeline(o.order_id);
-    return `<div class="panel"><div class="mono small muted">${esc(o.order_id)}</div>${timelineRows(events, o.order_id)}</div>`;
-  }));
+  const blocks = side.map((o) => `<div class="panel"><div class="mono small muted">${esc(o.order_id)}</div>${timelineRows(o.events, o.order_id)}</div>`);
   root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
 }
 
@@ -964,7 +983,7 @@ if (typeof IntersectionObserver === "function") {
   document.querySelectorAll("main > .section").forEach((s) => io.observe(s));
 }
 
-// Refresh every 10s so new disputes appear, but never while the seller is typing, has
+// Refreshing (below) waits while the seller is typing, has
 // edited an AI draft, has a half-typed tracking number, or is waiting on a button.
 function typing() {
   const active = document.activeElement;
@@ -976,4 +995,8 @@ function typing() {
 }
 
 fetch("/api/config").then((r) => r.json()).then((c) => { ENV = c.env; }).catch(() => {}).finally(render);
-setInterval(() => { if (!typing()) render().catch(() => {}); }, 10000);
+// Every 30 s while the tab is visible, and at once when the seller comes back to it.
+const refresh = () => { if (!document.hidden && !typing()) render(false).catch(() => {}); };
+setInterval(refresh, 30000);
+document.addEventListener("visibilitychange", refresh);
+window.addEventListener("focus", refresh);

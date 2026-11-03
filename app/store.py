@@ -60,6 +60,17 @@ class TimelineStore:
         return [{"order_id": r["order_id"], "updated_at": r["updated_at"],
                  "kinds": r["kinds"].split(",")} for r in rows]
 
+    def last_event_id(self) -> int:
+        """The newest event's id: the shop has changed when this has (events are append-only)."""
+        with self.db.connect() as conn:
+            return conn.execute("SELECT MAX(id) AS n FROM events").fetchone()["n"] or 0
+
+    def last_event_ids(self) -> dict[str, int]:
+        """Each order's newest event id, so a page knows whose details to reload."""
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT order_id, MAX(id) AS n FROM events GROUP BY order_id").fetchall()
+        return {r["order_id"]: r["n"] for r in rows}
+
     def all_events(self) -> dict[str, list[dict]]:
         """Every order's timeline in one query (for the dashboard), oldest event first."""
         with self.db.connect() as conn:

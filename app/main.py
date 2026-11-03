@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -198,6 +199,9 @@ class FiraIn(BaseModel):
 
 
 DEMO_LOCKED = "This is a shared demo account, so this setting is locked."
+# Events only an opened order shows (the AI card, what was sent to PayPal): not in the summary.
+DETAIL_ONLY = {"ai_recommendation", "ai_failed", "dispute_action_sent", "dispute_action_failed",
+               "dispute_action_skipped", "export_purpose_suggested", "export_purpose_set", "export_fira"}
 LAST_WEBHOOK_KEY = "last_webhook"  # shown on Settings -> System status
 EXPORT_DISCLAIMER = "Guidance, not legal or tax advice."
 EMAIL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
@@ -977,6 +981,46 @@ def create_app(settings: Settings | None = None,
                 if e["payload"].get("trigger") == TRIGGER}
         return {"questions_answered_before_dispute": answered_before_dispute(store),
                 "auto_resolved": len(auto)}
+
+    # ---- /seller in one request: everything the list and Today need --------------------
+
+    def summary_tag() -> str:
+        """Changes whenever the summary would: a new event, a new day (invoices fall overdue),
+        or a sync (its status line). Cheap: one query."""
+        sync = (sync_state["last_synced_at"], sync_state["running"], sync_state["error"])
+        raw = json.dumps([store.last_event_id(), today().isoformat(), sync, business().auto_sync_minutes])
+        return f'"{hashlib.sha256(raw.encode()).hexdigest()[:20]}"'
+
+    @app.get("/api/seller/summary")
+    async def seller_summary(request: Request):
+        """The order list, Today, invoices, stats and sync status in one answer. Each order has
+        the events that its row and Today use; its full timeline loads when it's opened. With
+        If-None-Match, an unchanged shop answers 304 with no body."""
+        tag = summary_tag()
+        headers = {"ETag": tag, "Cache-Control": "no-cache"}
+        if request.headers.get("if-none-match") == tag:
+            return Response(status_code=304, headers=headers)
+        timelines, last_ids = store.all_events(), store.last_event_ids()
+        orders, side, invoices = [], [], []
+        for order_id in sorted(timelines, key=lambda o: last_ids.get(o, 0), reverse=True):
+            events = timelines[order_id]
+            kinds = {e["kind"] for e in events}
+            if order_id == "other" or order_id.startswith("unmatched:"):
+                side.append({"order_id": order_id, "events": events})
+                continue
+            if "invoice_status" in kinds:
+                latest = [e for e in events if e["kind"] == "invoice_status"][-1]["payload"]
+                invoices.append(invoice_row(latest))
+                if "invoice_paid" not in kinds:
+                    continue  # an invoice joins the order list once it's paid
+            paid, refunded, currency = refund_totals(events)
+            orders.append({"order_id": order_id, "last_id": last_ids.get(order_id, 0),
+                           "events": [e for e in events if e["kind"] not in DETAIL_ONLY],
+                           "buyer": {"refundable": f"{paid - refunded:.2f}", "currency": currency}
+                           if kinds & {"payment_captured", "invoice_paid"} else None})
+        body = {"orders": orders, "side": side, "stats": await stats(), "sync": sync_state,
+                "invoices": sorted(invoices, key=lambda r: r.get("number") or "", reverse=True)}
+        return JSONResponse(body, headers=headers)
 
     # ---- Invoices (Day 5): AI drafts, the seller creates, sends and reminds ----
 

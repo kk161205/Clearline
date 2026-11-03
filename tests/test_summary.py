@@ -39,6 +39,14 @@ def test_an_unchanged_shop_answers_304_with_no_body(tmp_path):
     assert first.headers["cache-control"] == "no-cache"
 
 
+def test_a_weak_tag_from_a_compressing_proxy_still_matches(tmp_path):
+    client, _ = shop(tmp_path)
+    tag = client.get("/api/seller/summary").headers["etag"]
+    assert client.get("/api/seller/summary", headers={"If-None-Match": f"W/{tag}"}).status_code == 304
+    assert client.get("/api/seller/summary", headers={"If-None-Match": f'"other", W/{tag}'}).status_code == 304
+    assert client.get("/api/seller/summary", headers={"If-None-Match": 'W/"other"'}).status_code == 200
+
+
 def test_any_new_event_changes_the_tag(tmp_path):
     client, store = shop(tmp_path)
     tag = client.get("/api/seller/summary").headers["etag"]

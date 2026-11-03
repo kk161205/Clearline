@@ -984,6 +984,11 @@ def create_app(settings: Settings | None = None,
 
     # ---- /seller in one request: everything the list and Today need --------------------
 
+    def matching_tags(header: str) -> set[str]:
+        """The tags in If-None-Match, weak or not: Render's proxy gzips the answer and marks the
+        tag weak (W/"..."), and that's the form the browser sends back."""
+        return {t.strip().removeprefix("W/") for t in header.split(",") if t.strip()}
+
     def summary_tag() -> str:
         """Changes whenever the summary would: a new event, a new day (invoices fall overdue),
         or a sync (its status line). Cheap: one query."""
@@ -998,7 +1003,7 @@ def create_app(settings: Settings | None = None,
         If-None-Match, an unchanged shop answers 304 with no body."""
         tag = summary_tag()
         headers = {"ETag": tag, "Cache-Control": "no-cache"}
-        if request.headers.get("if-none-match") == tag:
+        if tag in matching_tags(request.headers.get("if-none-match", "")):
             return Response(status_code=304, headers=headers)
         timelines, last_ids = store.all_events(), store.last_event_ids()
         orders, side, invoices = [], [], []

@@ -305,7 +305,7 @@ def test_system_status_reports_the_checks_and_last_activity(tmp_path):
     empty = client.get("/api/system/status").json()
     assert [c["name"] for c in empty["checks"]][:3] == ["Database", "Migrations", "PayPal token"]
     assert empty["last_webhook"] is None and empty["version"] == "local"
-    assert empty["ai_provider"] == "gemini" and empty["db_latency_ms"] >= 0
+    assert empty["ai_provider"]["active_provider"] == "gemini" and empty["db_latency_ms"] >= 0
     assert empty["last_sync"]["last_synced_at"] is None
 
     post_event(client, {"id": "WH-EVT-1", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {}})

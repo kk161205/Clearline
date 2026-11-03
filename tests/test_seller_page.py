@@ -400,3 +400,23 @@ def test_a_shipped_order_doesnt_offer_mark_shipped_again():
     shipped = {"kind": "tracking_added", "created_at": 3, "payload": {"carrier": "DHL", "tracking_number": "1"}}
     [out] = render({"env": "sandbox", "events": [*PAID, shipped], "buyer": {**BUYER, "refundable": "120.00"}})
     assert out["canShip"] is False
+
+
+# ---- Settings -> System status: the AI provider -------------------------------------------------
+
+GROQ_STATE = {"active_provider": "groq", "switched_at": 1793649239, "reason": "timeout"}
+
+
+def test_status_says_when_and_why_the_assistant_moved_to_groq():
+    [out] = render({"env": "sandbox", "ai": GROQ_STATE})
+    assert out["ai"].startswith("Using Groq since ") and "(Gemini failed: timeout)" in out["ai"]
+    assert "data-ai-reset" in out["ai"] and "Switch back to Gemini" in out["ai"]
+
+
+def test_no_switch_button_for_a_demo_account_or_on_gemini():
+    demo, gemini, none = render({"env": "sandbox", "ai": GROQ_STATE, "demo": True},
+                                {"env": "sandbox", "ai": {"active_provider": "gemini"}},
+                                {"env": "sandbox", "ai": None})
+    assert "data-ai-reset" not in demo["ai"] and demo["ai"].startswith("Using Groq")
+    assert "data-ai-reset" not in gemini["ai"] and "Groq" not in gemini["ai"]
+    assert none["ai"] == "None"

@@ -760,13 +760,23 @@ function requestSeen(r) {
   return lines.map((line) => `<div>${line}</div>`).join("");
 }
 
+// The dispute assistant moves to Groq for good when Gemini fails, until someone switches back.
+function aiProvider(state, demo) {
+  if (!state) return "None";
+  if (state.active_provider !== "groq") return esc({ gemini: "Gemini" }[state.active_provider] || state.active_provider);
+  const since = state.switched_at ? ` since ${esc(when(state.switched_at))}` : "";
+  const why = state.reason && state.reason !== "manual reset" ? ` (Gemini failed: ${esc(state.reason)})` : "";
+  const button = demo ? "" : ' <button class="secondary small" data-ai-reset>Switch back to Gemini</button>';
+  return `Using Groq${since}${why}${button}`;
+}
+
 function systemRows(s) {
   const mark = (ok) => ok === false ? '<span class="pill disputed">Problem</span> ' : "";
   const rows = s.checks.map((c) => [c.name, `${mark(c.ok)}${esc(c.detail)}`]);
   const sync = s.last_sync;
   rows.push(["Last webhook", s.last_webhook ? `${esc(when(s.last_webhook.at))}, ${esc(s.last_webhook.event_type)}` : "None yet"],
             ["Last sync", sync.error ? `${mark(false)}${esc(sync.error)}` : `${esc(when(sync.last_synced_at))}${sync.trigger ? ` (${esc(sync.trigger)})` : ""}`],
-            ["Active AI", esc(s.ai_provider || "None")],
+            ["Active AI", aiProvider(s.ai_provider, s.demo)],
             ["Database latency", s.db_latency_ms === null ? "Unknown" : `${esc(s.db_latency_ms)} ms`],
             ["App version", esc(s.version)],
             ["Request as seen by the server", requestSeen(s.request)]);
@@ -779,6 +789,16 @@ async function loadSystem() {
 }
 $("system").addEventListener("toggle", (ev) => { if (ev.currentTarget.open) loadSystem().catch(() => {}); });
 $("system-run").addEventListener("click", (ev) => withBusy(ev.currentTarget, "Checking…", loadSystem));
+$("system-checks").addEventListener("click", (ev) => {
+  const button = ev.target.closest("[data-ai-reset]");
+  if (!button) return;
+  withBusy(button, "Switching…", async () => {
+    const res = await fetch("/api/ai/reset", { method: "POST" });
+    if (!res.ok) throw new Error(await errorText(res));
+    await loadSystem();
+    return "Back on Gemini.";
+  });
+});
 
 // ---- Auto-resolve policy: the seller's own rules for refunds that need no click -----------
 

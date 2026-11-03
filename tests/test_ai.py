@@ -147,3 +147,16 @@ def test_gemini_timeout_switches(tmp_path):
     assert events(client, "ORDER1", "ai_recommendation")[0]["payload"]["provider"] == "groq"
     [switch] = events(client, "other", "ai_provider_switched")
     assert switch["payload"]["reason"] == "timeout"
+
+
+def test_status_and_reset_after_a_switch_to_groq(tmp_path):
+    from tests.support import make_client as client_for
+    client, settings = client_for(tmp_path)
+    TimelineStore(settings.database_target).set_ai_provider("groq", "timeout")
+    with respx.mock:
+        respx.post("https://api-m.sandbox.paypal.com/v1/oauth2/token").mock(return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 3600}))
+        status = client.get("/api/system/status").json()
+    assert status["ai_provider"]["active_provider"] == "groq" and status["ai_provider"]["reason"] == "timeout"
+    assert status["ai_provider"]["switched_at"] > 0 and status["demo"] is False
+    assert client.post("/api/ai/reset").json()["active_provider"] == "gemini"
+    assert client.get("/api/system/status").json()["ai_provider"]["active_provider"] == "gemini"

@@ -671,11 +671,12 @@ def create_app(settings: Settings | None = None,
         checks, latency = await run_checks(settings, store, paypal)
         ai_provider = None
         with suppress(Exception):  # the check above has already said the database is down
-            ai_provider = store.ai_state()["active_provider"] if ai.configured else None
+            ai_provider = store.ai_state() if ai.configured else None
         last_webhook = None
         with suppress(Exception):
             last_webhook = store.get_setting(LAST_WEBHOOK_KEY)
         return {"checks": checks, "db_latency_ms": latency, "ai_provider": ai_provider,
+                "demo": bool(current_user(request).get("demo")),
                 "last_webhook": last_webhook, "version": app_version,
                 "request": request_view(request.headers, peer_address(request), client_ip(request)),
                 "last_sync": {k: sync_state[k] for k in ("last_synced_at", "trigger", "error", "counts")}}
@@ -1390,7 +1391,9 @@ def create_app(settings: Settings | None = None,
         return ai.status()
 
     @app.post("/api/ai/reset")
-    async def ai_reset():
+    async def ai_reset(request: Request):
+        """Back to Gemini after the dispute assistant switched to Groq (the only way back)."""
+        not_for_demo(request)
         ai.reset()
         return ai.status()
 

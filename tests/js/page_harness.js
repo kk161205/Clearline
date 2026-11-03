@@ -19,11 +19,11 @@ new Function(fs.readFileSync(path.join(path.dirname(process.argv[2]), "ui.js"), 
 global.location = { origin: "https://shop.example" };
 
 const page = new Function(script +
-  "; return { currentDispute, disputePanel, aiCard, timelineRows, buyerSection, exportSection, attentionItems, canShip," +
+  "; return { currentDispute, disputePanel, aiCard, timelineRows, buyerSection, exportSection, attentionItems, canShip, aiProvider," +
   " setEnv: (e) => { ENV = e; } };")();
 
 const scenarios = JSON.parse(fs.readFileSync(0, "utf8"));
-const results = scenarios.map(({ env, events, buyer, exportData }) => {
+const results = scenarios.map(({ env, events, buyer, exportData, ai, demo }) => {
   page.setEnv(env);
   const state = page.currentDispute(events || []);
   const d = page.disputePanel(state);
@@ -33,6 +33,7 @@ const results = scenarios.map(({ env, events, buyer, exportData }) => {
            buyer: buyer ? page.buyerSection("ORDER1", buyer) : "",
            export: exportData ? page.exportSection("ORDER1", exportData) : "",
            canShip: page.canShip(events || [], buyer || null),
+           ai: ai === undefined ? null : page.aiProvider(ai, Boolean(demo)),
            today: page.attentionItems([{ order_id: "ORDER000000001", events: events || [], amount: "120.00 USD", buyer: buyer || null }], []) };
 });
 process.stdout.write(JSON.stringify(results));

@@ -530,7 +530,8 @@ def test_a_demo_account_cant_touch_its_own_settings(tmp_path):
              client.post("/api/account/sign-out-everywhere"),
              client.post("/api/agent-keys", json={"name": "k"}),
              client.delete(f"/api/agent-keys/{key_id}"),
-             client.put("/api/business", json={"seller_name": "Hijacked", "seller_country": "IN", "auto_sync_minutes": 3})]
+             client.put("/api/business", json={"seller_name": "Hijacked", "seller_country": "IN", "auto_sync_minutes": 3}),
+             client.post("/api/ai/reset")]
     for res in calls:
         assert res.status_code == 403 and "demo account" in res.json()["detail"], res.url
     assert client.get("/api/business").json()["seller_name"] != "Hijacked"

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from app.dashboard import build
-from app.main import CATALOGUE
+from app.catalogue import CATALOGUE
 from app.policy import TRIGGER
 from app.seed_demo import MARKER, main as seed_main, seed
 from app.store import TimelineStore

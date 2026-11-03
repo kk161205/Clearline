@@ -25,7 +25,7 @@ def test_one_answer_has_what_the_list_and_today_need(tmp_path):
     assert order["buyer"] == {"refundable": "100.00", "currency": "USD"}
     assert [e["kind"] for e in order["events"]] == ["order_created", "payment_captured", "refund_sent"]
     assert [i["number"] for i in body["invoices"]] == ["0007"] and body["invoices"][0]["display_status"] == "Overdue"
-    assert [s["order_id"] for s in body["side"]] == ["other"]
+    assert body["side"] == []  # its only event is an app-wide setting change
     assert set(body["stats"]) == {"questions_answered_before_dispute", "auto_resolved"}
     assert "auto_sync_minutes" in body["sync"]
 
@@ -86,7 +86,7 @@ def test_archive_hides_everything_but_what_it_keeps(tmp_path):
     assert client.post("/api/archive", json={"keep": ["ORDER2"]}).json() == {"archived": 2}  # ORDER1, INV2-1
     body = client.get("/api/seller/summary").json()
     assert [o["order_id"] for o in body["orders"]] == ["ORDER2"] and body["invoices"] == []
-    assert [s["order_id"] for s in body["side"]] == ["other"]  # PayPal's own events stay
+    assert body["side"] == []  # app-wide setting changes never show there
     assert [r["ref"] for r in client.get("/api/dashboard").json()["rows"]] == ["…ORDER2"]
     assert client.get("/api/invoices").json() == []
     assert "archived" in [e["kind"] for e in store.timeline("ORDER1")]  # nothing deleted
@@ -109,3 +109,30 @@ def test_a_demo_account_cant_archive_or_cancel(tmp_path):
     assert client.post("/api/archive", json={}).status_code == 403
     assert client.post("/api/invoices/INV2-1/cancel").status_code == 403
     assert len(client.get("/api/seller/summary").json()["orders"]) == 1
+
+
+# ---- The side panel and the header numbers ------------------------------------------------------
+
+def test_the_side_panel_has_recent_paypal_events_only(tmp_path):
+    import time
+    client, store = shop(tmp_path)
+    store.add("other", "ai_provider_switched", {"from": "gemini", "to": "groq", "reason": "timeout"})
+    store.add("unmatched:D9", "dispute_created", {"dispute_id": "D9", "status": "OPEN"})
+    side = {s["order_id"]: [e["kind"] for e in s["events"]] for s in client.get("/api/seller/summary").json()["side"]}
+    assert side == {"unmatched:D9": ["dispute_created"]}  # the policy change and the AI switch aren't here
+    with store.db.connect() as conn:
+        conn.execute("UPDATE events SET created_at = ?", (time.time() - 8 * 86400,))
+    assert client.get("/api/seller/summary").json()["side"] == []
+
+
+def test_header_numbers_leave_archived_orders_out_like_the_dashboard(tmp_path):
+    client, store = shop(tmp_path)
+    store.add("ORDER2", "payment_captured", {"capture_id": "CAP2"})
+    store.add("ORDER2", "buyer_request", {"request_id": "R1", "type": "refund"})
+    store.add("ORDER2", "refund_sent", {"request_id": "R1", "amount": "5.00", "trigger": "auto_policy"})
+    assert client.get("/api/stats").json()["questions_answered_before_dispute"] == 1
+    client.post("/api/archive", json={})
+    stats = client.get("/api/stats").json()
+    kpis = client.get("/api/dashboard").json()["kpis"]
+    assert stats == {"questions_answered_before_dispute": 0, "auto_resolved": 0}
+    assert kpis["answered_before_dispute"] == 0 and kpis["auto_resolved"]["count"] == 0

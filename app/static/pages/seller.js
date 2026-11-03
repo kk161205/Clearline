@@ -611,11 +611,16 @@ async function approve(button) {
 }
 
 // Webhook events that didn't match one of our orders (e.g. Simulator mock data).
+// Closed by default; stays as the seller left it across refreshes.
+let otherOpen = false;
 function renderOther(side) {
   const root = document.getElementById("other");
   if (!side.length) { root.innerHTML = ""; return; }
+  const count = side.reduce((n, o) => n + o.events.length, 0);
   const blocks = side.map((o) => `<div class="panel"><div class="mono small muted">${esc(o.order_id)}</div>${timelineRows(o.events, o.order_id)}</div>`);
-  root.innerHTML = `<h2>Unmatched and other PayPal events</h2>${blocks.join("")}`;
+  root.innerHTML = `<details class="panel disclose" id="other-events"${otherOpen ? " open" : ""}><summary><span class="d-title">Unmatched and other PayPal events</span>
+      <span class="d-line">${count} in the last 7 days</span>${CHEV}</summary><div class="d-body">${blocks.join("")}</div></details>`;
+  $("other-events").addEventListener("toggle", (ev) => { otherOpen = ev.currentTarget.open; });
 }
 
 // ---- Invoices: the AI drafts, the seller reviews, creates, sends and reminds ------------

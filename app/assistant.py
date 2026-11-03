@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai import AIClient, AIError
+from .catalogue import item_name
 from .logsafe import where
 from .store import DISPUTE_KINDS, TimelineStore
 
@@ -144,7 +145,7 @@ def build_facts(store: TimelineStore, order_id: str, dispute_id: str | None = No
 
     if created := _latest(events, "order_created"):
         p = created["payload"]
-        facts["order.item"] = p.get("item_id")
+        facts["order.item"] = item_name(p.get("item_id"))
         facts["order.amount"] = p.get("amount")
         facts["order.currency"] = p.get("currency")
         facts["order.created_at"] = _iso(created["created_at"])

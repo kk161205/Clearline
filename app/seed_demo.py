@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .accounts import Accounts, password_problem
 from .config import Settings
-from .main import CATALOGUE
+from .catalogue import CATALOGUE
 from .policy import TRIGGER
 from .store import TimelineStore
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 import httpx
 import pytest
@@ -552,3 +553,24 @@ def test_a_failed_attempt_waits_for_the_next_paypal_update(tmp_path):
 ])
 def test_when_the_seller_can_act(payload, expected):
     assert seller_can_act(payload) is expected
+
+
+# ---- Item names, never catalogue ids, reach the AI ------------------------------------------------
+
+@respx.mock
+def test_no_prompt_sent_to_the_ai_contains_a_catalogue_id(tmp_path):
+    from app.catalogue import CATALOGUE
+    client, settings = make_client(tmp_path)
+    setup_paypal()
+    shipped_order(client)
+    DisputeOnPayPal()
+    gemini = respx.post(GEMINI).mock(side_effect=lambda r: ai_reply(fight()) if b"dispute_recommendation" in r.content
+                                     else ai_reply({"summary": "Your order was paid and has shipped with DHL."}))
+    open_dispute(client)  # the dispute assistant
+    link = client.get("/api/orders/ORDER1/buyer").json()["link"]
+    client.get("/api/o/" + link.rsplit("/", 1)[1])  # the buyer page's summary
+    prompts = [c.request.content.decode() for c in gemini.calls]
+    assert len(prompts) >= 2 and any("Printed brand kit" in p for p in prompts)
+    for prompt in prompts:
+        for item_id in CATALOGUE:
+            assert not re.search(rf"(?<![\\w-]){re.escape(item_id)}(?![\\w-])", prompt), item_id

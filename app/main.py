@@ -27,8 +27,9 @@ from .assistant import Assistant, strip_pii
 from .accounts import (GENERIC_LOGIN_ERROR, SESSION_ABSOLUTE, SESSION_COOKIE, Accounts,
                        new_setup_code, setup_code_matches)
 from .auth import RateLimiter, is_public
+from .catalogue import CATALOGUE, ITEM_NAMES
 from .business import BUSINESS_KEY, Business, load_business
-from .buyer import (REFUND_REASONS, SummaryCache, answered_before_dispute, buyer_token,
+from .buyer import (REFUND_REASONS, SummaryCache, buyer_token, count_answered,
                     buyer_view, order_for_token, refund_totals)
 from .config import Settings, get_settings
 from .dashboard import build as build_dashboard
@@ -58,22 +59,6 @@ from .store import TimelineStore
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger("clearline")
 
-# Prices live on the server, never in the browser, so a buyer can't change them.
-CATALOGUE = {
-    "brand-kit": {
-        "description": "Printed brand kit (logo + business cards), shipped from India",
-        "amount": "120.00",
-        "currency": "USD",
-    },
-    # Day 7: more printed products, so the demo dashboard has varied amounts. The checkout
-    # page still sells the brand kit.
-    "poster-set": {"description": "Set of three art prints, shipped from India",
-                   "amount": "60.00", "currency": "USD"},
-    "logo-refresh": {"description": "Logo refresh with printed style sheet, shipped from India",
-                     "amount": "85.00", "currency": "USD"},
-    "brand-guide": {"description": "Bound brand guidelines book, shipped from India",
-                    "amount": "240.00", "currency": "USD"},
-}
 
 
 # Insights layouts are kept per seller account (insights_layouts.user_key = the user's id).
@@ -206,6 +191,10 @@ DEMO_LOCKED = "This is a shared demo account, so this setting is locked."
 # Events only an opened order shows (the AI card, what was sent to PayPal): not in the summary.
 DETAIL_ONLY = {"ai_recommendation", "ai_failed", "dispute_action_sent", "dispute_action_failed",
                "dispute_action_skipped", "export_purpose_suggested", "export_purpose_set", "export_fira"}
+# The "Unmatched and other PayPal events" panel: PayPal events of the last week, not the app's own
+# setting changes (the auto-policy being turned on and off, the AI provider switching).
+APP_WIDE = {"auto_policy_updated", "ai_provider_switched"}
+SIDE_DAYS = 7
 # An order or invoice put away by the demo reset: kept, but out of Today, the list, the dashboard
 # and Insights (the list's Include archived shows it again). Its own event, so nothing is deleted.
 ARCHIVED = "archived"
@@ -414,7 +403,7 @@ def create_app(settings: Settings | None = None,
     summaries = SummaryCache(store, ai)
     buyer_limits = RateLimiter(limit=5, window=3600)  # buyer submissions per link per hour
     policy_lock = asyncio.Lock()  # one auto-resolve decision at a time, so caps hold
-    item_names = {k: v["description"] for k, v in CATALOGUE.items()}
+    item_names = ITEM_NAMES
     tracking_lock = asyncio.Lock()  # one "Mark shipped" at a time, so repeats are caught
     sync_lock = asyncio.Lock()
     sync_state = {"running": False, "last_synced_at": None, "trigger": None, "counts": None,
@@ -984,9 +973,11 @@ def create_app(settings: Settings | None = None,
     @app.get("/api/stats")
     async def stats():
         """Auto-resolved requests are buyer requests too, so they're in the first number."""
+        live = [o for o in store.orders() if ARCHIVED not in o["kinds"]]  # as /dashboard counts them
+        ids = {o["order_id"] for o in live}
         auto = {e["order_id"] for e in store.events_since("refund_sent", 0)
-                if e["payload"].get("trigger") == TRIGGER}
-        return {"questions_answered_before_dispute": answered_before_dispute(store),
+                if e["payload"].get("trigger") == TRIGGER and e["order_id"] in ids}
+        return {"questions_answered_before_dispute": count_answered(o["kinds"] for o in live),
                 "auto_resolved": len(auto)}
 
     # ---- /seller in one request: everything the list and Today need --------------------
@@ -1021,7 +1012,9 @@ def create_app(settings: Settings | None = None,
             if ARCHIVED in kinds and not include_archived:
                 continue
             if order_id == "other" or order_id.startswith("unmatched:"):
-                side.append({"order_id": order_id, "events": events})
+                recent = [e for e in events if e["kind"] not in APP_WIDE and e["created_at"] >= time.time() - SIDE_DAYS * 86400]
+                if recent:
+                    side.append({"order_id": order_id, "events": recent})
                 continue
             if "invoice_status" in kinds:
                 latest = [e for e in events if e["kind"] == "invoice_status"][-1]["payload"]

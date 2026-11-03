@@ -678,6 +678,16 @@ cancelled. Archiving only adds an `archived` event, so nothing is deleted: **Inc
 `/seller` shows them again. It works through the live site with the same settings and guards as
 `python -m app.e2e`, and a demo account can't archive or cancel.
 
+### Backup demo recording
+
+`python -m app.record [--only 1,5,8]` walks the live site through the demo at 1920x1080 in the light
+theme, at a human pace with a visible cursor, and writes one MP4 per scene, a stitched `demo.mp4`
+with a caption bar, and `captions.txt` (a voice-over script) to a timestamped folder. It uses and
+changes the current demo story: scene 5 sends the dispute evidence, 6 refunds, 8 sends a reminder,
+so run `python -m app.demo all` first if those are used up. Passwords are typed only in an unrecorded
+browser; the seller's email and network address never appear. Needs Playwright and an ffmpeg with
+libx264 (`FFMPEG`, `imageio-ffmpeg`, or one on `PATH`). Never part of CI.
+
 ### Logs and diagnostics
 
 - **Each request** logs one INFO line: method, path (tokens redacted, `/o/…`, no query string),

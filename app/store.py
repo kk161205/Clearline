@@ -231,6 +231,23 @@ class TimelineStore:
         with self.db.connect() as conn:
             conn.execute(f"UPDATE users SET {sets} WHERE id = ?", (*fields.values(), user_id))
 
+    def delete_user(self, user_id: int) -> dict:
+        """Deletes the user with their sessions, agent keys and Insights layout, in one transaction.
+        Refuses (ValueError) to delete the last account that isn't a demo account. Returns counts."""
+        with self.db.transaction() as conn:
+            user = conn.execute("SELECT demo FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                raise ValueError("No account with that email.")
+            others = conn.execute("SELECT COUNT(*) AS n FROM users WHERE demo = 0 AND id != ?",
+                                  (user_id,)).fetchone()["n"]
+            if not user["demo"] and others == 0:
+                raise ValueError("That's the last account that isn't a demo account; create another first.")
+            counts = {table: conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (value,)).rowcount
+                      for table, column, value in (("sessions", "user_id", user_id), ("api_keys", "user_id", user_id),
+                                                   ("insights_layouts", "user_key", str(user_id)))}
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return counts
+
     def create_session(self, session_id: str, user_id: int, now: float, expires_at: float) -> None:
         with self.db.connect() as conn:
             conn.execute("INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at) "

@@ -4,6 +4,7 @@
     python -m app.users reset-password --email you@example.com
     python -m app.users disable --email you@example.com
     python -m app.users enable --email you@example.com
+    python -m app.users delete --email you@example.com      # with its sessions, agent keys and layout
     python -m app.users list
 
     # Non-interactive (scripts, a host's shell): the password is the first line of stdin.
@@ -56,7 +57,7 @@ def when(ts: float | None) -> str:
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.users", description="Manage Clearline seller accounts.")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("create", "reset-password", "disable", "enable"):
+    for name in ("create", "reset-password", "disable", "enable", "delete"):
         command = sub.add_parser(name)
         command.add_argument("--email", required=True)
         if name in ("create", "reset-password"):
@@ -104,6 +105,13 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     elif args.command == "set-demo":
         store.update_user(user["id"], demo=0 if args.off else 1)
         print(f"Account {user['id']} is {'a normal account again' if args.off else 'now a demo account'}.")
+    elif args.command == "delete":
+        try:
+            counts = store.delete_user(user["id"])  # refuses the last account that isn't a demo
+        except ValueError as err:
+            raise SystemExit(str(err))
+        print(f"Deleted account {user['id']} with {counts['sessions']} session(s), {counts['api_keys']} agent key(s) "
+              f"and {counts['insights_layouts']} Insights layout(s).")
     elif args.command == "disable":
         accounts.set_disabled(user["id"], True)
         print(f"Account {user['id']} disabled and signed out everywhere.")

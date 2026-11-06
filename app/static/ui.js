@@ -186,14 +186,33 @@
     catch { toast("Couldn't copy. Select the text and copy it yourself.", "bad"); return false; }
   }
 
+  // ---- Account: the signed-in email above "Log out" on every seller page ------------------
+  async function showAccount() {
+    const spots = document.querySelectorAll("[data-account-email]");
+    if (!spots.length) return;
+    const res = await fetch("/api/account").catch(() => null);
+    if (!res?.ok) return;
+    const { email } = await res.json();
+    spots.forEach((el) => { el.textContent = email; el.title = email; });
+  }
+
+  async function logOut(button) {
+    button.disabled = true;
+    const res = await fetch("/api/logout", { method: "POST" }).catch(() => null);
+    if (res?.ok) { location.href = "/login?logged_out=1"; return; }
+    button.disabled = false;
+    toast("Couldn't log out. Check your connection and try again.", "bad");
+  }
+
   if (hasDom) {
     document.addEventListener("click", (ev) => {
-      const t = ev.target.closest?.("[data-copy], [data-theme-toggle]");
+      const t = ev.target.closest?.("[data-copy], [data-theme-toggle], [data-logout]");
       if (!t) return;
       if (t.hasAttribute("data-theme-toggle")) toggleTheme();
+      else if (t.hasAttribute("data-logout")) logOut(t);
       else copy(t.dataset.copy);
     });
-    document.addEventListener("DOMContentLoaded", syncThemeButtons);
+    document.addEventListener("DOMContentLoaded", () => { syncThemeButtons(); showAccount(); });
   }
 
   globalThis.UI = { esc, money, date, dateTime, isoDate, shortDay, word, sentence, WORDS, line, toast, confirm: confirmDialog, notice, copy, toggleTheme };

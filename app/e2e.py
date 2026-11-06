@@ -476,6 +476,14 @@ def checkout(run: Run, f: Flow) -> None:
 
         wait_for(webhook, 180, "PAYMENT.CAPTURE.COMPLETED as the last webhook", 10)
         assert "PAYMENT.CAPTURE.COMPLETED" in system_status_text(run, f, page), "Not on the System status panel"
+    with f.step("Log out ends the session"):
+        page = run.seller(f)
+        page.locator(".shell-account [data-logout]").click()
+        page.wait_for_url("**/login")
+        assert page.locator("#note").is_visible(), "No \"You're logged out\" note on /login"
+        page.goto(run.config.base + "/seller", wait_until="load")
+        assert "/login" in page.url, "/seller still open after logging out"
+        run.states["seller"].unlink(missing_ok=True)  # that login is gone: the next flow signs in again
     f.detail = ""
 
 

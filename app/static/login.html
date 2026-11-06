@@ -16,6 +16,7 @@
     .sub { color: var(--muted); margin: 0 0 8px; }
     input { width: 100%; }
     button[type="submit"] { width: 100%; margin-top: 18px; }
+    .note { background: var(--settled-tint); color: var(--ink); border: 1px solid var(--settled); border-radius: var(--r); padding: 8px 12px; margin: 0 0 16px; font-size: var(--t-sm); }
     #msg { color: var(--disputed-ink); font-size: var(--t-sm); min-height: 1.5em; margin-top: 10px; }
   </style>
 </head>
@@ -25,6 +26,7 @@
     <div class="top"><span class="brand"><span class="brand-mark" aria-hidden="true"></span>Clearline</span>
       <button class="ghost small" type="button" data-theme-toggle aria-pressed="false">Theme</button></div>
     <form class="panel" id="login" novalidate>
+      <p class="note" id="note" role="status" hidden>You're logged out.</p>
       <h1>Seller login</h1>
       <p class="sub">Your orders, disputes and invoices.</p>
       <label class="field" for="email">Email

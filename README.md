@@ -322,12 +322,17 @@ and dead once an account exists; after that `/setup` returns 404.
 .venv\Scripts\python -m app.users create --email you@example.com    # asks for the password twice
 .venv\Scripts\python -m app.users reset-password --email you@example.com
 .venv\Scripts\python -m app.users disable --email you@example.com   # enable to undo
+.venv\Scripts\python -m app.users delete --email you@example.com    # with its sessions, agent keys and Insights layout
 .venv\Scripts\python -m app.users list
 ```
 
 - **Passwords:** 12 to 128 characters, not a common password, not containing the part of your
   email before the @. No other rules. Stored as Argon2id (argon2-cffi defaults), rehashed at
   login if those defaults change.
+- **Delete** removes the account with its sessions, agent keys and Insights layout. It refuses
+  to delete the last account that isn't a demo account.
+- **Log out** is at the bottom of the sidebar on every seller page, under the signed-in email
+  (on phones, in the top bar). It ends the session and returns to `/login`.
 - **Login** at `/login` with email and password. Wrong email or wrong password get the same
   answer. 5 wrong passwords lock that account for 15 minutes; one IP gets 20 tries per 15
   minutes.

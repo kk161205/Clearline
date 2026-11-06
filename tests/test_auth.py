@@ -325,6 +325,44 @@ def test_logout_deletes_the_session(tmp_path):
     assert query(settings.database_target, "SELECT COUNT(*) AS n FROM sessions") == [{"n": 0}]
 
 
+SELLER_PAGES = ["/seller", "/dashboard", "/insights", "/agents"]  # Settings is a section of /seller
+
+
+@pytest.mark.parametrize("path", SELLER_PAGES)
+def test_every_seller_page_has_log_out_in_the_sidebar_and_the_top_bar(tmp_path, path):
+    client, _, _ = with_account(tmp_path)
+    login(client)
+    html = client.get(path).text
+    sidebar = html.split('<nav class="shell-nav"', 1)[1].split("</nav>", 1)[0]
+    assert 'data-account-email' in sidebar and re.search(r'<button type="button"[^>]*data-logout>Log out</button>', sidebar)
+    top = html.split('<div class="shell-top">', 1)[1].split("</div>", 1)[0]
+    assert re.search(r'<button type="button" class="ghost small shell-top-logout" data-logout>Log out</button>', top)  # phones
+
+
+def test_after_logout_seller_pages_go_to_login_and_the_old_cookie_is_dead(tmp_path):
+    client, _, _ = with_account(tmp_path)
+    login(client)
+    old = client.cookies.get(SESSION_COOKIE)
+    assert client.post("/api/logout", headers={"Origin": "http://testserver"}).status_code == 200
+    for path in SELLER_PAGES:
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/login"
+    client.cookies.clear()
+    client.cookies.set(SESSION_COOKIE, old)
+    assert all(client.get(p, follow_redirects=False).status_code == 303 for p in SELLER_PAGES)
+    assert client.get("/api/account").status_code == 401
+    assert 'id="note"' in client.get("/login?logged_out=1").text  # "You're logged out", shown by login.js
+
+
+def test_a_demo_account_can_log_out(tmp_path):
+    client, settings, user_id = with_account(tmp_path)
+    TimelineStore(settings.database_target).update_user(user_id, demo=1)
+    login(client)
+    assert client.get("/api/account").json()["demo"] is True
+    assert client.post("/api/logout").status_code == 200
+    assert client.get("/seller", follow_redirects=False).status_code == 303
+
+
 def test_logging_in_again_rotates_the_session(tmp_path):
     client, _, _ = with_account(tmp_path)
     login(client)
@@ -565,3 +603,31 @@ def test_the_cli_sets_and_clears_the_demo_flag(tmp_path, capsys):
     assert client.get("/api/account").json()["demo"] is False
     with pytest.raises(SystemExit, match="No account"):
         users(["set-demo", "--email", "nobody@example.com"], settings=settings)
+
+
+def test_the_cli_deletes_an_account_and_everything_tied_to_it(tmp_path, capsys):
+    from app.users import main as users
+    client, settings = make_client(tmp_path)
+    store = TimelineStore(settings.database_target)
+    owner = store.user_by_email(SELLER_EMAIL)["id"]
+    with pytest.raises(SystemExit, match="last account"):
+        users(["delete", "--email", SELLER_EMAIL], settings=settings)  # the only real account
+    demo = Accounts(store).create_user("judge@example.com", "shared demo passphrase")
+    store.update_user(demo, demo=1)
+    with pytest.raises(SystemExit, match="last account"):
+        users(["delete", "--email", SELLER_EMAIL], settings=settings)  # a demo account doesn't count
+
+    Accounts(store).create_user("new.owner@example.com", "the next passphrase")
+    assert client.post("/api/agent-keys", json={"name": "k"}).status_code == 200
+    store.set_insights_layout(str(owner), {"widgets": []})
+    store.set_insights_layout(str(demo), {"widgets": []})
+    assert users(["delete", "--email", SELLER_EMAIL], settings=settings) == 0
+    assert "1 session(s), 1 agent key(s) and 1 Insights layout(s)" in capsys.readouterr().out
+    assert store.user_by_email(SELLER_EMAIL) is None and store.api_keys(owner) == []
+    assert store.insights_layout(str(owner)) is None and store.insights_layout(str(demo)) is not None
+    assert client.get("/api/orders").status_code == 401  # its session went with it
+    assert login(client).status_code == 401
+    assert [u["email"] for u in store.list_users()] == ["judge@example.com", "new.owner@example.com"]
+    assert users(["delete", "--email", "judge@example.com"], settings=settings) == 0  # a demo can always go
+    with pytest.raises(SystemExit, match="No account"):
+        users(["delete", "--email", "nobody@example.com"], settings=settings)

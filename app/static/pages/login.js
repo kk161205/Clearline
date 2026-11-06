@@ -1,3 +1,9 @@
+// After "Log out": a short note, and the address bar back to plain /login.
+if (new URLSearchParams(location.search).has("logged_out")) {
+  document.getElementById("note").hidden = false;
+  history.replaceState(null, "", "/login");
+}
+
 document.getElementById("login").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const form = ev.currentTarget, button = form.querySelector("button[type=submit]"), msg = document.getElementById("msg");

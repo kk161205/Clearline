@@ -306,6 +306,7 @@ details.tech div { overflow-wrap: anywhere; }
 .shell-top { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .shell-top .brand { flex: 1; }
 .shell-side-brand { display: none; }
+.shell-account { display: none; }  /* phones: Log out is in the top bar instead */
 
 @media (max-width: 1023.98px) {
   .shell-nav { position: fixed; left: 0; right: 0; bottom: 0; border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
@@ -325,6 +326,9 @@ details.tech div { overflow-wrap: anywhere; }
   .shell-nav a[aria-current="page"] { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--settled); }
   .shell-main { padding: 32px 40px 64px; width: 100%; }
   .shell-top .brand { visibility: hidden; }
+  .shell-top-logout { display: none; }
+  .shell-account { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
+  .shell-account-email { padding: 0 10px; font-size: var(--t-xs); color: var(--muted); overflow-wrap: anywhere; }
 }
 @media (min-width: 1440px) { .shell-main { max-width: 1200px; } }
 

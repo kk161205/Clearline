@@ -41,7 +41,7 @@ KOKORO_DIR = os.environ.get("KOKORO_DIR", r"D:\Temp\claude\clearline\tts-models"
 APP = {"width": 1440, "height": 1080}
 PANEL_W = 480
 TIME_ZONE, ZONE_LABEL = "Asia/Kolkata", "IST"  # the filmed pages and the panel's proof agree
-# While filming: the login's email blurred, and any email in a page's text shown as "buyer@…".
+# While filming: the login's and the sidebar's email blurred, and any email in a page's text shown as "buyer@…".
 MASK_EMAILS = r"""
 (() => {
   const re = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
@@ -52,7 +52,7 @@ MASK_EMAILS = r"""
   };
   document.addEventListener('DOMContentLoaded', () => {
     const s = document.createElement('style');
-    s.textContent = '#email { filter: blur(7px); }';
+    s.textContent = '#email, [data-account-email] { filter: blur(7px); }';
     document.head.appendChild(s);
     clean(document.body);
     new MutationObserver((changes) => changes.forEach((c) => c.addedNodes.forEach((n) =>

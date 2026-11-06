@@ -28,6 +28,40 @@ AG Studio, on Render.
 **Docs:** [System guide](docs/SYSTEM.md) (architecture, flows, security) ·
 [Status](docs/STATUS.md) (what works, what was checked live).
 
+**Setup:** [run it locally](#run-it-windows-powershell) (Python 3.13, a PayPal Sandbox app's
+Client ID and Secret in `.env`) · [offline tests](#offline-tests-mocked-paypal-no-credentials-needed)
+(`python -m pytest -q`, no credentials needed).
+
+## How Clearline uses PayPal and AI
+
+**PayPal** (all in the Sandbox)
+- **Orders v2:** creates the order when the buyer clicks the PayPal button and captures it once they approve, then adds shipment tracking.
+- **Payments v2 refunds:** full and partial refunds from the seller, or from the opt-in auto-policy.
+- **Disputes v1:** reads disputes and their deadlines, sends the seller's evidence, makes offers, accepts claims and messages the buyer.
+- **Invoicing v2:** creates, sends, reminds and cancels invoices, and follows their payment status.
+- **Webhooks + verify-webhook-signature:** PayPal pushes payment, refund, dispute and invoice events, and each one is checked with PayPal before it is recorded.
+- **JS SDK v6:** the PayPal button on the shop page, loaded from PayPal's v6 web SDK.
+- **Sandbox:** test buyer and seller accounts, the Webhook Simulator and Sandbox dispute tools; no real money.
+
+**AI**
+- **Gemini 3.5 Flash-Lite:** drafts dispute recommendations that cite the order's facts, buyer replies and invoice reminders, for the seller to approve.
+- **Groq gpt-oss-120b:** the fallback when Gemini fails or is rate-limited. The switch is sticky for the dispute assistant and per request for Insights.
+- **MCP server (`/mcp`):** lets AI agents use Clearline. Buyer tools see only their own order. Merchant tools are read-only and link back to Clearline for anything that moves money.
+- **AG Studio's assistant:** the *AI Assistant* in Insights runs through our backend (`POST /api/insights/ai`) on Gemini or Groq. It can only read the report data and edit widgets.
+
+## Sponsor tools
+
+- **AG Grid / AG Charts:** the Dashboard's money-in-flight grid and charts (Community editions, self-hosted).
+- **AG Studio:** the Insights report the seller can edit, with Clearline's own *Money state* widget and AI assistant.
+- **Render:** hosts the live app. Each push to `main` that passes CI is deployed and then checked on the live site.
+
+## Licence
+
+Clearline is under the [MIT License](LICENSE). Third-party parts keep their own licences:
+- AG Grid Community and AG Charts Community (MIT), self-hosted in `app/static/vendor/` with their licence files.
+- Instrument Sans (SIL Open Font License), in `app/static/fonts/` with `OFL.txt`.
+- AG Studio is a commercial product of AG Grid Ltd. It is loaded from its CDN (jsDelivr) under a trial licence and is not included in this repository.
+
 ---
 
 **Start here:** [System guide](docs/SYSTEM.md) (architecture, flows, data, security,
@@ -520,8 +554,8 @@ from Community pieces:
 
 The hackathon's AG Grid prize asks for **AG Studio**, a commercial product with a free 45-day
 trial licence: <https://www.ag-grid.com/studio/license-pricing/?tab=trial>. Without a key it
-runs locally with a watermark and console warnings. With a key, it would load the same rows
-from `/api/dashboard`, and the key would go in `.env`.
+runs with a watermark and console warnings; the live site uses a trial key, set as
+`AG_STUDIO_LICENSE_KEY`. See [Insights](#insights-ag-studio).
 
 ### Demo data
 

@@ -150,7 +150,8 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
         "item": item_names.get(item_id, item_id or "Order"),
         "country": captured_evt["payload"].get("payer_country"),
         "amount": f"{captured:.2f}", "refunded": f"{refunded:.2f}", "currency": currency,
-        "state": state, "status": STATE_LABELS[state],
+        "state": state, "status": ("Paid, not shipped" if state == "settled" and "tracking_added" not in kinds
+                                   and refunded < captured else STATE_LABELS[state]),
         "dispute": ({"stage": STAGES.get(dp.get("dispute_life_cycle_stage"), "Dispute"),
                      "reason": REASONS.get(dp.get("reason"), "Other"),
                      "open": open_dispute,

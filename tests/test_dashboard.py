@@ -300,3 +300,14 @@ def test_act_by_is_the_date_to_filter_needs_me_questions_on(tmp_path):
     # The filter a model writes for "this week" returns exactly the two that need the seller.
     this_week = sorted(ref for ref, r in rows.items() if r["act_by"] and r["act_by"] <= end_of_week.isoformat())
     assert this_week == ["…53815W", "…551845"]
+
+
+def test_a_paid_order_that_hasnt_shipped_says_so(tmp_path):
+    client, settings = make_client(tmp_path)
+    store = TimelineStore(settings.database_target)
+    order(store, "ORDER00000UNSHIP")
+    order(store, "ORDER0000SHIPPED")
+    store.add("ORDER0000SHIPPED", "tracking_added", {"carrier": "DHL", "tracking_number": "1"})
+    rows = rows_by_ref(client.get("/api/dashboard").json())
+    assert rows["…UNSHIP"]["status"] == "Paid, not shipped" and rows["…UNSHIP"]["state"] == "settled"
+    assert rows["…HIPPED"]["status"] == "Settled"

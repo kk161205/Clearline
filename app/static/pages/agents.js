@@ -2,7 +2,9 @@ const esc = UI.esc;
 const $ = (id) => document.getElementById(id);
 let url = `${location.origin}/mcp`;
 const ROLE = { buyer: '<span class="pill plain">Buyer agent</span>', merchant: '<span class="pill settled plain">Merchant agent</span>' };
-const time = (t) => new Date(t * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const time = (t) => UI.dateTime(t); // as on every other page
+// A tool name may break after "_", never inside a word.
+const tool = (name) => `<code class="tool">${esc(name).replace(/_/g, "_<wbr>")}</code>`;
 $("url").textContent = url;
 $("copy").addEventListener("click", () => UI.copy(url));
 
@@ -20,10 +22,10 @@ async function load() {
   $("sdk").textContent = `Official MCP Python SDK (${d.sdk.replace(/^mcp /, "version ")})`;
   $("merchant").innerHTML = d.merchant_enabled ? '<span class="pill settled">On</span>'
     : '<span class="pill">Off</span> <span class="muted small">Create an agent key in <a href="/seller#settings">Settings, Agent access</a> to turn them on.</span>';
-  $("tools").innerHTML = d.tools.map((t) => `<tr><td data-label="Tool"><code>${esc(t.name)}</code></td>
+  $("tools").innerHTML = d.tools.map((t) => `<tr><td data-label="Tool">${tool(t.name)}</td>
     <td data-label="For">${ROLE[t.role] || esc(t.role)}</td><td data-label="" class="desc wide">${esc(t.description)}</td></tr>`).join("");
   $("calls").innerHTML = d.calls.length ? d.calls.map((c) => `<tr><td data-label="Time" class="num">${esc(time(c.at))}</td>
-    <td data-label="Tool"><code>${esc(c.tool)}</code></td><td data-label="Agent">${ROLE[c.role] || esc(c.role)}</td>
+    <td data-label="Tool">${tool(c.tool)}</td><td data-label="Agent">${ROLE[c.role] || esc(c.role)}</td>
     <td data-label="Result">${outcome(c.outcome)}</td><td data-label="Order">${c.order_ref ? `…${esc(c.order_ref)}` : '<span class="muted">None</span>'}</td></tr>`).join("")
     : '<tr><td colspan="5" data-label="" class="wide"><div class="empty"><strong>No agent calls yet</strong>Connect an agent with the URL above and ask it about an order.</div></td></tr>';
 }

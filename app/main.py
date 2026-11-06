@@ -1764,6 +1764,10 @@ def create_app(settings: Settings | None = None,
     async def agents_page():
         return FileResponse(STATIC / "agents.html", headers={"Cache-Control": "no-cache"})
 
+    def archived_refs() -> set[str]:
+        """The masked refs (last 6 characters) of archived orders, for the agent call log."""
+        return {o["order_id"][-6:] for o in store.orders() if ARCHIVED in o["kinds"]}
+
     @app.get("/api/agents")
     async def agents_info():
         """For the /agents page: the tools agents can use and the last 20 calls (no PII)."""
@@ -1774,7 +1778,7 @@ def create_app(settings: Settings | None = None,
         return {"mcp_url": f"{settings.base_url}/mcp", "transport": "Streamable HTTP (stateless, JSON replies)",
                 "sdk": f"mcp {package_version('mcp')}",
                 "merchant_enabled": store.active_api_keys() > 0, "tools": tools,
-                "calls": store.agent_calls(20)}
+                "calls": [c for c in store.agent_calls(40) if c["order_ref"] not in archived_refs()][:20]}
 
     # ---- Insights (Day 8): the seller's own AG Studio report over the same data ----
 

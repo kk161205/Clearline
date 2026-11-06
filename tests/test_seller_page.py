@@ -374,6 +374,8 @@ def test_an_open_dispute_is_on_today_and_never_as_waiting_to_ship(status, decisi
     [item] = out["today"]
     assert item["title"].startswith(title) and item["action"] == action and item["tone"] == "disputed"
     assert "waiting to ship" not in item["title"].lower()
+    # Nothing for the seller to do: under "Waiting on others", not "Needs your attention".
+    assert bool(item.get("waiting")) == (status != "WAITING_FOR_SELLER_RESPONSE")
 
 
 def test_a_dispute_paypal_is_reviewing_says_so_on_today():
@@ -420,3 +422,10 @@ def test_no_switch_button_for_a_demo_account_or_on_gemini():
     assert "data-ai-reset" not in demo["ai"] and demo["ai"].startswith("Using Groq")
     assert "data-ai-reset" not in gemini["ai"] and "Groq" not in gemini["ai"]
     assert none["ai"] == "None"
+
+
+def test_waiting_on_others_is_its_own_folded_group():
+    html = (ROOT / "app/static/seller.html").read_text(encoding="utf-8")
+    script = (ROOT / "app/static/pages/seller.js").read_text(encoding="utf-8")
+    assert '<div id="waiting"></div>' in html and "Waiting on others" in script
+    assert "all.filter((it) => !it.waiting)" in script

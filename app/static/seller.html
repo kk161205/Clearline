@@ -110,6 +110,7 @@
     .ship { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
     .ship .field { margin: 0; flex: 1 1 180px; }
 
+    #waiting .waiting { margin-top: 12px; }
     /* Invoices, policy and settings. */
     .list-panel { padding: 4px 16px; margin-bottom: 12px; }
     .list-panel .empty { border: 0; }
@@ -162,6 +163,7 @@
       <div class="section-head"><h1 id="today-h">Today</h1><div id="stats" class="stat" hidden></div></div>
       <h2 class="sub">Needs your attention</h2>
       <div id="attention"><span class="skeleton row"></span><span class="skeleton row"></span></div>
+      <div id="waiting"></div>
     </section>
 
     <section class="section" id="orders" aria-labelledby="orders-h">

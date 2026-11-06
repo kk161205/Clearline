@@ -487,3 +487,18 @@ def test_policy_input_is_validated(tmp_path):
     assert client.put("/api/policy", json={**POLICY, "allowed_reasons": ["anything"]}).status_code == 422
     assert client.put("/api/policy", json={**POLICY, "surprise": 1}).status_code == 422
     assert client.get("/api/policy").json()["enabled"] is False
+
+
+def test_the_call_log_leaves_archived_orders_out_and_names_wrap_only_at_underscores(tmp_path):
+    client, settings = make_client(tmp_path)
+    store = TimelineStore(settings.database_target)
+    store.add("ORDER0000KEPT01", "payment_captured", {"capture_id": "C1"})
+    store.add("ORDER0000GONE02", "payment_captured", {"capture_id": "C2"})
+    store.log_agent_call("buyer", "get_order_status", "ok", "KEPT01")
+    store.log_agent_call("buyer", "request_refund", "ok", "GONE02")
+    store.log_agent_call("merchant", "money_in_flight", "ok", None)
+    client.post("/api/archive", json={"only": ["ORDER0000GONE02"]})
+    calls = client.get("/api/agents").json()["calls"]
+    assert [c["order_ref"] for c in calls] == [None, "KEPT01"]
+    script = (Path(__file__).parent.parent / "app/static/pages/agents.js").read_text(encoding="utf-8")
+    assert 'replace(/_/g, "_<wbr>")' in script and "UI.dateTime(t)" in script

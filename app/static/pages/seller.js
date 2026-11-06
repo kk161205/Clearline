@@ -276,7 +276,7 @@ function attentionItems(orders, invoices) {
       const p = state.payload;
       items.push({ rank: 4, sort: 0, tone: "disputed", title: `${disputeName(p)} open: ${reasonWords(p.reason)}`,
         sub: `Order …${o.order_id.slice(-6)}`, when: noActionReason(p, false), amount: money(p.dispute_amount),
-        action: "View", target: o.order_id, focus: ".dispute" });
+        action: "View", target: o.order_id, focus: ".dispute", waiting: true });
     }
     for (const r of openRequests(o.events)) {
       items.push({ rank: 1, sort: r.created_at, tone: "held", title: `Buyer: ${BUYER_TYPES[r.payload.type] || "Sent a request"}`,
@@ -297,14 +297,23 @@ function attentionItems(orders, invoices) {
   return items.sort((a, b) => a.rank - b.rank || a.sort - b.sort);
 }
 
-function attentionHtml(items) {
+// Disputes where it's PayPal's or the buyer's turn: below Today, folded away.
+let waitingOpen = false;
+function waitingHtml(items) {
+  if (!items.length) return "";
+  return `<details class="panel disclose waiting" id="waiting-group"${waitingOpen ? " open" : ""}><summary><span class="d-title">Waiting on others</span>
+      <span class="d-line">${items.length} with PayPal or the buyer, nothing for you to do yet</span>${CHEV}</summary>
+      <div class="d-body">${attentionHtml(items, "data-wait")}</div></details>`;
+}
+
+function attentionHtml(items, attr = "data-attend") {
   if (!items.length) return '<div class="empty"><strong>Nothing needs you right now</strong>New disputes, buyer questions and overdue invoices show up here.</div>';
   return `<ul class="attention">${items.map((it, i) => `<li>
       <span class="cl-mark" data-tone="${esc(it.tone)}" aria-hidden="true"></span>
       <div class="what"><strong>${esc(it.title)}</strong><span class="muted small">${esc(it.sub)}</span>
         ${it.when ? `<div class="when${it.urgent ? " urgent" : ""}">${esc(it.when)}</div>` : ""}</div>
       ${it.amount ? `<span class="amount num">${esc(it.amount)}</span>` : ""}
-      <button class="${i === 0 ? "" : "secondary"} small" data-attend="${i}">${esc(it.action)}</button></li>`).join("")}</ul>`;
+      <button class="${i === 0 && attr === "data-attend" ? "" : "secondary"} small" ${attr}="${i}">${esc(it.action)}</button></li>`).join("")}</ul>`;
 }
 
 function attend(it) {
@@ -433,9 +442,13 @@ function paint() {
   renderOther(summary.side);
   showStats(summary.stats);
   showSyncStatus(summary.sync);
-  const items = attentionItems(summary.orders, invoiceRows);
+  const all = attentionItems(summary.orders, invoiceRows);
+  const items = all.filter((it) => !it.waiting), waits = all.filter((it) => it.waiting);
   document.getElementById("attention").innerHTML = attentionHtml(items);
+  document.getElementById("waiting").innerHTML = waitingHtml(waits);
+  document.getElementById("waiting-group")?.addEventListener("toggle", (ev) => { waitingOpen = ev.currentTarget.open; });
   document.querySelectorAll("[data-attend]").forEach((b) => b.addEventListener("click", () => attend(items[Number(b.dataset.attend)])));
+  document.querySelectorAll("[data-wait]").forEach((b) => b.addEventListener("click", () => attend(waits[Number(b.dataset.wait)])));
   root.innerHTML = summary.orders.length ? summary.orders.map((o) => orderRow(o)).join("")
     : '<div class="empty"><strong>No orders yet</strong>Pay one on the checkout page to see it here.</div>';
   if (deepLink) {

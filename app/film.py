@@ -752,21 +752,17 @@ def card_html(base: str, title: str, lines: list[str]) -> str:
 # Each scene's narration opens with its topic; the intro with the title.
 TOPICS = {"intro": "Clearline.", 1: "What it is.", 2: "Checkout.", 3: "The seller's day.", 4: "Shipping.", 5: "Disputes.",
           6: "Refund requests.", 7: "Agents.", 8: "Invoices.", 9: "Money in flight.", 10: "Insights.", 11: "System status."}
-# Silence placed by hand between phrases (Kokoro's own pauses are trimmed off each phrase first).
-AFTER_TOPIC, AFTER_COMMA, BETWEEN_SENTENCES, BETWEEN_SCENES, FILM_START, FILM_END = 0.5, 0.2, 0.4, 0.7, 0.4, 0.8
+# Silence placed by hand between sentences (Kokoro's own silence is trimmed off each sentence's ends).
+# Commas and colons are left to Kokoro: a sentence is always spoken in one go.
+AFTER_TOPIC, BETWEEN_SENTENCES, BETWEEN_SCENES, FILM_START, FILM_END = 0.5, 0.3, 0.7, 0.4, 0.8
 SPEED = 0.95
 
 
 def phrases(text: str) -> list[tuple[str, float]]:
-    """A line as (phrase, the pause after it): sentences, then the parts between commas and colons."""
-    out = []
-    for sentence in re.findall(r"[^.!?]+[.!?]?", text):
-        parts = re.findall(r"[^,:;]+[,:;]?", sentence.strip())
-        for i, part in enumerate(p.strip() for p in parts if p.strip()):
-            out.append((part, AFTER_COMMA if i < len(parts) - 1 else BETWEEN_SENTENCES))
-    if out:
-        out[-1] = (out[-1][0], 0.0)
-    return out
+    """A line as (sentence, the pause after it). Each sentence is one Kokoro call, so its commas
+    and colons keep their natural rise instead of falling like a sentence's end."""
+    sentences = [s.strip() for s in re.findall(r"[^.!?]+[.!?]?", text) if s.strip()]
+    return [(s, BETWEEN_SENTENCES if i < len(sentences) - 1 else 0.0) for i, s in enumerate(sentences)]
 
 
 class Voice:
@@ -779,7 +775,7 @@ class Voice:
         cache.mkdir(parents=True, exist_ok=True)
 
     def phrase(self, text: str):
-        """One phrase, with Kokoro's own silence trimmed from both ends."""
+        """One sentence (or topic), with Kokoro's own silence trimmed from both ends."""
         import numpy as np
         samples, rate = self.kokoro.create(text, voice=self.voice, speed=SPEED, lang="en-us")
         loud = np.flatnonzero(np.abs(samples) > 0.01)
@@ -789,7 +785,7 @@ class Voice:
         return samples, rate
 
     def say(self, text: str, topic: str | None = None, lead: float = 0.0) -> tuple[Path, float]:
-        """The line spoken phrase by phrase with the pauses placed exactly; `lead` s of silence first."""
+        """The line spoken sentence by sentence with the pauses placed exactly; `lead` s of silence first."""
         import numpy as np
         key = json.dumps([self.voice, SPEED, topic, text, lead])
         target = self.cache / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"

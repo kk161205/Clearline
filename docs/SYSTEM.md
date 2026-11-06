@@ -35,7 +35,7 @@ timeline. AI drafts the answers, and the seller approves every action that moves
 flowchart TB
   subgraph Clients["Who calls Clearline"]
     direction LR
-    pages["Browser pages<br/>checkout / · buyer link /o/token · login, /setup<br/>/seller · /dashboard · /insights · /agents"]
+    pages["Browser pages<br/>landing / · checkout /shop · buyer link /o/token · login, /setup<br/>/seller · /dashboard · /insights · /agents"]
     agents["AI agents<br/>buyer agent: order link<br/>seller's agent: Bearer agent key"]
   end
   pp["PayPal REST<br/>Orders · Payments · Disputes · Invoicing · webhook verify"]

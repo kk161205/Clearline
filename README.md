@@ -2,6 +2,34 @@
 
 [![CI](https://github.com/kk161205/Clearline/actions/workflows/ci.yml/badge.svg)](https://github.com/kk161205/Clearline/actions/workflows/ci.yml)
 
+**For judges.** Clearline is a console for small sellers who take PayPal payments: every order's
+money on one clear line, buyers who can ask before they dispute, and AI that drafts dispute answers
+and invoice reminders for the seller to approve.
+
+**Live:** https://clearline-cbyb.onrender.com (PayPal Sandbox: test accounts only, no real money).
+The seller login and the Sandbox buyer login are in the Devpost testing instructions.
+
+**A 3-minute tour**
+1. **Buyer:** on the live site, *Try the shop*, pay with the Sandbox buyer in PayPal's window, then
+   open your private order page from the receipt. No account needed.
+2. **Seller:** *Seller login*. **Today** lists what needs you. Open the order with *Your turn to
+   respond*: the AI's recommendation cites its facts, and nothing reaches PayPal until you click
+   *Send evidence*.
+3. Open the order marked *Buyer is waiting* to see a refund request the auto-policy left to you,
+   and refund part of it.
+4. **Dashboard** for the money in flight; **Insights** to ask "Which orders need me this week?".
+5. **Agents** shows calls from AI agents on the MCP server, at https://clearline-cbyb.onrender.com/mcp.
+6. **Settings → System status** runs every check live.
+
+**Stack:** Python 3.13, FastAPI, PayPal REST APIs (Orders v2, Payments v2, Disputes, Invoicing v2,
+webhooks) and the JS SDK v6, Postgres on Neon, Gemini with Groq as the fallback, MCP, AG Grid and
+AG Studio, on Render.
+
+**Docs:** [System guide](docs/SYSTEM.md) (architecture, flows, security) ·
+[Status](docs/STATUS.md) (what works, what was checked live).
+
+---
+
 **Start here:** [System guide](docs/SYSTEM.md) (architecture, flows, data, security,
 configuration) · [Status and plan](docs/STATUS.md) (what works, live check, automation,
 dates to submission).
@@ -687,6 +715,15 @@ changes the current demo story: scene 5 sends the dispute evidence, 6 refunds, 8
 so run `python -m app.demo all` first if those are used up. Passwords are typed only in an unrecorded
 browser; the seller's email and network address never appear. Needs Playwright and an ffmpeg with
 libx264 (`FFMPEG`, `imageio-ffmpeg`, or one on `PATH`). Never part of CI.
+
+### Narrated demo film
+
+`python -m app.film` films the live site at 1440x1080 with a "behind the scenes" panel on the right
+(a map of the parts involved, what happened, how, and proof pulled from the live timeline), then
+narrates each step offline with Kokoro and stitches `clearline-demo.mp4` (tight) and
+`clearline-deep-dive.mp4` (fuller), each with its narration script. Every mechanism the panel names is
+listed with its place in the code in `CLAIMS` (`app/film.py`). It needs what `app.record` needs plus
+`kokoro-onnx` and its model files (`KOKORO_DIR`). Never part of CI.
 
 ### Logs and diagnostics
 

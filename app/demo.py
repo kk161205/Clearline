@@ -20,9 +20,8 @@ import httpx
 from .e2e import (OUT, PASS, Api, Config, Flow, Run, agent, assert_sandbox, report, run_flow,
                   shipped_dispute)
 
-# Kept through every reset: the invoice that's overdue for the reminder scene, and the 300.00 USD
-# invoice (due 7 Nov) for the presenter's own video.
-KEEP = ["INV2-AYSR-JFEC-N8KQ-5A45", "INV2-A3MW-46XR-45MP-HCWV"]
+# Kept through every reset: Kapoor Interiors' 300.00 USD invoice, due 7 Nov, for the reminder scene.
+KEEP = ["INV2-W6DD-G5F4-XJP5-5ERU"]
 SETTLED = 3
 
 

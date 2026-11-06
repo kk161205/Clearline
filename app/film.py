@@ -111,8 +111,8 @@ class Step:
 
 S = lambda *a: Step(*a)  # noqa: E731
 STEPS = {s.key: s for s in [
-    S("intro", [], "", [], "", "Clearline. Every PayPal payment, clearly.",
-      "Clearline. Every PayPal payment, clearly. A two and a half minute tour, with what happens behind each click."),
+    S("intro", [], "", [], "", "Every PayPal payment, clearly.",
+      "Every PayPal payment, clearly. A tour of what happens behind each click."),
     S("landing", [("server", "db")], "A console for small sellers on PayPal",
       ["One FastAPI app on Render", "Postgres on Neon; Gemini and Groq for the AI"],
       "Every PayPal payment, on one clear line.",
@@ -749,6 +749,26 @@ def card_html(base: str, title: str, lines: list[str]) -> str:
             f"<div class='line'></div><h1>{html.escape(title)}</h1>{body}</div></body></html>")
 
 
+# Each scene's narration opens with its topic; the intro with the title.
+TOPICS = {"intro": "Clearline.", 1: "What it is.", 2: "Checkout.", 3: "The seller's day.", 4: "Shipping.", 5: "Disputes.",
+          6: "Refund requests.", 7: "Agents.", 8: "Invoices.", 9: "Money in flight.", 10: "Insights.", 11: "System status."}
+# Silence placed by hand between phrases (Kokoro's own pauses are trimmed off each phrase first).
+AFTER_TOPIC, AFTER_COMMA, BETWEEN_SENTENCES, BETWEEN_SCENES, FILM_START, FILM_END = 0.5, 0.2, 0.4, 0.7, 0.4, 0.8
+SPEED = 0.95
+
+
+def phrases(text: str) -> list[tuple[str, float]]:
+    """A line as (phrase, the pause after it): sentences, then the parts between commas and colons."""
+    out = []
+    for sentence in re.findall(r"[^.!?]+[.!?]?", text):
+        parts = re.findall(r"[^,:;]+[,:;]?", sentence.strip())
+        for i, part in enumerate(p.strip() for p in parts if p.strip()):
+            out.append((part, AFTER_COMMA if i < len(parts) - 1 else BETWEEN_SENTENCES))
+    if out:
+        out[-1] = (out[-1][0], 0.0)
+    return out
+
+
 class Voice:
     def __init__(self, voice: str, cache: Path):
         sys.path.insert(0, os.environ.get("KOKORO_PATH", r"D:\Temp\claude\clearline\tts"))
@@ -758,11 +778,29 @@ class Voice:
         self.kokoro = Kokoro(str(Path(KOKORO_DIR) / "kokoro-v1.0.onnx"), str(Path(KOKORO_DIR) / "voices-v1.0.bin"))
         cache.mkdir(parents=True, exist_ok=True)
 
-    def say(self, text: str) -> tuple[Path, float]:
-        target = self.cache / f"{hashlib.sha1((self.voice + text).encode()).hexdigest()[:16]}.wav"
+    def phrase(self, text: str):
+        """One phrase, with Kokoro's own silence trimmed from both ends."""
+        import numpy as np
+        samples, rate = self.kokoro.create(text, voice=self.voice, speed=SPEED, lang="en-us")
+        loud = np.flatnonzero(np.abs(samples) > 0.01)
+        if loud.size:
+            pad = int(rate * 0.02)
+            samples = samples[max(loud[0] - pad, 0):loud[-1] + pad]
+        return samples, rate
+
+    def say(self, text: str, topic: str | None = None, lead: float = 0.0) -> tuple[Path, float]:
+        """The line spoken phrase by phrase with the pauses placed exactly; `lead` s of silence first."""
+        import numpy as np
+        key = json.dumps([self.voice, SPEED, topic, text, lead])
+        target = self.cache / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"
         if not target.exists():
-            samples, rate = self.kokoro.create(text, voice=self.voice, speed=1.0, lang="en-us")
-            self.sf.write(str(target), samples, rate)
+            parts, rate = [], 24000
+            plan = ([(topic, AFTER_TOPIC)] if topic else []) + phrases(text)
+            for words, pause in plan:
+                samples, rate = self.phrase(words)
+                parts += [samples, np.zeros(int(rate * pause), dtype=samples.dtype)]
+            audio = np.concatenate([np.zeros(int(rate * lead), dtype=parts[0].dtype)] + parts)
+            self.sf.write(str(target), audio, rate)
         info = self.sf.info(str(target))
         return target, info.frames / info.samplerate
 
@@ -772,13 +810,12 @@ MAX_SPEED = 2.5    # the most footage is sped up before the middle of it is cut 
 
 
 def segment(ff: str, out: Path, *, video: Path | None, start: float, foot: float, panel: Path | None, card: Path | None,
-            audio: Path, speech: float, tight: bool) -> tuple[Path, float]:
+            audio: Path, speech: float, tail: float) -> tuple[Path, float]:
     """One step: footage (or a card) with its panel and narration. It lasts as long as the
     narration plus a short beat, so silence never runs past MAX_SILENCE: footage longer than that
     is sped up (up to MAX_SPEED), and what's still too long loses the middle of its dead time,
     keeping its start (the click) and its end (the result)."""
-    tail = 0.5 if tight else 0.9
-    total = max(speech + tail, 2.0)
+    total = speech + tail  # the narration, then the pause before the next step
     target = out / f"seg-{len(list(out.glob('seg-*.mp4'))):03d}.mp4"
     if card:
         inputs = ["-loop", "1", "-t", f"{total:.3f}", "-i", str(card), "-i", str(audio)]
@@ -810,15 +847,16 @@ def build_cut(ff: str, name: str, tight: bool, shots: list[Shot], bases: dict, p
     work.mkdir()
     script, segments = [], []
 
-    def add(key, **kw):
+    def add(key, topic=None, tail=BETWEEN_SENTENCES, lead=0.0, **kw):
         step = STEPS[key]
         text = step.short if tight else step.long
-        audio, speech = voice.say(text)
-        seg, total = segment(ff, work, audio=audio, speech=speech, tight=tight, **kw)
+        audio, speech = voice.say(text, topic, lead)
+        seg, total = segment(ff, work, audio=audio, speech=speech, tail=tail, **kw)
         segments.append(seg)
-        script.append((key, total, text))
+        script.append((key, total, f"{topic} {text}" if topic else text))
 
-    add("intro", video=None, start=0, foot=0, panel=None, card=pictures["intro"])
+    add("intro", topic=TOPICS["intro"], lead=FILM_START, tail=BETWEEN_SCENES,
+        video=None, start=0, foot=0, panel=None, card=pictures["intro"])
     for shot in shots:
         if shot.status != "PASS" or not shot.marks:
             continue
@@ -827,8 +865,10 @@ def build_cut(ff: str, name: str, tight: bool, shots: list[Shot], bases: dict, p
         points = [0.0] + [timeline(shot, at) for _, at, _ in shot.marks[1:]] + [whole]
         for i, (key, _, _) in enumerate(shot.marks):
             a, b = points[i], max(points[i + 1], points[i] + 0.5)
-            add(key, video=base, start=a, foot=b - a, panel=pictures[(shot.scene, key)], card=None)
-    add("outro", video=None, start=0, foot=0, panel=None, card=pictures["outro"])
+            last = i == len(shot.marks) - 1
+            add(key, topic=TOPICS.get(shot.scene) if i == 0 else None, tail=BETWEEN_SCENES if last else BETWEEN_SENTENCES,
+                video=base, start=a, foot=b - a, panel=pictures[(shot.scene, key)], card=None)
+    add("outro", tail=FILM_END, video=None, start=0, foot=0, panel=None, card=pictures["outro"])
     listing = work / "list.txt"
     listing.write_text("".join(f"file '{s.name}'\n" for s in segments), encoding="utf-8")
     joined = work / "joined.mp4"

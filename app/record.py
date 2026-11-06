@@ -59,7 +59,7 @@ class Scene:
     title: str
     caption: str
     run: object
-    videos: list = field(default_factory=list)  # (path, start, end) in seconds of that file
+    videos: list = field(default_factory=list)  # (path, start, end, crop) per clip; crop = (w, h) or None
     status: str = "PASS"
     detail: str = ""
 
@@ -182,6 +182,7 @@ def buy(stage: Stage, page):
         stage.point(page, button)
     popup = opening.value
     stage.popup = (popup, time.monotonic())
+    stage.popup_size = popup.evaluate("() => [innerWidth, innerHeight]")
     popup.wait_for_timeout(2500)
     stage.run.approve_popup(popup, stage.flow)
     stage.popup_closed = time.monotonic()
@@ -232,9 +233,13 @@ def dispute(stage: Stage, page):
         if part.count():
             stage.point(page, part, click=False)
     stage.point(page, row.locator("[data-approve]"))
-    stage.point(page, page.locator("[data-ok]"))
-    row.get_by_text("Evidence sent").first.wait_for(timeout=60000)
-    stage.point(page, row.get_by_text("Evidence sent").first, click=False)
+    with page.expect_response(lambda r: r.url.endswith("/act"), timeout=90000) as answered:
+        stage.point(page, page.locator("[data-ok]"))
+    assert answered.value.ok, f"PayPal refused: HTTP {answered.value.status}"
+    sent = row.get_by_text("Sent to PayPal").first  # the toast, then the line on the order's history
+    sent.wait_for(timeout=30000)
+    page.wait_for_timeout(PAUSE)
+    stage.point(page, row.locator(".history").get_by_text("Sent to PayPal").last, click=False)
     page.wait_for_timeout(PAUSE * 2)
 
 
@@ -281,7 +286,12 @@ def invoice(stage: Stage, page):
     cell.locator("[data-rem-send]").wait_for(state="visible", timeout=90000)
     stage.point(page, cell.locator("textarea, input").first, click=False)
     stage.point(page, cell.locator("[data-rem-send]"))
-    stage.point(page, page.locator("[data-ok]"))
+    with page.expect_response(lambda r: r.url.endswith("/remind"), timeout=90000) as answered:
+        stage.point(page, page.locator("[data-ok]"))
+    if answered.value.status != 200:  # PayPal allows two reminders per invoice per day
+        stage.note = f"PayPal didn't send the reminder (HTTP {answered.value.status}); recorded up to the draft."
+        page.wait_for_timeout(PAUSE * 3)
+        return
     page.get_by_text("Reminder sent").first.wait_for(timeout=60000)
     page.wait_for_timeout(PAUSE * 2)
 
@@ -316,6 +326,19 @@ def insights(stage: Stage, page):
             while stop.first.is_visible() and time.monotonic() < deadline:
                 page.wait_for_timeout(500)
             page.wait_for_timeout(PAUSE * 3)
+        # The new chart lands below the report, in Studio's own scrolling area: bring it into view.
+        found = page.evaluate("""() => {
+          const chat = document.querySelector('.ag-studio-ai-assistant-panel') || document.querySelector('[class*=ai-assistant]');
+          const titles = [...document.querySelectorAll('#studio *')].filter((e) => e.children.length === 0
+            && /by buyer country/i.test(e.textContent) && !(chat && chat.contains(e)) && !e.closest('[class*=ai-]'));
+          const title = titles.pop();
+          if (!title) return false;
+          title.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          return true;
+        }""")
+        page.wait_for_timeout(PAUSE * 3)
+        if not found:
+            stage.note = "The new chart's title wasn't found to scroll to."
     finally:
         stage.api.restore_layout(saved)
 
@@ -349,7 +372,7 @@ def record(stage: Stage, number: int, title: str, who: str, caption: str, fn) ->
     folder = stage.out / f"{number:02d}-raw"
     context = stage.context(who, folder)
     page = context.new_page()
-    stage.popup, stage.begin = None, None
+    stage.popup, stage.begin, stage.note = None, None, None
     started = time.monotonic()
     print(f"== scene {number}: {title}", flush=True)
     try:
@@ -361,14 +384,18 @@ def record(stage: Stage, number: int, title: str, who: str, caption: str, fn) ->
         ended = time.monotonic()
         popup = stage.popup
         context.close()
+    if stage.note and scene.status == "PASS":
+        scene.detail = stage.note
     main = Path(page.video.path())
     start = (stage.begin - started - 0.3) if stage.begin else 0  # from the first loaded page
     if popup:  # the PayPal popup is its own video: the buyer's page until the click, the popup, then back
         shown, opened = popup[0], popup[1] - started
         closed = getattr(stage, "popup_closed", ended) - started
-        scene.videos = [(main, start, opened), (Path(shown.video.path()), 0, closed - opened), (main, closed, ended - started)]
+        crop = tuple(stage.popup_size) if getattr(stage, "popup_size", None) else None
+        scene.videos = [(main, start, opened, None), (Path(shown.video.path()), 0, closed - opened, crop),
+                        (main, closed, ended - started, None)]
     else:
-        scene.videos = [(main, start, ended - started)]
+        scene.videos = [(main, start, ended - started, None)]
     print(f"   {scene.status} {scene.detail}", flush=True)
     return scene
 
@@ -407,10 +434,12 @@ def burn(ffmpeg: str, scene: Scene, out: Path) -> Path:
     caption = out / f"{scene.number:02d}-caption.txt"
     caption.write_text(wrap(scene.caption), encoding="utf-8")
     inputs, parts = [], []
-    for i, (path, start, end) in enumerate(scene.videos):
+    for i, (path, start, end, crop) in enumerate(scene.videos):
         inputs += ["-ss", f"{max(start, 0):.2f}", "-t", f"{max(end - start, 0.5):.2f}", "-i", str(path)]
-        parts.append(f"[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=white,"
-                     f"fps=30,setsar=1[v{i}]")
+        # A popup is recorded at the top left of a 1920x1080 frame: cut it out and enlarge it, above the caption.
+        cut = f"crop={min(crop[0], 1920)}:{min(crop[1], 1080)}:0:0,scale=-2:900," if crop else ""
+        parts.append(f"[{i}:v]{cut}scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:"
+                     f"{'30' if crop else '(oh-ih)/2'}:color=0xF6F8FA,fps=30,setsar=1[v{i}]")
     joined = "".join(f"[v{i}]" for i in range(len(parts)))
     text = (f"drawbox=x=0:y=ih-150:w=iw:h=150:color=0x142231@0.88:t=fill,"
             f"drawtext=fontfile='{escaped(Path(FONT))}':textfile='{escaped(caption)}':fontcolor=white:fontsize=40:"

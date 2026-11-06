@@ -811,12 +811,23 @@ def invoice_overdue(run: Run, f: Flow) -> None:
     with f.step("the overdue item shows on Today"):
         page.locator("#attention").get_by_text("overdue").first.wait_for(state="visible", timeout=30000)
     with f.step("draft the reminder"):
-        page.locator(f'[data-invoice-remind="{invoice_id}"]').click()
+        with page.expect_response(lambda r: r.url.endswith("/reminder-draft")) as drafted:
+            page.locator(f'[data-invoice-remind="{invoice_id}"]').click()
         cell = page.locator(f'[data-reminder="{invoice_id}"]')
         cell.locator("[data-rem-send]").wait_for(state="visible", timeout=60000)
+        draft = drafted.value.json()
+        f.note(f"Draft ({draft.get('source')}, {draft.get('provider') or 'no AI'}, {draft.get('days_overdue')} days overdue): "
+               f"subject {draft.get('subject')!r}; note {draft.get('note')!r}")
+        harsh = re.findall(r"\b(fees?|penalt\w*|interest|legal|lawyer|collections?|court|late charge)\b",
+                           f"{draft.get('subject')} {draft.get('note')}", re.I)
+        assert not harsh, f"The draft threatens or charges: {harsh}"
     with f.step("send the reminder"):
-        cell.locator("[data-rem-send]").click()
-        page.locator("[data-ok]").click()
+        with page.expect_response(lambda r: r.url.endswith("/remind")) as answered:
+            cell.locator("[data-rem-send]").click()
+            page.locator("[data-ok]").click()
+        reply = answered.value
+        f.note(f"PayPal's answer through /remind: HTTP {reply.status}: {reply.text()[:300]}")
+        assert reply.status == 200, f"The reminder wasn't sent: HTTP {reply.status}"
         wait_for(lambda: "invoice_reminder_sent" in run.api.kinds(invoice_id), 60, "the reminder on the timeline", 3)
 
 

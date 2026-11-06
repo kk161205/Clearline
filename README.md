@@ -673,8 +673,8 @@ python -m app.demo all       # both, archive first: run this on recording day
 The story: an order waiting to ship, a shipped order with an open item-not-received dispute and
 its recommendation, a shipped order whose buyer asked for a refund as not as described (the
 policy leaves it to the seller), an order a buyer's agent refunded through MCP, and three settled
-orders. Invoice `INV2-AYSR-JFEC-N8KQ-5A45` (`KEEP` in `app/demo.py`) is never archived or
-cancelled. Archiving only adds an `archived` event, so nothing is deleted: **Include archived** on
+orders. The invoices in `KEEP` (`app/demo.py`) are never archived or cancelled. `--only` runs
+some parts, e.g. `--only dispute`. Archiving only adds an `archived` event, so nothing is deleted: **Include archived** on
 `/seller` shows them again. It works through the live site with the same settings and guards as
 `python -m app.e2e`, and a demo account can't archive or cancel.
 

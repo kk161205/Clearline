@@ -20,8 +20,9 @@ import httpx
 from .e2e import (OUT, PASS, Api, Config, Flow, Run, agent, assert_sandbox, report, run_flow,
                   shipped_dispute)
 
-# Kept through every reset: the invoice that's overdue for the reminder scene.
-KEEP = ["INV2-AYSR-JFEC-N8KQ-5A45"]
+# Kept through every reset: the invoice that's overdue for the reminder scene, and the 300.00 USD
+# invoice (due 7 Nov) for the presenter's own video.
+KEEP = ["INV2-AYSR-JFEC-N8KQ-5A45", "INV2-A3MW-46XR-45MP-HCWV"]
 SETTLED = 3
 
 
@@ -100,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.demo", description="Reset the live demo (Sandbox only).")
     parser.add_argument("action", choices=("archive", "story", "all"))
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--only", help=f"story parts, comma-separated: {', '.join(STORY)}")
     parser.add_argument("--out", default=OUT)
     args = parser.parse_args(argv)
     config = Config()
@@ -118,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
             run = Run(config, out, browser, None, None)
             try:
                 for name, fn in STORY.items():
+                    if args.only and name not in args.only.split(","):
+                        continue
                     run_flow(run, name, fn)
                     (out / "report.md").write_text(report(run, None), encoding="utf-8")
             finally:

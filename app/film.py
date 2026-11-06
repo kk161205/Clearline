@@ -29,17 +29,38 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from .e2e import Config, Run, assert_sandbox
-from .record import FONT, PAUSE, STAGE, Stage, card, escaped, ffmpeg_exe, length, open_card, wrap
+from .record import PAUSE, STAGE, Stage, ffmpeg_exe, length, open_card
 
 OUT = r"D:\Temp\claude\clearline\film"
 KOKORO_DIR = os.environ.get("KOKORO_DIR", r"D:\Temp\claude\clearline\tts-models")
 APP = {"width": 1440, "height": 1080}
 PANEL_W = 480
-BAR = 120  # caption bar height, over the app's half only
+TIME_ZONE, ZONE_LABEL = "Asia/Kolkata", "IST"  # the filmed pages and the panel's proof agree
+# While filming: the login's email blurred, and any email in a page's text shown as "buyer@…".
+MASK_EMAILS = r"""
+(() => {
+  const re = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
+  const clean = (root) => {
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) if (re.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(re, 'buyer@…');
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    const s = document.createElement('style');
+    s.textContent = '#email { filter: blur(7px); }';
+    document.head.appendChild(s);
+    clean(document.body);
+    new MutationObserver((changes) => changes.forEach((c) => c.addedNodes.forEach((n) =>
+      n.nodeType === 3 ? (re.test(n.nodeValue) && (n.nodeValue = n.nodeValue.replace(re, 'buyer@…'))) : n.nodeType === 1 && clean(n))))
+      .observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+})();
+"""
 LIVE_URL = "https://clearline-cbyb.onrender.com"
 REPO_URL = "https://github.com/kk161205/Clearline"
 
@@ -83,7 +104,7 @@ class Step:
     path: list            # [(from, to)] arrows lit up on the map
     what: str
     how: list
-    caption: str          # burnt in, short
+    caption: str          # one short line, in the panel under the proof
     short: str            # narration, tight cut
     long: str             # narration, deep dive
 
@@ -242,12 +263,9 @@ class Film(Stage):
         state = self.run.states.get(who) if who else None
         context = self.run.browser.new_context(
             viewport=APP, record_video_dir=str(folder), record_video_size=APP, color_scheme="light",
-            storage_state=str(state) if state and state.exists() else None)
+            timezone_id=TIME_ZONE, storage_state=str(state) if state and state.exists() else None)
         context.add_init_script(STAGE)
-        # The login's email blurred; Studio's report box ends above the caption bar (filming only).
-        context.add_init_script("document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style');"
-                                f" s.textContent = '#email {{ filter: blur(7px); }} .studio {{ height: calc(100vh - {220 + BAR + 20}px) !important; }}';"
-                                " document.head.appendChild(s); });")
+        context.add_init_script(MASK_EMAILS)
         self.run.watch(context, self.flow)
         return context
 
@@ -278,7 +296,8 @@ class Film(Stage):
 
 
 def when(ts: float) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%H:%M:%S UTC")
+    """In the time zone the filmed pages show, so the panel and the page agree."""
+    return datetime.fromtimestamp(ts, ZoneInfo(TIME_ZONE)).strftime("%H:%M:%S ") + ZONE_LABEL
 
 
 def event_proof(film: Film, order_id: str, kind: str, fields=()) -> str:
@@ -352,7 +371,7 @@ def s_login(film: Film, page):
     film.point(page, page.locator("button[type=submit]"))
     page.wait_for_url("**/seller")
     seen["cookie"] = next((c for c in page.context.cookies() if c["name"] == "clearline_session"), None)
-    page.locator("ul.attention").wait_for(timeout=60000)
+    page.locator("#attention ul.attention, #attention .empty").first.wait_for(timeout=60000)
 
     def today():
         return f"{page_count[0]} items on Today\nGET /api/seller/summary · 200, then 304"
@@ -360,8 +379,8 @@ def s_login(film: Film, page):
     page_count = [0]
     film.step("today", today)
     page.wait_for_timeout(PAUSE)
-    page_count[0] = page.locator("ul.attention li").count()
-    for item in page.locator("ul.attention li").all()[:3]:
+    page_count[0] = page.locator("#attention ul.attention li").count()
+    for item in page.locator("#attention ul.attention li").all()[:3]:
         film.point(page, item, click=False)
 
 
@@ -466,7 +485,7 @@ def s_agent(film: Film, page):
 
 def s_invoice(film: Film, page):
     page.goto(film.config.base + "/seller", wait_until="load")
-    item = page.locator("ul.attention li").filter(has_text="overdue").first
+    item = page.locator("#attention ul.attention li").filter(has_text="overdue").first
     item.wait_for(timeout=60000)
     invoice_id = film.extra.get("invoice_id")
     film.step("overdue", lambda: event_proof(film, invoice_id, "invoice_status", ("number", "status", "due_date"))
@@ -542,6 +561,8 @@ def s_insights(film: Film, page):
                 chat = page.locator(".ag-studio-panel", has_text="AI Assistant").first.inner_text()
                 failed = page.locator(".ag-studio-ai-step-row-failed").count() or re.search(r"\b\d+ failed\b|could not", chat, re.I)
                 if not failed:
+                    if key == "ask":
+                        page.wait_for_timeout(2000)  # the first answer stays on screen before the next question
                     break
                 film.cut(take, film.now())  # drop the take with a failed step
         found = page.evaluate("""() => {
@@ -549,7 +570,7 @@ def s_insights(film: Film, page):
             && /by buyer country/i.test(e.textContent) && !e.closest('[class*=ai-]'));
           let el = titles.pop();
           if (!el) return false;
-          el.scrollIntoView({ block: 'start', behavior: 'smooth' });  // its title at the top: the chart sits above the caption
+          el.scrollIntoView({ block: 'start', behavior: 'smooth' });  // its title at the top: the whole chart in view
           return true;
         }""")
         page.wait_for_timeout(PAUSE * 2)
@@ -646,7 +667,7 @@ def base_video(ff: str, shot: Shot, out: Path) -> Path:
     inputs, parts = [], []
     for i, (path, off, a, b, crop) in enumerate(shot.clips):
         inputs += ["-ss", f"{max(a - off, 0):.3f}", "-t", f"{b - a:.3f}", "-i", str(path)]
-        cut = f"crop={min(crop[0], APP['width'])}:{min(crop[1], APP['height'])}:0:0,scale=-2:{APP['height'] - BAR - 60}," if crop else ""
+        cut = f"crop={min(crop[0], APP['width'])}:{min(crop[1], APP['height'])}:0:0,scale=-2:{APP['height'] - 60}," if crop else ""
         parts.append(f"[{i}:v]{cut}scale={APP['width']}:{APP['height']}:force_original_aspect_ratio=decrease,"
                      f"pad={APP['width']}:{APP['height']}:(ow-iw)/2:{'30' if crop else '(oh-ih)/2'}:color=0xF6F8FA,fps=30,setsar=1[v{i}]")
     graph = ";".join(parts) + ";" + "".join(f"[v{i}]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=1:a=0[out]"
@@ -696,6 +717,9 @@ PANEL_CSS = """
 ul { margin: 0 0 22px; padding-left: 20px; font-size: 18px; line-height: 1.45; } li { margin-bottom: 6px; }
 .proof { font-family: "Cascadia Mono", Consolas, monospace; font-size: 14.5px; line-height: 1.5; background: #fff;
   border: 1px solid #D9E0E7; border-left: 4px solid #0E8C7E; border-radius: 10px; padding: 12px 14px; white-space: pre-wrap; }
+.caption { position: absolute; left: 20px; right: 20px; bottom: 28px; background: #142231; color: #fff; border-radius: 12px;
+  padding: 16px 18px; font-size: 22px; line-height: 1.35; font-weight: 600; }
+body { position: relative; }
 """
 
 
@@ -707,7 +731,7 @@ def panel_html(base: str, scene: int, title: str, step: Step, proof: str) -> str
             f"<div class='k'>What happened</div><h2>{html.escape(step.what)}</h2>"
             f"<div class='k'>How</div><ul>{how}</ul>"
             f"<div class='k'>Proof, from the live timeline</div><div class='proof'>{html.escape(proof or '—')}</div>"
-            "</body></html>")
+            f"<div class='caption'>{html.escape(step.caption)}</div></body></html>")
 
 
 CARD_CSS = """
@@ -743,32 +767,35 @@ class Voice:
         return target, info.frames / info.samplerate
 
 
+MAX_SILENCE = 1.5  # seconds without narration, anywhere in the film
+MAX_SPEED = 2.5    # the most footage is sped up before the middle of it is cut instead
+
+
 def segment(ff: str, out: Path, *, video: Path | None, start: float, foot: float, panel: Path | None, card: Path | None,
-            audio: Path, speech: float, caption: str, tight: bool) -> tuple[Path, float]:
-    """One step: footage (or a card), its panel, caption and narration. Lasts as long as the
-    narration or the footage, whichever is longer; long footage is sped up a little in the tight cut."""
+            audio: Path, speech: float, tight: bool) -> tuple[Path, float]:
+    """One step: footage (or a card) with its panel and narration. It lasts as long as the
+    narration plus a short beat, so silence never runs past MAX_SILENCE: footage longer than that
+    is sped up (up to MAX_SPEED), and what's still too long loses the middle of its dead time,
+    keeping its start (the click) and its end (the result)."""
     tail = 0.5 if tight else 0.9
-    need = speech + tail
-    speed = 1.0
-    if video and foot > need:
-        speed = min(foot / need, 1.6 if tight else 1.25)
-    shown = foot / speed if video else need
-    total = max(need, shown, 2.0)
+    total = max(speech + tail, 2.0)
     target = out / f"seg-{len(list(out.glob('seg-*.mp4'))):03d}.mp4"
-    cap = out / "caption.txt"
-    cap.write_text(wrap(caption, 58), encoding="utf-8")
     if card:
         inputs = ["-loop", "1", "-t", f"{total:.3f}", "-i", str(card), "-i", str(audio)]
         graph = "[0:v]scale=1920:1080,fps=30,setsar=1[out]"
         amap = "1:a"
     else:
+        speed = min(max(foot / total, 1.0), MAX_SPEED)
+        keep = total * speed  # seconds of footage that fit at that speed
+        if foot > keep + 0.05:  # drop the middle: the first 60% of what fits, then the end
+            head, end = keep * 0.6, keep * 0.4
+            pick = f"select='between(t,0,{head:.3f})+between(t,{foot - end:.3f},{foot:.3f})',setpts=N/FRAME_RATE/TB,"
+        else:
+            pick = ""
         inputs = ["-ss", f"{start:.3f}", "-t", f"{foot:.3f}", "-i", str(video), "-loop", "1", "-t", f"{total:.3f}", "-i", str(panel),
                   "-i", str(audio)]
-        text = (f",drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=0x142231@0.88:t=fill,drawtext=fontfile='{escaped(Path(FONT))}':"
-                f"textfile='{escaped(cap)}':fontcolor=white:fontsize=36:line_spacing=8:x=(w-text_w)/2:y=h-{BAR // 2}-text_h/2"
-                if caption else "")
-        graph = (f"[0:v]setpts=(PTS-STARTPTS)/{speed:.4f},fps=30,tpad=stop_mode=clone:stop_duration={total:.3f},"
-                 f"trim=duration={total:.3f}{text}[v];[1:v]scale={PANEL_W}:1080,fps=30[p];[v][p]hstack=inputs=2,setsar=1[out]")
+        graph = (f"[0:v]fps=30,{pick}setpts=(PTS-STARTPTS)/{speed:.4f},fps=30,tpad=stop_mode=clone:stop_duration={total:.3f},"
+                 f"trim=duration={total:.3f}[v];[1:v]scale={PANEL_W}:1080,fps=30[p];[v][p]hstack=inputs=2,setsar=1[out]")
         amap = "2:a"
     subprocess.run([ff, "-y", "-loglevel", "error", *inputs, "-filter_complex", graph, "-map", "[out]", "-map", amap,
                     "-af", f"apad,atrim=duration={total:.3f},aresample=48000", "-c:v", "libx264", "-preset", "medium",
@@ -787,7 +814,7 @@ def build_cut(ff: str, name: str, tight: bool, shots: list[Shot], bases: dict, p
         step = STEPS[key]
         text = step.short if tight else step.long
         audio, speech = voice.say(text)
-        seg, total = segment(ff, work, audio=audio, speech=speech, caption=step.caption, tight=tight, **kw)
+        seg, total = segment(ff, work, audio=audio, speech=speech, tight=tight, **kw)
         segments.append(seg)
         script.append((key, total, text))
 
@@ -804,11 +831,28 @@ def build_cut(ff: str, name: str, tight: bool, shots: list[Shot], bases: dict, p
     add("outro", video=None, start=0, foot=0, panel=None, card=pictures["outro"])
     listing = work / "list.txt"
     listing.write_text("".join(f"file '{s.name}'\n" for s in segments), encoding="utf-8")
-    film = out / f"{name}.mp4"
+    joined = work / "joined.mp4"
     subprocess.run([ff, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
-                    "-movflags", "+faststart", str(film)], check=True, cwd=work)
+                    str(joined)], check=True, cwd=work)
+    film = out / f"{name}.mp4"
+    loudnorm(ff, joined, film)
     shutil.rmtree(work)
     return film, script
+
+
+LOUDNESS = "I=-16:TP=-2.0:LRA=11"  # true peak aimed under -1.5 dB with room to spare
+
+
+def loudnorm(ff: str, source: Path, target: Path):
+    """Two-pass loudness normalisation of the whole mix: about -16 LUFS, true peak below -1.5 dB."""
+    probe = subprocess.run([ff, "-hide_banner", "-i", str(source), "-af", f"loudnorm={LOUDNESS}:print_format=json",
+                            "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    measured = json.loads(probe.stderr[probe.stderr.rindex("{"):probe.stderr.rindex("}") + 1])
+    second = (f"loudnorm={LOUDNESS}:measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
+              f"measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}:"
+              f"offset={measured['target_offset']}:linear=true")
+    subprocess.run([ff, "-y", "-loglevel", "error", "-i", str(source), "-c:v", "copy", "-af", f"{second},aresample=48000",
+                    "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(target)], check=True)
 
 
 def write_script(path: Path, script: list, shots: list[Shot]):
@@ -820,6 +864,22 @@ def write_script(path: Path, script: list, shots: list[Shot]):
                      f"({total:.1f} s)\n{text}\n")
         clock += total
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def licence_present(config: Config) -> bool:
+    from .e2e import Api
+    return bool(Api(config).get("/api/insights/license").get("key"))
+
+
+def honest_without_licence():
+    """Without AG Studio's licence key, Insights shows the trial watermark and one check isn't
+    green: the narration says so rather than "all green"."""
+    step = STEPS["status"]
+    step.what, step.caption = "Every check, run live", "Checked live. One key still to add."
+    step.short = "And System status runs every check live. All pass, except the AG Studio licence, which is still on its trial."
+    step.long = ("Finally, System status runs every check live: the database, the PayPal token, the webhook id and the AI "
+                 "keys all pass. The one gap is the AG Studio licence key, still on its trial, which is why Insights shows "
+                 "a watermark.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -840,6 +900,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise
             time.sleep(5)
     ff = ffmpeg_exe()
+    ag_key = licence_present(config)
+    if not ag_key:
+        honest_without_licence()
+    print(f"AG Studio licence key on the live site: {'present' if ag_key else 'MISSING (the film says so)'}", flush=True)
     voice = Voice(args.voice, Path(args.out) / "voice-cache")
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True)

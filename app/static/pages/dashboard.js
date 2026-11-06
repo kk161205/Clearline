@@ -81,7 +81,7 @@ const columnDefs = [
   { field: "item", headerName: "Item", flex: 1, minWidth: 180, filter: "agTextColumnFilter", tooltipField: "item" },
   { field: "amountNum", headerName: "Amount", type: "rightAligned", width: 130, filter: "agNumberColumnFilter",
     cellClass: ["num", "ag-right-aligned-cell"], valueFormatter: (p) => (p.data ? `${p.data.amount} ${p.data.currency}` : "") },
-  { field: "status", headerName: "Status", width: 130, filter: "agTextColumnFilter",
+  { field: "status", headerName: "Status", width: 165, filter: "agTextColumnFilter", // fits "Paid, not shipped"
     cellRenderer: (p) => (p.data ? `<span class="pill ${PILL[p.data.state]}">${esc(p.value)}</span>` : "") },
   { field: "next", headerName: "Next action", minWidth: 210, flex: 1, filter: "agTextColumnFilter", pinned: null,
     cellRenderer: (p) => (p.data ? `<span class="next ${nextTone(p.data)}">${esc(p.value)}</span>` : "") },

@@ -196,10 +196,10 @@ def buy(stage: Stage, page):
 
 def today(stage: Stage, page):
     page.goto(stage.config.base + "/seller", wait_until="load")
-    page.locator("ul.attention").wait_for(timeout=60000)
+    page.locator("#attention ul.attention, #attention .empty").first.wait_for(timeout=60000)
     stage.ready()
     page.wait_for_timeout(PAUSE)
-    for item in page.locator("ul.attention li").all()[:4]:
+    for item in page.locator("#attention ul.attention li").all()[:4]:
         stage.point(page, item, click=False)
 
 
@@ -279,7 +279,7 @@ def agent(stage: Stage, page):
 
 def invoice(stage: Stage, page):
     page.goto(stage.config.base + "/seller", wait_until="load")
-    item = page.locator("ul.attention li").filter(has_text="overdue").first
+    item = page.locator("#attention ul.attention li").filter(has_text="overdue").first
     item.wait_for(timeout=60000)
     stage.point(page, item.locator("button"))
     cell = page.locator("[data-reminder]").filter(has=page.locator("[data-rem-send]")).first

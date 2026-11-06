@@ -93,6 +93,14 @@ def test_archive_hides_everything_but_what_it_keeps(tmp_path):
     assert client.post("/api/archive", json={"keep": ["ORDER2"]}).json() == {"archived": 0}  # again: nothing
 
 
+def test_archive_only_some(tmp_path):
+    client, store = shop(tmp_path)
+    store.add("ORDER2", "payment_captured", {"capture_id": "CAP2"})
+    assert client.post("/api/archive", json={"only": ["INV2-1"]}).json() == {"archived": 1}
+    body = client.get("/api/seller/summary").json()
+    assert body["invoices"] == [] and {o["order_id"] for o in body["orders"]} == {"ORDER1", "ORDER2"}
+
+
 def test_include_archived_shows_them_again_marked(tmp_path):
     client, _ = shop(tmp_path)
     client.post("/api/archive", json={})

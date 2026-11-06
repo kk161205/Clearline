@@ -181,6 +181,7 @@ class PurposeIn(BaseModel):
 
 class ArchiveIn(BaseModel):
     keep: list[str] = Field(default=[], max_length=50)  # order or invoice ids to leave out
+    only: list[str] | None = Field(default=None, max_length=50)  # just these ids, nothing else
 
 
 class FiraIn(BaseModel):
@@ -1079,7 +1080,8 @@ def create_app(settings: Settings | None = None,
 
     @app.post("/api/archive")
     async def archive(body: ArchiveIn, request: Request):
-        """Put away every order and invoice except `keep` (the demo reset). Nothing is deleted:
+        """Put away every order and invoice except `keep`, or with `only` just those (the demo
+        reset). Nothing is deleted:
         each gets an "archived" event. Already archived ones are left as they are."""
         not_for_demo(request)
         done = 0
@@ -1087,6 +1089,8 @@ def create_app(settings: Settings | None = None,
             if o["order_id"] == "other" or o["order_id"].startswith("unmatched:"):
                 continue
             if ARCHIVED in o["kinds"] or o["order_id"] in body.keep:
+                continue
+            if body.only is not None and o["order_id"] not in body.only:
                 continue
             store.add(o["order_id"], ARCHIVED, {"by": current_user(request)["id"]})
             done += 1

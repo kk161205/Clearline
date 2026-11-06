@@ -556,7 +556,7 @@ def fill_filing_screen(page) -> None:
         page.wait_for_timeout(600)
     details = page.locator("textarea:visible")
     if details.count() and not details.first.input_value():
-        details.first.fill("Sandbox end-to-end test: the item has not arrived.")
+        details.first.fill("My order still hasn't arrived and the tracking hasn't moved.")
         page.wait_for_timeout(600)
 
 
@@ -750,7 +750,7 @@ def mcp_calls(url: str, link: str) -> tuple[dict, dict]:
         async with Client(url) as client:
             status = await client.call_tool("get_order_status", {"order_link": link})
             refund = await client.call_tool("request_refund", {"order_link": link, "reason": "changed_mind",
-                                                               "message": "End-to-end test"})
+                                                               "message": "Ordered the wrong size by mistake, sorry."})
             return body(status), body(refund)
 
     with ThreadPoolExecutor(max_workers=1) as pool:  # Playwright's sync API owns this thread's loop
@@ -779,11 +779,11 @@ def invoice(run: Run, f: Flow) -> None:
     page = run.seller(f)
     with f.step("create a draft invoice due tomorrow"):
         page.evaluate("document.getElementById('new-invoice').open = true")
-        page.fill("#inv-client", "End-to-end test client")
+        page.fill("#inv-client", "Kapoor Interiors (Meera Kapoor)")
         page.fill("#inv-email", run.config.buyer_email)
         page.select_option("#inv-currency", "USD")
         page.fill("#inv-due", due)
-        page.locator('[data-item="name"]').first.fill("End-to-end test invoice")
+        page.locator('[data-item="name"]').first.fill("Printed brand kit (logo + business cards)")
         page.locator('[data-item="unit_amount"]').first.fill("25.00")
         with page.expect_response(lambda r: r.url.endswith("/api/invoices") and r.request.method == "POST") as created:
             page.click("#invoice-create")

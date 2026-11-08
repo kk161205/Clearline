@@ -1,5 +1,7 @@
 const esc = UI.esc;
 const day = UI.date; // "27 Oct"; the year only when it isn't this year
+// A moment on the viewer's own calendar when the server sent one, else its UTC day.
+const onDay = (at, utcDay) => (at ? day(at) : UI.shortDay(utcDay || ""));
 const token = location.pathname.split("/").pop();
 let data = null, open = null, notice = "", busy = false;
 const CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -14,7 +16,7 @@ function headline(d) {
   const s = d.shipping;
   if (fullyRefunded(d)) return `Refunded in full on ${day(d.refunds[d.refunds.length - 1].at)}`;
   if (d.kind === "invoice") return d.paid_on ? `Invoice paid on ${UI.shortDay(d.paid_on)}` : "Invoice paid";
-  if (s && s.shipped) return `Shipped with ${UI.word("carrier", s.carrier)}${s.shipped_on ? ` on ${UI.shortDay(s.shipped_on)}` : ""}`;
+  if (s && s.shipped) return `Shipped with ${UI.word("carrier", s.carrier)}${s.shipped_on ? ` on ${onDay(s.shipped_at, s.shipped_on)}` : ""}`;
   return "Paid, not shipped yet";
 }
 
@@ -29,10 +31,10 @@ function shippingHtml(s) {
 // (never with a date: we don't know one). It turns amber from a refund still processing.
 function line(d) {
   const s = d.shipping;
-  const stops = [{ key: "paid", tone: "settled", seg: "settled", title: "Paid", when: UI.shortDay(d.paid_on || ""),
+  const stops = [{ key: "paid", tone: "settled", seg: "settled", title: "Paid", when: onDay(d.paid_at, d.paid_on),
                    detail: `<div class="cl-detail">Paid with PayPal</div>` }];
   if (s && s.shipped) stops.push({ key: "shipped", tone: "settled", seg: "settled", title: `Shipped with ${UI.word("carrier", s.carrier)}`,
-                                   when: UI.shortDay(s.shipped_on || ""), detail: shippingHtml(s) });
+                                   when: onDay(s.shipped_at, s.shipped_on), detail: shippingHtml(s) });
   let held = false;
   d.refunds.forEach((r, i) => {
     held = held || !refundDone(r);

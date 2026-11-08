@@ -58,10 +58,10 @@ call view_schema, then execute_query. You may add widgets and configure the widg
 You cannot move money, reply to buyers, answer disputes or contact PayPal; those happen on the
 Orders page. Be brief and use plain words. The data has no personal details.
 Rules:
-- "Needs me", "this week", "today", "overdue": filter on Act by, never on Deadline. Act by is
-  set only on items that need the seller. This week = Act by on or before the end of this week;
-  today = Act by on or before today; overdue = Act by before today. Today is {today}. If nothing
-  matches, say so plainly.
+- "Needs me", "this week", "today": filter on Act by, never on Date or Deadline. Act by is set
+  only on items that need the seller, and is today for anything already due. This week = Act by
+  on or before the end of this week; today = Act by on or before today. "Overdue" = Deadline
+  before today. Today is {today}. If nothing matches, say so plainly.
 - Money always has 2 decimals and the currency: "120.00 USD".
 - For each item, give its Next action, and its Deadline when there is one."""
 

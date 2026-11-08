@@ -24,7 +24,7 @@ const page = new Function(script +
   " setEnv: (e) => { ENV = e; } };")();
 
 const scenarios = JSON.parse(fs.readFileSync(0, "utf8"));
-const results = scenarios.map(({ env, events, buyer, exportData, ai, demo }) => {
+const results = scenarios.map(({ env, events, buyer, exportData, ai, demo, invoices }) => {
   page.setEnv(env);
   const state = page.currentDispute(events || []);
   const d = page.disputePanel(state);
@@ -35,6 +35,6 @@ const results = scenarios.map(({ env, events, buyer, exportData, ai, demo }) => 
            export: exportData ? page.exportSection("ORDER1", exportData) : "",
            canShip: page.canShip(events || [], buyer || null),
            ai: ai === undefined ? null : page.aiProvider(ai, Boolean(demo)),
-           today: page.attentionItems([{ order_id: "ORDER000000001", events: events || [], amount: "120.00 USD", buyer: buyer || null }], []) };
+           today: page.attentionItems([{ order_id: "ORDER000000001", events: events || [], amount: "120.00 USD", buyer: buyer || null }], invoices || []) };
 });
 process.stdout.write(JSON.stringify(results));

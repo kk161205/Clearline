@@ -42,13 +42,19 @@ const DAILY_FIELDS = [
 const moneyText = (value, cur) => (value == null || value === "" || isNaN(Number(value)) ? "" : `${Number(value).toFixed(2)} ${cur}`);
 const moneyFormatter = (cur) => () => (value) => moneyText(value, cur);
 
-// Pure: Studio sources from an /api/dashboard payload (the page harness tests this).
-function toSources(d) {
+// Pure: YYYY-MM-DD in the browser's own calendar, the one Studio's relative date filters use.
+const localDay = (at = new Date()) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+
+// Pure: Studio sources from an /api/dashboard payload (the page harness tests this). Act by is
+// worked out again here in the browser's calendar: the server's "today" is UTC, so for a seller in
+// India "this week" on a Monday morning would otherwise miss everything due "today".
+function toSources(d, today = localDay()) {
+  const actBy = (r) => (!r.needs_you ? null : r.deadline && r.deadline.slice(0, 10) > today ? r.deadline.slice(0, 10) : today);
   const cur = d.charts.currency;
   const money = d.rows.filter((r) => r.currency === cur).map((r) => ({
-    ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.date, item: r.item,
+    ref: r.ref, kind: r.kind === "invoice" ? "Invoice" : "Order", date: r.at ? localDay(new Date(r.at * 1000)) : r.date, item: r.item,
     country: r.country || "Unknown", state: STATE_LABEL[r.state], status: r.status, next: r.next,
-    needs_you: Boolean(r.needs_you), deadline: r.deadline || null, act_by: r.act_by || null, amount: Number(r.amount), refunded: Number(r.refunded),
+    needs_you: Boolean(r.needs_you), deadline: r.deadline || null, act_by: actBy(r), amount: Number(r.amount), refunded: Number(r.refunded),
     net: Number(r.amount) - Number(r.refunded),
   }));
   const disputes = d.rows.filter((r) => r.dispute && r.currency === cur).map((r) => ({

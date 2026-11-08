@@ -65,12 +65,13 @@ def _iso_day(value: str | None) -> date | None:
 
 
 def act_by(needs_you: bool, deadline: date | None, today: date) -> str | None:
-    """When the seller should act: the deadline if there is one, today if the item is waiting
-    on the seller with no deadline, nothing if it isn't the seller's turn. A plain date filter
-    ("Act by this week / today / overdue") then returns exactly the items that need the seller."""
+    """When the seller should act: the deadline while it's still ahead, today if the item is
+    waiting on the seller with no deadline or a missed one, nothing if it isn't the seller's turn.
+    A plain date filter ("Act by this week / today") then returns exactly the items that need the
+    seller, overdue ones included; "overdue" itself is Deadline before today."""
     if not needs_you:
         return None
-    return (deadline or today).isoformat()
+    return max(deadline or today, today).isoformat()
 
 
 def safe_history(events: list[dict]) -> list[dict]:
@@ -147,6 +148,7 @@ def order_row(ref: str, events: list[dict], today: date, item_names: dict) -> di
     dp = dispute["payload"] if dispute else {}
     return {
         "kind": "order", "ref": mask(ref), "date": _date(captured_evt["created_at"]).isoformat(),
+        "at": captured_evt["created_at"],
         "item": item_names.get(item_id, item_id or "Order"),
         "country": captured_evt["payload"].get("payer_country"),
         "amount": f"{captured:.2f}", "refunded": f"{refunded:.2f}", "currency": currency,
@@ -192,7 +194,7 @@ def invoice_row(ref: str, events: list[dict], today: date) -> dict | None:
     when = paid["created_at"] if paid else statuses[0]["created_at"]
     return {
         "kind": "invoice", "ref": f"Invoice {s.get('number')}" if s.get("number") else mask(ref),
-        "date": _date(when).isoformat(), "item": ", ".join(items) or "Invoice",
+        "date": _date(when).isoformat(), "at": when, "item": ", ".join(items) or "Invoice",
         "country": s.get("recipient_country"),
         "amount": _amount(s.get("amount")), "refunded": f"{refunded:.2f}", "currency": s.get("currency") or "",
         "state": state, "status": STATE_LABELS[state] if state != "unpaid" or not overdue else "Overdue",

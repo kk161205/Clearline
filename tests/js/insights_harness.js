@@ -14,7 +14,7 @@ const view = new Function(script + "; return { layoutKey, layoutChanged, isAdvis
 
 const data = JSON.parse(fs.readFileSync(0, "utf8"));
 const state = view.defaultState(data.charts.currency);
-const sources = view.toSources(data);
+const sources = view.toSources(data, data.today);  // undefined: the browser's own day
 // What each money field's display formatter shows (functions don't survive JSON).
 const formatted = Object.fromEntries(sources.flatMap((src) => src.fields.filter((fd) => fd.createValueFormatter)
   .map((fd) => [`${src.id}.${fd.id}`, [1140, 900, 0.5, null].map((v) => fd.createValueFormatter()(v))])));

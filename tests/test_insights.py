@@ -117,7 +117,9 @@ def insights_view(data):
 def test_insights_report_is_built_from_the_dashboard_data(mixed):  # noqa: F811
     client, _ = mixed
     data = client.get("/api/dashboard").json()
-    view = insights_view(data)
+    from datetime import date
+    today = date.today().isoformat()
+    view = insights_view({**data, "today": today})
     sources = {s["id"]: s for s in view["sources"]}
     assert set(sources) == {"money", "daily", "disputes"}
 
@@ -126,6 +128,9 @@ def test_insights_report_is_built_from_the_dashboard_data(mixed):  # noqa: F811
     assert sum(r["amount"] for r in sources["money"]["data"]) == sum(float(r["amount"]) for r in data["rows"])
     assert {r["state"] for r in sources["money"]["data"]} <= {"Settled", "Waiting", "Disputed", "Unpaid"}
     assert len(sources["disputes"]["data"]) == data["kpis"]["disputes"]["total"]
+    # Act by in the browser's calendar: today for anything already due, else the deadline.
+    for r in sources["money"]["data"]:
+        assert r["act_by"] == (None if not r["needs_you"] else max(r["deadline"] or today, today))
     dump = json.dumps(view)
     for secret in (EMAIL, CLIENT, NOTE, "ORDER0000000PLAIN"):
         assert secret not in dump

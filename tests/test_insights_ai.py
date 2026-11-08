@@ -361,9 +361,9 @@ def test_needs_you_guidance_and_today_are_sent_with_the_question(tmp_path):
     turn = then_result({"tool_calls": [{"id": "q1", "name": "execute_query", "arguments": "{}"}]}, output=SIX_ROWS)
     assert client.post("/api/insights/ai", json=turn).status_code == 200
     body = sent(gemini)
-    system = body["messages"][0]["content"]
-    assert "filter on Act by, never on Deadline" in system
-    assert "Act by is\n  set only on items that need the seller" in system and "say so plainly" in system
+    system = " ".join(body["messages"][0]["content"].split())
+    assert "filter on Act by, never on Date or Deadline" in system
+    assert "Act by is set only on items that need the seller" in system and "say so plainly" in system
     assert '"120.00 USD"' in system and "its Next action, and its Deadline when there is one" in system
     assert f"Today is {TODAY.isoformat()}." in system
     tool = next(m for m in body["messages"] if m["role"] == "tool")
@@ -488,9 +488,9 @@ def test_strip_pii_on_both_ai_paths(path):
 # ---- This round: needs-you wording, widget building, turn caps, issues, per-turn logs -------
 
 def test_needs_me_questions_filter_on_act_by():
-    system = chat_messages(InsightsTurn(**question()))[0]["content"]
+    system = " ".join(chat_messages(InsightsTurn(**question()))[0]["content"].split())
     assert "This week = Act by on or before the end of this week" in system
-    assert "overdue = Act by before today" in system
+    assert '"Overdue" = Deadline before today' in system and "never on Date or Deadline" in system
 
 
 def test_widget_guide_with_the_bar_chart_example_goes_to_gemini_only():

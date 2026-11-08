@@ -392,3 +392,21 @@ def test_buyer_line_shows_next_step_without_a_date():
     ahead = re.search(r'<li class="cl-stop ahead".*?</li>', page, re.S).group(0)
     assert "Delivery not confirmed yet" in ahead and "Oct" not in ahead  # never an invented date
     assert "Shipped with FedEx" in page and '<span class="num">7789 2210</span>' in page
+
+
+@needs_node
+def test_the_buyer_page_puts_paid_and_shipped_on_the_buyers_own_calendar():
+    """Paid at 01:54 IST on 9 Nov is still 8 Nov in UTC: an Indian buyer sees 9 Nov, like the seller."""
+    import os
+    at = 1_794_169_440  # 2026-11-08 20:24 UTC = 2026-11-09 01:54 IST
+    data = {"order_ref": "ABC123", "seller": "S", "item": "Kit", "amount": "10.00", "currency": "USD",
+            "paid_on": "8 Nov 2026", "paid_at": at, "paid_with": "PayPal", "country": None,
+            "shipping": {"shipped": True, "carrier": "DHL", "tracking_number": "1", "shipped_on": "8 Nov 2026", "shipped_at": at},
+            "summary": {"text": "On its way.", "source": "template"}, "charge_explanation": "x",
+            "requests": [], "refunds": [], "request_types": {}, "refund_reasons": {}}
+    out = subprocess.run([NODE, str(ROOT / "tests/js/order_harness.js"), str(ROOT / "app/static/order.html")],
+                         input=json.dumps([{"data": data}]), capture_output=True, text=True, encoding="utf-8",
+                         timeout=30, check=True, env={**os.environ, "TZ": "Asia/Kolkata"})
+    [page] = json.loads(out.stdout)
+    assert "Shipped with DHL on 9 Nov" in page and "8 Nov" not in page
+

@@ -300,8 +300,11 @@ def when(ts: float) -> str:
     return datetime.fromtimestamp(ts, ZoneInfo(TIME_ZONE)).strftime("%H:%M:%S ") + ZONE_LABEL
 
 
-def event_proof(film: Film, order_id: str, kind: str, fields=()) -> str:
-    events = [e for e in film.api.get(f"/api/orders/{order_id}/timeline") if e["kind"] == kind]
+def event_proof(film: Film, order_id: str, kind: str, fields=(), until: float | None = None) -> str:
+    """The latest `kind` event as the panel's proof; with `until`, the latest one by then (a step
+    filmed before a later event mustn't show that event's state)."""
+    events = [e for e in film.api.get(f"/api/orders/{order_id}/timeline")
+              if e["kind"] == kind and (until is None or e["created_at"] <= until)]
     if not events:
         return f"{kind}: not on the timeline yet"
     e = events[-1]
@@ -407,8 +410,9 @@ def s_dispute(film: Film, page):
                          and "dispute_resolved" not in k, "dispute with a recommendation to approve")
     page.goto(film.config.base + "/seller", wait_until="load")
     page.locator("#order-list article").first.wait_for(timeout=60000)
+    shown = time.time()  # the case as it stands on screen, not after the evidence goes
     film.step("dispute", lambda: event_proof(film, order_id, "dispute_created", ("reason",)) + "\n"
-              + event_proof(film, order_id, "dispute_updated", ("status",)).replace("\n", ", "))
+              + event_proof(film, order_id, "dispute_updated", ("status",), until=shown).replace("\n", ", "))
     row = open_card(film, page, order_id)
     film.point(page, row.locator(".dispute"), click=False)
     ai = row.locator(".ai")
@@ -496,7 +500,7 @@ def s_invoice(film: Film, page):
     drafted = {}
     page.on("response", lambda r: drafted.update(r.json()) if r.url.endswith("/reminder-draft") and r.ok else None)
     film.step("draft", lambda: f"reminder draft · source {drafted.get('source')}, {drafted.get('provider') or 'template'}"
-              f"\n{drafted.get('days_overdue')} days overdue")
+              f"\n{drafted.get('days_overdue')} day{'' if drafted.get('days_overdue') == 1 else 's'} overdue")
     film.point(page, item.locator("button"))
     cell = page.locator("[data-reminder]").filter(has=page.locator("[data-rem-send]")).first
     cell.locator("[data-rem-send]").wait_for(state="visible", timeout=90000)

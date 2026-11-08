@@ -276,16 +276,20 @@ def buyer_view(store: TimelineStore, cache: SummaryCache, order_id: str, *, sell
                 "status": e["payload"].get("status"), "at": e["created_at"]}
                for e in events if e["kind"] == "refund_sent"]
     is_invoice = "invoice_ref" in facts
+    captured, tracked = _last(events, "payment_captured"), _last(events, "tracking_added")
     page = {
         "kind": "invoice" if is_invoice else "order",
         "order_ref": facts["invoice_ref"] if is_invoice else order_id[-6:],
         "seller": facts["seller"], "item": facts["item"],
         "amount": facts.get("amount"), "currency": facts.get("currency"),
         "paid_on": facts.get("paid_on"), "paid_with": "PayPal", "country": facts.get("country"),
+        # The same days as moments: the page shows them in the buyer's own time zone (paid_on is UTC).
+        "paid_at": captured["created_at"] if captured and not is_invoice else None,
         # Invoices are for services: nothing ships, so no shipping card or "hasn't arrived".
         "shipping": None if is_invoice else {
             "shipped": facts["shipped"], "carrier": facts.get("carrier"),
-            "tracking_number": facts.get("tracking_number"), "shipped_on": facts.get("shipped_on")},
+            "tracking_number": facts.get("tracking_number"), "shipped_on": facts.get("shipped_on"),
+            "shipped_at": tracked["created_at"] if tracked else None},
         "summary": ({"text": cached["text"], "source": "ai"} if cached
                     else {"text": template_summary(facts), "source": "template"}),
         "charge_explanation": explain_charge(facts),

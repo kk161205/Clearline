@@ -429,3 +429,14 @@ def test_waiting_on_others_is_its_own_folded_group():
     script = (ROOT / "app/static/pages/seller.js").read_text(encoding="utf-8")
     assert '<div id="waiting"></div>' in html and "Waiting on others" in script
     assert "all.filter((it) => !it.waiting)" in script
+
+
+def test_an_invoice_one_day_overdue_says_day():
+    invoice = {"invoice_id": "INV2-1", "number": "0005", "client": "Kapoor Interiors", "amount": "300.00",
+               "currency": "USD", "due_date": "2026-11-07", "display_status": "Overdue"}
+    one, three = render({"env": "sandbox", "invoices": [{**invoice, "days_overdue": 1}]},
+                        {"env": "sandbox", "invoices": [{**invoice, "days_overdue": 3}]})
+    whens = [json.dumps(r["today"]) for r in (one, three)]
+    assert "1 day overdue" in whens[0] and "1 days" not in whens[0]
+    assert "3 days overdue" in whens[1]
+

@@ -29,11 +29,19 @@ function disputeText(d) {
   return d.due ? `${d.stage}, respond by ${UI.date(Date.parse(d.due) / 1000)}` : `${d.stage}, open`;
 }
 
+// A row's day on the viewer's own calendar (r.at), else the server's UTC day (r.date).
+const rowDay = (r) => (r.at ? UI.date(r.at) : UI.isoDate(r.date));
+function localMidnight(r) {
+  const d = r.at ? new Date(r.at * 1000) : new Date(`${r.date}T00:00:00`);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 // One grid row per money item, with sortable numbers and the last event in plain words.
 function toGridRows(rows) {
   return rows.map((r) => {
     const last = r.history.length ? stop(r.history[r.history.length - 1]).title : "";
-    return { ...r, amountNum: Number(r.amount), refundedNum: Number(r.refunded), dateObj: new Date(`${r.date}T00:00:00`),
+    return { ...r, amountNum: Number(r.amount), refundedNum: Number(r.refunded), dateObj: localMidnight(r),
              disputeText: disputeText(r.dispute), last, country: r.country || "" };
   });
 }
@@ -51,7 +59,7 @@ function drawerHtml(r) {
     <div class="drawer-body">
       <dl class="kv">
         <dt>Next</dt><dd>${esc(r.next)}</dd>
-        <dt>Date</dt><dd>${esc(UI.isoDate(r.date))}</dd>
+        <dt>Date</dt><dd>${esc(rowDay(r))}</dd>
         <dt>Item</dt><dd>${esc(r.item)}</dd>
         ${r.country ? `<dt>Country</dt><dd>${esc(r.country)}</dd>` : ""}
         ${Number(r.refunded) ? `<dt>Refunded</dt><dd class="num">${esc(r.refunded)} ${esc(r.currency)}</dd>` : ""}
@@ -77,7 +85,7 @@ const columnDefs = [
   { field: "ref", headerName: "Order", minWidth: 130, filter: "agTextColumnFilter", pinned: "left",
     cellRenderer: (p) => `<span class="cl-mark" data-tone="${esc(p.data.state === "unpaid" ? "none" : p.data.state)}" style="display:inline-block;width:4px;height:18px;vertical-align:middle;margin-right:8px"></span>${esc(p.value)}` },
   { field: "dateObj", headerName: "Date", filter: "agDateColumnFilter", sort: "desc", width: 110,
-    valueFormatter: (p) => (p.data ? UI.isoDate(p.data.date) : "") },
+    valueFormatter: (p) => (p.data ? rowDay(p.data) : "") },
   { field: "item", headerName: "Item", flex: 1, minWidth: 180, filter: "agTextColumnFilter", tooltipField: "item" },
   { field: "amountNum", headerName: "Amount", type: "rightAligned", width: 130, filter: "agNumberColumnFilter",
     cellClass: ["num", "ag-right-aligned-cell"], valueFormatter: (p) => (p.data ? `${p.data.amount} ${p.data.currency}` : "") },

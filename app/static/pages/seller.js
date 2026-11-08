@@ -24,6 +24,7 @@ function daysLeft(due) {
   if (!due || isNaN(date)) return null;
   return { date, days: Math.ceil((date - Date.now()) / 86400000) };
 }
+const daysText = (n) => `${n} ${Number(n) === 1 ? "day" : "days"}`;
 const leftText = (days) => (days > 1 ? `${days} days left` : days === 1 ? "1 day left" : days === 0 ? "Due today" : "Overdue");
 function respondBy(due) {
   const d = daysLeft(due);
@@ -237,7 +238,7 @@ function renderInvoiceList(rows) {
       <td data-label="Number">${esc(r.number || "None")}</td><td data-label="Client">${esc(r.client || "None")}</td>
       <td data-label="Amount" class="num">${esc(r.amount)} ${esc(r.currency)}</td>
       <td data-label="Due">${esc(r.due_date ? UI.isoDate(r.due_date) : "No due date")}</td>
-      <td data-label="Status"><span class="pill ${INVOICE_STATUS_CLASS[r.display_status] || ""}">${esc(r.display_status)}${r.days_overdue ? `, ${esc(r.days_overdue)} days` : ""}</span></td>
+      <td data-label="Status"><span class="pill ${INVOICE_STATUS_CLASS[r.display_status] || ""}">${esc(r.display_status)}${r.days_overdue ? `, ${esc(daysText(r.days_overdue))}` : ""}</span></td>
       <td data-label="">${r.display_status === "Draft" ? `<button class="small" data-invoice-send="${esc(r.invoice_id)}">Send invoice</button>` : ""}
           ${r.display_status === "Overdue" ? `<button class="secondary small" data-invoice-remind="${esc(r.invoice_id)}">Draft reminder</button>` : ""}</td></tr>
       <tr class="reminder-row" hidden><td colspan="6" class="wide" data-reminder="${esc(r.invoice_id)}"></td></tr>`).join("")}</tbody></table>`
@@ -291,7 +292,7 @@ function attentionItems(orders, invoices) {
   }
   for (const r of invoices.filter((x) => x.display_status === "Overdue")) {
     items.push({ rank: 2, sort: -(r.days_overdue || 0), tone: "held", title: `Invoice ${r.number || ""} is overdue`.replace("  ", " "),
-      sub: r.client || "", when: `${r.days_overdue} days overdue, due ${UI.isoDate(r.due_date)}`, urgent: true, amount: UI.money(r.amount, r.currency),
+      sub: r.client || "", when: `${daysText(r.days_overdue)} overdue, due ${UI.isoDate(r.due_date)}`, urgent: true, amount: UI.money(r.amount, r.currency),
       action: "Draft reminder", invoice: r.invoice_id });
   }
   return items.sort((a, b) => a.rank - b.rank || a.sort - b.sort);
@@ -713,7 +714,7 @@ function draftReminder(button) {
     const d = await res.json();
     cell.innerHTML = `<label class="field">Subject <input data-rem="subject" maxlength="100" value="${esc(d.subject)}" /></label>
       <label class="field">Note <textarea data-rem="note" maxlength="600">${esc(d.note)}</textarea></label>
-      <div class="hint">${d.source === "ai" ? `Drafted by AI for ${esc(d.days_overdue)} days overdue.` : "Plain template (AI unavailable)."} Edit freely; nothing is sent until you click.</div>
+      <div class="hint">${d.source === "ai" ? `Drafted by AI for ${esc(daysText(d.days_overdue))} overdue.` : "Plain template (AI unavailable)."} Edit freely; nothing is sent until you click.</div>
       <div class="actions"><button data-rem-send="${esc(id)}">Send reminder</button></div><div class="msg"></div>`;
     cell.querySelectorAll("input, textarea").forEach((el) => el.addEventListener("input", () => { el.dataset.dirty = "1"; }));
     cell.querySelector("[data-rem-send]").addEventListener("click", (e) => sendReminder(e.currentTarget, cell));

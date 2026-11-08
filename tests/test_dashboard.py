@@ -268,6 +268,15 @@ def test_a_refund_answers_a_buyer_request_too(mixed):
     assert rows["…LLOPEN"]["deadline"] is None  # no deadline, still needs the seller
 
 
+def test_act_by_is_never_in_the_past():
+    from datetime import date
+    from app.dashboard import act_by
+    today = date(2026, 11, 9)
+    assert act_by(True, date(2026, 11, 7), today) == "2026-11-09"   # overdue invoice: act today
+    assert act_by(True, date(2026, 11, 26), today) == "2026-11-26"  # respond-by still ahead
+    assert act_by(True, None, today) == "2026-11-09" and act_by(False, date(2026, 11, 7), today) is None
+
+
 def test_act_by_is_the_date_to_filter_needs_me_questions_on(tmp_path):
     """The live case: a dispute due this week, an open buyer request with no deadline, a
     refunded request and a dispute waiting for the buyer."""

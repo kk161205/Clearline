@@ -42,6 +42,8 @@ def test_only_sandbox_paypal_pages_are_allowed(url, allowed):
     ("https://www.sandbox.paypal.com/signin", "Enter the code we sent to your phone", "enter the code we sent"),
     ("https://www.sandbox.paypal.com/checkoutnow", "It looks like you've tried too many times. Try again later",
      "tried too many times"),
+    ("https://www.sandbox.paypal.com/signin", "Some of your info isn’t correct. Please try again.",
+     "some of your info isn’t correct"),
 ])
 def test_challenges_are_recognised(url, body, expected):
     assert looks_like_challenge(url, body) == expected

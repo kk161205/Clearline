@@ -41,7 +41,8 @@ SANDBOX_HOST = "sandbox.paypal.com"
 SANDBOX_SITE = "https://www.sandbox.paypal.com"
 CHALLENGE_WORDS = ("captcha", "security challenge", "i'm not a robot", "verify it's you", "confirm it's you",
                    "two-step", "2-step", "enter the code we sent", "unusual activity",
-                   "tried too many times")  # a login lockout: retrying only extends it
+                   "tried too many times",  # a login lockout: retrying only extends it
+                   "some of your info isn't correct", "some of your info isn’t correct")  # wrong password: ask, don't retry
 SUBMIT_BUTTONS = ("#payment-submit-btn", "[data-testid='submit-button-initial']",
                   "button:has-text('Complete Purchase')", "button:has-text('Pay Now')",
                   "button:has-text('Continue to Review Order')", "button:has-text('Review Order')")

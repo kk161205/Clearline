@@ -337,8 +337,10 @@ def s_buy(film: Film, page):
     film.popup_size = popup.evaluate("() => [innerWidth, innerHeight]")
     film.step("approve", lambda: "PayPal checkout window · www.sandbox.paypal.com")
     popup.wait_for_timeout(2000)
-    film.run.approve_popup(popup, film.flow)
-    film.popup_closed = time.monotonic()
+    try:
+        film.run.approve_popup(popup, film.flow)
+    finally:
+        film.popup_closed = time.monotonic()  # a failed approval still ends the popup's piece
     film.step("capture", lambda: event_proof(film, created["id"], "payment_captured", ("status",)))
     page.locator("#paid").wait_for(state="visible", timeout=60000)
     page.wait_for_timeout(PAUSE * 2)

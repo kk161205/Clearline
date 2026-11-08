@@ -40,7 +40,8 @@ OUT = r"D:\Temp\claude\clearline\e2e"
 SANDBOX_HOST = "sandbox.paypal.com"
 SANDBOX_SITE = "https://www.sandbox.paypal.com"
 CHALLENGE_WORDS = ("captcha", "security challenge", "i'm not a robot", "verify it's you", "confirm it's you",
-                   "two-step", "2-step", "enter the code we sent", "unusual activity")
+                   "two-step", "2-step", "enter the code we sent", "unusual activity",
+                   "tried too many times")  # a login lockout: retrying only extends it
 SUBMIT_BUTTONS = ("#payment-submit-btn", "[data-testid='submit-button-initial']",
                   "button:has-text('Complete Purchase')", "button:has-text('Pay Now')",
                   "button:has-text('Continue to Review Order')", "button:has-text('Review Order')")
